@@ -95,8 +95,17 @@ fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
         // spawn command first, then escape every `;` in one shot so
         // user-supplied `launch_cmd` strings are covered too.
         if pane.platform == "windows" {
+            // Rebuild $env:Path from the Machine + User registry
+            // entries. Without this, the spawned PowerShell inherits
+            // the Path that wt.exe got from the WSL giga process —
+            // which doesn't include Windows-side User PATH entries
+            // (e.g. %LOCALAPPDATA%\Programs\giga\). Result: tools
+            // installed via [Environment]::SetEnvironmentVariable
+            // 'User' (giga.exe, plus most user-scoped installers)
+            // wouldn't resolve.
             let spawn = format!(
-                "Set-Location -LiteralPath '{}'; {}",
+                "$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); \
+                 Set-Location -LiteralPath '{}'; {}",
                 pane.cwd.replace('\'', "''"),
                 pane.cmd,
             );

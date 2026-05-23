@@ -150,6 +150,12 @@ fn resolve_channel(channel: &str, config: &std::path::Path) -> Result<PathBuf> {
     if as_path.is_absolute() && as_path.exists() {
         return Ok(as_path);
     }
+    if !config.exists() {
+        return Err(anyhow::anyhow!(
+            "no config file at {} — pass --config <path>, or place a giga-harness.toml in this directory (a workdir symlink to the project config is the usual fix)",
+            config.display(),
+        ));
+    }
     let cfg = config::Config::load(config)?;
     if let Some(ch) = cfg.channels.iter().find(|c| c.file == channel) {
         return cfg.channel_path(ch);
@@ -159,6 +165,7 @@ fn resolve_channel(channel: &str, config: &std::path::Path) -> Result<PathBuf> {
         return Ok(as_path);
     }
     Err(anyhow::anyhow!(
-        "can't resolve channel `{channel}` — not an absolute path and not in {config:?}"
+        "channel `{channel}` not listed in {} and not a valid path",
+        config.display(),
     ))
 }

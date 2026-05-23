@@ -24,7 +24,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let cfg_opt = Config::load(&args.config).ok();
 
-    let path = resolve(&args.channel, cfg_opt.as_ref())?;
+    let path = resolve(&args.channel, cfg_opt.as_ref(), &args.config)?;
 
     // Validate sender is a participant on this channel (when we have a config).
     if let Some(cfg) = &cfg_opt {
@@ -79,7 +79,7 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn resolve(channel: &str, cfg: Option<&Config>) -> Result<PathBuf> {
+fn resolve(channel: &str, cfg: Option<&Config>, config_path: &Path) -> Result<PathBuf> {
     let as_path = Path::new(channel);
     if as_path.is_absolute() && as_path.parent().map(|p| p.exists()).unwrap_or(false) {
         return Ok(as_path.to_path_buf());
@@ -92,7 +92,14 @@ fn resolve(channel: &str, cfg: Option<&Config>) -> Result<PathBuf> {
     if as_path.parent().map(|p| p.exists()).unwrap_or(false) {
         return Ok(as_path.to_path_buf());
     }
+    if !config_path.exists() {
+        return Err(anyhow!(
+            "no config file at {} — pass --config <path>, or place a giga-harness.toml in this directory (a workdir symlink to the project config is the usual fix)",
+            config_path.display(),
+        ));
+    }
     Err(anyhow!(
-        "can't resolve channel `{channel}` — not in config and not a valid path"
+        "channel `{channel}` not listed in {} and not a valid path",
+        config_path.display(),
     ))
 }
