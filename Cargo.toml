@@ -1,0 +1,29 @@
+[package]
+name = "giga-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Manual multi-agent coordination harness — one command, N terminals, agents chatting via file-based inboxes."
+repository = "https://github.com/mickfixesjunk/giga-harness"
+license = "MIT"
+readme = "README.md"
+keywords = ["agents", "coordination", "claude", "harness", "multi-agent"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "giga"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+which = "7"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+shell-escape = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

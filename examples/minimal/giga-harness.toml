@@ -1,0 +1,33 @@
+# Minimal giga-harness example: a project with two agents that talk
+# to each other through a single shared inbox file.
+
+[project]
+name = "minimal-example"
+description = "Two agents, one channel — the smallest useful setup."
+
+[paths]
+# All inboxes live here. Each channel is a single text file inside.
+wsl_inbox = "/tmp/giga-example-inbox"
+
+[[agents]]
+name = "alpha"
+workdir = "/tmp/giga-example/alpha"
+role = "Researcher — answers questions from beta."
+platform = "wsl"
+
+[[agents]]
+name = "beta"
+workdir = "/tmp/giga-example/beta"
+role = "Engineer — asks alpha for context, implements changes."
+platform = "wsl"
+bench_scheduler = true
+
+[[channels]]
+file = "alpha-beta.md"
+side = "wsl"
+participants = ["alpha", "beta"]
+purpose = "Research questions + answers, code review comments."
+
+[bench_protocol]
+scheduler = "beta"
+slot_pool = "this-host"
