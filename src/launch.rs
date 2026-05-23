@@ -18,14 +18,27 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
     let cfg = Config::load(config_path)?;
     let session = format!("giga-{}", cfg.project.name);
 
+    // The intro prompt is what each claude session processes the
+    // moment it opens. Generic by design — per-agent behavior lives
+    // in each agent's CLAUDE.md (which the prompt references).
+    let intro = cfg
+        .project
+        .launch_intro_prompt
+        .as_deref()
+        .unwrap_or(DEFAULT_INTRO_PROMPT);
+
     let panes: Vec<Pane> = cfg
         .agents
         .iter()
         .map(|a| {
             let cwd = a.workdir.to_string_lossy().to_string();
-            // Per-agent override wins; otherwise pick a default that
-            // matches the shell we're about to spawn in.
-            let cmd = a.launch_cmd.clone().unwrap_or_else(|| default_cmd(&a.platform));
+            // Per-agent launch_cmd override wins; otherwise pick a
+            // default that matches the platform and includes the
+            // intro prompt so the agent starts working immediately.
+            let cmd = a
+                .launch_cmd
+                .clone()
+                .unwrap_or_else(|| default_cmd(&a.platform, intro));
             Pane {
                 title: a.name.clone(),
                 cwd,
@@ -56,23 +69,33 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Platform-appropriate default shell command. The Claude Code CLI
-/// (`claude`) auto-loads `CLAUDE.md` from cwd, so if it's installed
-/// we drop the agent straight into it. Otherwise fall back to an
-/// interactive shell.
-fn default_cmd(platform: &str) -> String {
+/// Generic opening prompt sent to every claude session. Each
+/// agent's own CLAUDE.md should contain a "Session Start" section
+/// with the concrete actions to take (arm watchers, post intro,
+/// etc.). Project configs can override via
+/// `[project].launch_intro_prompt`.
+const DEFAULT_INTRO_PROMPT: &str =
+    "Begin your session. Follow the Session Start protocol in CLAUDE.md \
+     — arm your inbox watchers, post a one-line introduction on each \
+     of your channels announcing you're online, then standby for messages.";
+
+/// Platform-appropriate default shell command. Drops the agent into
+/// `claude` with an opening prompt so the session kicks off
+/// immediately rather than waiting for human input.
+fn default_cmd(platform: &str, intro: &str) -> String {
     match platform {
         "windows" => {
-            // PowerShell 5.1+ syntax. `Get-Command -ea SilentlyContinue`
-            // returns $null if claude isn't on PATH, which the `if`
-            // treats as falsy.
-            "if (Get-Command claude -ErrorAction SilentlyContinue) { claude }".to_string()
+            // PowerShell. Single-quote the intro and double any inner
+            // single quotes (PS's `''` escape).
+            let ps_intro = intro.replace('\'', "''");
+            format!(
+                "if (Get-Command claude -ErrorAction SilentlyContinue) {{ claude '{ps_intro}' }}",
+            )
         }
         _ => {
-            // POSIX bash. `command -v` is portable; `exec bash` keeps
-            // the shell open after claude exits so the agent can take
-            // over manually if needed.
-            "command -v claude >/dev/null && claude || true".to_string()
+            // POSIX bash. shell_escape gives us a safely-quoted form.
+            let sh_intro = shell_escape::unix::escape(intro.into());
+            format!("command -v claude >/dev/null && claude {sh_intro} || true")
         }
     }
 }

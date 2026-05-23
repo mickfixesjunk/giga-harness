@@ -12,8 +12,13 @@ use anyhow::{Context, Result};
 
 use crate::config::{Config, Agent};
 use crate::fs_paths::to_host_fs;
+use crate::trust;
 
 pub fn run(config_path: &Path) -> Result<()> {
+    run_with(config_path, true)
+}
+
+pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     let cfg = Config::load(config_path)?;
     let config_dir = config_path
         .parent()
@@ -57,6 +62,13 @@ pub fn run(config_path: &Path) -> Result<()> {
         fs::write(&claudemd_path, body)
             .with_context(|| format!("write {}", claudemd_path.display()))?;
         println!("  [gen]  {}", claudemd_path.display());
+    }
+
+    if do_trust {
+        match trust::pre_trust(&cfg) {
+            Ok(n) => println!("  [trust] marked {} agent workdir(s) as trusted in Claude Code", n),
+            Err(e) => eprintln!("  [trust] warning: couldn't pre-populate trust — {}", e),
+        }
     }
 
     println!("\nginit OK — {} channels + {} agent CLAUDE.md files in place", cfg.channels.len(), cfg.agents.len());

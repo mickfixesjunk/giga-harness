@@ -110,9 +110,14 @@ fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
                 shell_escape::unix::escape(pane.cwd.as_str().into()),
                 pane.cmd,
             );
+            // `-lic`: login + interactive + command. The interactive
+            // flag forces ~/.bashrc to fully process (Ubuntu's default
+            // ~/.bashrc returns early when non-interactive, before any
+            // PATH exports). Without -i, claude installs under
+            // ~/.local/bin / ~/.npm-global/bin / etc. won't be found.
             cmd.arg("wsl.exe")
                 .arg("bash")
-                .arg("-lc")
+                .arg("-lic")
                 .arg(escape_wt_semicolons(&spawn));
         }
     }

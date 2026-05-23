@@ -28,6 +28,13 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Opening prompt passed to each claude session at launch.
+    /// Designed to be referenced from per-agent CLAUDE.md (e.g.,
+    /// "Follow the Session Start protocol in CLAUDE.md") so the
+    /// concrete actions live in the per-agent doc. If absent,
+    /// giga uses a generic default.
+    #[serde(default)]
+    pub launch_intro_prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

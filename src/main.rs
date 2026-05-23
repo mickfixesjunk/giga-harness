@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand};
 mod config;
 mod fs_paths;
 mod init;
+mod trust;
 mod launch;
 mod post;
 mod sweep;
@@ -47,6 +48,11 @@ enum Command {
     Init {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// Skip pre-populating Claude Code's per-folder trust state.
+        /// By default giga marks every agent workdir as trusted so
+        /// claude doesn't prompt on first launch.
+        #[arg(long)]
+        no_trust: bool,
     },
     /// Spawn one terminal per agent (Windows Terminal or tmux).
     Launch {
@@ -108,7 +114,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Validate { config } => validate::run(&config),
-        Command::Init { config } => init::run(&config),
+        Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
         Command::Launch { config, skip_init, dry_run } => {
             launch::run(&config, skip_init, dry_run)
         }
