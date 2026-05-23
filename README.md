@@ -53,12 +53,16 @@ cargo install --git https://github.com/mickfixesjunk/giga-harness
 
 ### Binary release
 
-Pre-built binaries for Linux, macOS, and Windows attach to each
-release on GitHub. The `curl | bash` installer:
+Pre-built binaries for Linux (x86_64), macOS (Apple Silicon), and
+Windows (x86_64) attach to each release. One-line install:
 
 ```sh
-curl -sSf https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
+curl -sSfL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
 ```
+
+The installer drops `giga` (or `giga.exe`) into `~/.local/bin`. Set
+`GIGA_INSTALL_DIR=/some/other/dir` to override. On Windows native,
+run the installer from WSL or Git Bash.
 
 ## Quick start
 
