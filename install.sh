@@ -47,7 +47,7 @@ detect_target() {
 }
 
 main() {
-    local target archive url tmpdir
+    local target archive url
     target="$(detect_target)"
 
     case "$target" in
@@ -60,8 +60,11 @@ main() {
     say "archive:  $archive"
     say "download: $url"
 
+    # tmpdir is at file scope on purpose: the EXIT trap fires after
+    # main() returns, at which point any `local` would be out of
+    # scope and `set -u` would fire on the empty expansion.
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    trap '[ -n "${tmpdir:-}" ] && rm -rf "$tmpdir"' EXIT
 
     curl --proto '=https' --tlsv1.2 -fL "$url" -o "${tmpdir}/${archive}" \
         || err "download failed. Does $url exist? Has a release been published?"
