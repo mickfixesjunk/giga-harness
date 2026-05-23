@@ -189,7 +189,10 @@ impl Config {
     }
 
     /// Resolve a channel file to its absolute path on this host,
-    /// using the configured inbox dirs.
+    /// using the configured inbox dirs. The configured dir may be in
+    /// the other side's path form (e.g., windows_inbox = "/mnt/c/..."
+    /// for WSL convenience); `to_host_fs` translates it to whatever
+    /// the current host's filesystem expects.
     pub fn channel_path(&self, ch: &Channel) -> Result<PathBuf> {
         let dir = match ch.side.as_str() {
             "wsl" => self
@@ -204,7 +207,7 @@ impl Config {
                 .ok_or_else(|| anyhow!("paths.windows_inbox not set"))?,
             other => return Err(anyhow!("unknown channel side `{}`", other)),
         };
-        Ok(dir.join(&ch.file))
+        Ok(crate::fs_paths::to_host_fs(dir).join(&ch.file))
     }
 
     pub fn agent_by_name(&self, name: &str) -> Option<&Agent> {

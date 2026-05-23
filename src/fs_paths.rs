@@ -1,25 +1,33 @@
 //! Host-filesystem path translation.
 //!
-//! Configs use the same path form an end-user would type for that
-//! agent's *target* OS — e.g., `C:\Users\Audio\sdd-testwin` for a
-//! Windows-platform agent, even when giga itself is running on
-//! Linux/WSL. That string is meaningful for the spawn command we
-//! hand to wt + PowerShell, but it's not a valid Linux filesystem
-//! path. Linux syscalls treat `\` as a regular character, so a naive
-//! `fs::create_dir_all` would create a literally-named directory
-//! containing backslashes.
+//! Configs are shared between sides of a multi-host setup. Whoever
+//! authored the file picked one form per path — e.g.,
+//! `C:\Users\Audio\sdd-testwin` for a Windows-platform agent's
+//! workdir, or `/mnt/c/Users/Audio` for the windows_inbox path used
+//! by both sides. That string is meaningful in its authored form,
+//! but a process running on the *other* side can't open it via the
+//! filesystem without translation. Linux syscalls treat `\` as a
+//! regular character (so a naive create_dir_all on `C:\foo` makes a
+//! literally-named directory), and Windows syscalls don't know
+//! what `/mnt/c` means.
 //!
 //! This module translates a config-form path into a path the host
-//! filesystem can actually use. On Linux/WSL we map `C:\path\to`
-//! into `/mnt/c/path/to`. On native Windows we leave it alone.
+//! filesystem can actually use:
+//!   - Linux/WSL host + `C:\...` → `/mnt/c/...`
+//!   - Windows host + `/mnt/c/...` → `C:\...`
+//!   - Anything else (already in host form) is left alone.
 
 use std::path::{Path, PathBuf};
 
 /// Translate a config-form path into a host-FS path.
 pub fn to_host_fs(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
     if cfg!(unix) {
-        let s = p.to_string_lossy();
-        if let Some(translated) = wsl_translate(&s) {
+        if let Some(translated) = windows_to_wsl(&s) {
+            return PathBuf::from(translated);
+        }
+    } else if cfg!(windows) {
+        if let Some(translated) = wsl_to_windows(&s) {
             return PathBuf::from(translated);
         }
     }
@@ -28,7 +36,7 @@ pub fn to_host_fs(p: &Path) -> PathBuf {
 
 /// If `s` looks like a Windows drive path (`X:\...` or `X:/...`),
 /// return the `/mnt/<x>/...` form. Otherwise return None.
-fn wsl_translate(s: &str) -> Option<String> {
+fn windows_to_wsl(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     if bytes.len() < 3 {
         return None;
@@ -50,6 +58,27 @@ fn wsl_translate(s: &str) -> Option<String> {
     Some(format!("/mnt/{}{}", drive_lower, rest))
 }
 
+/// If `s` looks like a WSL drive-mount path (`/mnt/<x>/...`),
+/// return the `X:\...` form (uppercased drive, backslash
+/// separators). Otherwise return None. Accepts `/mnt/c` with no
+/// trailing slash → `C:\`.
+fn wsl_to_windows(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("/mnt/")?;
+    let mut chars = rest.chars();
+    let drive = chars.next()?;
+    if !drive.is_ascii_alphabetic() {
+        return None;
+    }
+    let drive_upper = drive.to_ascii_uppercase();
+    // After the drive letter we expect either end-of-string or '/'.
+    let tail = match chars.next() {
+        None => return Some(format!("{drive_upper}:\\")),
+        Some('/') => chars.as_str(),
+        _ => return None,
+    };
+    Some(format!("{drive_upper}:\\{}", tail.replace('/', "\\")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,7 +86,7 @@ mod tests {
     #[test]
     fn translates_windows_path() {
         assert_eq!(
-            wsl_translate("C:\\Users\\Audio\\sdd-testwin").as_deref(),
+            windows_to_wsl("C:\\Users\\Audio\\sdd-testwin").as_deref(),
             Some("/mnt/c/Users/Audio/sdd-testwin"),
         );
     }
@@ -65,18 +94,41 @@ mod tests {
     #[test]
     fn forward_slash_windows_path() {
         assert_eq!(
-            wsl_translate("D:/projects/x").as_deref(),
+            windows_to_wsl("D:/projects/x").as_deref(),
             Some("/mnt/d/projects/x"),
         );
     }
 
     #[test]
     fn passes_linux_path_through() {
-        assert_eq!(wsl_translate("/home/neo/x"), None);
+        assert_eq!(windows_to_wsl("/home/neo/x"), None);
     }
 
     #[test]
     fn passes_relative_through() {
-        assert_eq!(wsl_translate("relative/path"), None);
+        assert_eq!(windows_to_wsl("relative/path"), None);
+    }
+
+    #[test]
+    fn translates_wsl_mount_path() {
+        assert_eq!(
+            wsl_to_windows("/mnt/c/Users/NeoMatrix/projects/mickfixesjunk").as_deref(),
+            Some("C:\\Users\\NeoMatrix\\projects\\mickfixesjunk"),
+        );
+    }
+
+    #[test]
+    fn translates_wsl_mount_drive_only() {
+        assert_eq!(
+            wsl_to_windows("/mnt/d").as_deref(),
+            Some("D:\\"),
+        );
+    }
+
+    #[test]
+    fn rejects_non_mount_unix_path() {
+        assert!(wsl_to_windows("/home/neo/x").is_none());
+        assert!(wsl_to_windows("/mnt/").is_none());
+        assert!(wsl_to_windows("/mnt").is_none());
     }
 }
