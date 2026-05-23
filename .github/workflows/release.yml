@@ -88,5 +88,6 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             install.sh
+            install.ps1
           generate_release_notes: true
           fail_on_unmatched_files: true

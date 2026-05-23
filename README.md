@@ -54,15 +54,25 @@ cargo install --git https://github.com/mickfixesjunk/giga-harness
 ### Binary release
 
 Pre-built binaries for Linux (x86_64), macOS (Apple Silicon), and
-Windows (x86_64) attach to each release. One-line install:
+Windows (x86_64) attach to each release.
+
+**Linux / macOS / WSL:**
 
 ```sh
 curl -sSfL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
 ```
 
-The installer drops `giga` (or `giga.exe`) into `~/.local/bin`. Set
-`GIGA_INSTALL_DIR=/some/other/dir` to override. On Windows native,
-run the installer from WSL or Git Bash.
+Drops `giga` into `~/.local/bin`. Override with `GIGA_INSTALL_DIR=...`.
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.ps1 | iex
+```
+
+Drops `giga.exe` into `%LOCALAPPDATA%\Programs\giga\` and adds it to
+the user PATH. Restart open shells to pick up the new PATH. Override
+with `$env:GIGA_INSTALL_DIR = "C:\path\to\bin"` before piping.
 
 ## Quick start
 
