@@ -15,6 +15,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod config;
+mod fs_paths;
 mod init;
 mod launch;
 mod post;

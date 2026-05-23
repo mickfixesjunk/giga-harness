@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::config::{Config, Agent};
+use crate::fs_paths::to_host_fs;
 
 pub fn run(config_path: &Path) -> Result<()> {
     let cfg = Config::load(config_path)?;
@@ -42,12 +43,16 @@ pub fn run(config_path: &Path) -> Result<()> {
         println!("  [new]  {}", path.display());
     }
 
-    // Generate per-agent CLAUDE.md in the agent's workdir.
+    // Generate per-agent CLAUDE.md in the agent's workdir. The
+    // workdir comes from the config in its agent-side form (e.g.,
+    // `C:\Users\Audio\sdd-testwin` for Windows-platform agents on a
+    // Linux/WSL host); translate to a host-FS path before touching
+    // the filesystem so we don't end up with literal-backslash dirs.
     for agent in &cfg.agents {
-        let workdir = &agent.workdir;
-        fs::create_dir_all(workdir)
-            .with_context(|| format!("mkdir -p agent workdir {}", workdir.display()))?;
-        let claudemd_path = workdir.join("CLAUDE.md");
+        let host_workdir = to_host_fs(&agent.workdir);
+        fs::create_dir_all(&host_workdir)
+            .with_context(|| format!("mkdir -p agent workdir {}", host_workdir.display()))?;
+        let claudemd_path = host_workdir.join("CLAUDE.md");
         let body = render_agent_claudemd(&cfg, agent, config_dir)?;
         fs::write(&claudemd_path, body)
             .with_context(|| format!("write {}", claudemd_path.display()))?;

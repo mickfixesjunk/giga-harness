@@ -48,6 +48,22 @@ pub fn launch(mux: Multiplexer, panes: &[Pane], session_name: &str) -> Result<()
     }
 }
 
+/// Escape every `;` in `s` as `\;` so wt.exe doesn't treat it as
+/// a tab separator. Already-escaped `\;` is left as-is.
+fn escape_wt_semicolons(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut prev_backslash = false;
+    for ch in s.chars() {
+        if ch == ';' && !prev_backslash {
+            out.push_str("\\;");
+        } else {
+            out.push(ch);
+        }
+        prev_backslash = ch == '\\';
+    }
+    out
+}
+
 fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
     // Compose a single `wt.exe` invocation that opens one window
     // with one tab per agent.
@@ -70,26 +86,34 @@ fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
             .arg(&pane.title)
             .arg("--suppressApplicationTitle");
 
+        // wt.exe parses `;` as its tab separator even inside quoted
+        // args, so any inner `;` (PowerShell statement separator,
+        // bash command separator) gets eaten and severs the
+        // commandline. The documented workaround is `\;` — wt
+        // un-escapes it to a literal `;` and passes the rest through
+        // to the spawned shell as one command. Build the inner
+        // spawn command first, then escape every `;` in one shot so
+        // user-supplied `launch_cmd` strings are covered too.
         if pane.platform == "windows" {
-            // Default profile, run powershell with command.
+            let spawn = format!(
+                "Set-Location -LiteralPath '{}'; {}",
+                pane.cwd.replace('\'', "''"),
+                pane.cmd,
+            );
             cmd.arg("powershell.exe")
                 .arg("-NoExit")
                 .arg("-Command")
-                .arg(format!(
-                    "Set-Location -LiteralPath '{}'; {}",
-                    pane.cwd.replace('\'', "''"),
-                    pane.cmd,
-                ));
+                .arg(escape_wt_semicolons(&spawn));
         } else {
-            // WSL profile. Use `wsl.exe ... bash -lc` so the agent inherits a login shell.
+            let spawn = format!(
+                "cd {} && {} ; exec bash",
+                shell_escape::unix::escape(pane.cwd.as_str().into()),
+                pane.cmd,
+            );
             cmd.arg("wsl.exe")
                 .arg("bash")
                 .arg("-lc")
-                .arg(format!(
-                    "cd {} && {} ; exec bash",
-                    shell_escape::unix::escape(pane.cwd.as_str().into()),
-                    pane.cmd,
-                ));
+                .arg(escape_wt_semicolons(&spawn));
         }
     }
 
