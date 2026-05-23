@@ -6,7 +6,7 @@
 //! from the template so config changes propagate.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -53,6 +53,14 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // `C:\Users\Audio\sdd-testwin` for Windows-platform agents on a
     // Linux/WSL host); translate to a host-FS path before touching
     // the filesystem so we don't end up with literal-backslash dirs.
+    //
+    // Also: if the agent has a CLAUDE.md template at
+    // `agents/<name>.md`, look for an optional handover file at
+    // `agents/<name>.handover.md` next to it. When present, copy
+    // it into the workdir as `HANDOVER.md` on first init only —
+    // preserving any session appends the agent has accumulated in
+    // its workdir copy. The configs repo is the round-trip
+    // checkpoint; the workdir copy is the agent's live append log.
     for agent in &cfg.agents {
         let host_workdir = to_host_fs(&agent.workdir);
         fs::create_dir_all(&host_workdir)
@@ -62,6 +70,33 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         fs::write(&claudemd_path, body)
             .with_context(|| format!("write {}", claudemd_path.display()))?;
         println!("  [gen]  {}", claudemd_path.display());
+
+        if let Some(tpl) = &agent.claudemd_template {
+            let handover_rel = handover_template_for(tpl);
+            let handover_abs = if handover_rel.is_absolute() {
+                handover_rel
+            } else {
+                config_dir.join(handover_rel)
+            };
+            if handover_abs.exists() {
+                let dest = host_workdir.join("HANDOVER.md");
+                if dest.exists() {
+                    println!(
+                        "  [keep] {} (workdir copy preserved — agent's session appends)",
+                        dest.display(),
+                    );
+                } else {
+                    fs::copy(&handover_abs, &dest).with_context(|| {
+                        format!(
+                            "copy handover {} → {}",
+                            handover_abs.display(),
+                            dest.display(),
+                        )
+                    })?;
+                    println!("  [hand] {}", dest.display());
+                }
+            }
+        }
     }
 
     if do_trust {
@@ -74,6 +109,19 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     println!("\nginit OK — {} channels + {} agent CLAUDE.md files in place", cfg.channels.len(), cfg.agents.len());
     println!("next: `giga launch <config>` to open the terminals");
     Ok(())
+}
+
+/// Given an agent's CLAUDE.md template path (e.g.,
+/// `agents/superdeduper.md`), return the sibling handover path
+/// (`agents/superdeduper.handover.md`). The file may or may not
+/// exist; the caller checks before copying.
+fn handover_template_for(claudemd: &Path) -> PathBuf {
+    let stem = claudemd
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = claudemd.parent().unwrap_or_else(|| Path::new(""));
+    parent.join(format!("{stem}.handover.md"))
 }
 
 fn render_channel_header(cfg: &Config, ch: &crate::config::Channel) -> String {

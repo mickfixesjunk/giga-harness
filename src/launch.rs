@@ -81,12 +81,15 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
 /// agent: if you were mid-task, finish it; otherwise do the
 /// Session Start protocol.
 const DEFAULT_INTRO_PROMPT: &str =
-    "Session start. If you were in the middle of a task in the previous \
-     session (check your most recent assistant message), continue from \
-     where you left off. Otherwise, follow the Session Start protocol in \
-     CLAUDE.md — arm your inbox watchers, post a one-line introduction \
-     on each of your channels announcing you're online, then standby \
-     for messages.";
+    "Session start. First, if ./HANDOVER.md exists in cwd, read it — it \
+     carries cross-session / cross-machine state (recent decisions, \
+     in-flight work, pickup instructions) that your conversation history \
+     may not include. Then: if you were in the middle of a task in the \
+     previous session (check your most recent assistant message), \
+     continue from where you left off. Otherwise, follow the Session \
+     Start protocol in CLAUDE.md — arm your inbox watchers, post a \
+     one-line introduction on each of your channels announcing you're \
+     online, then standby for messages.";
 
 /// Platform-appropriate default shell command. Drops the agent into
 /// `claude -c` so a prior session in that cwd gets resumed if one
