@@ -23,9 +23,9 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
         .iter()
         .map(|a| {
             let cwd = a.workdir.to_string_lossy().to_string();
-            // Default cmd: drop into claude if available, else bash.
-            // `claude` (Claude Code CLI) auto-loads CLAUDE.md from cwd.
-            let cmd = "command -v claude >/dev/null && claude || bash".to_string();
+            // Per-agent override wins; otherwise pick a default that
+            // matches the shell we're about to spawn in.
+            let cmd = a.launch_cmd.clone().unwrap_or_else(|| default_cmd(&a.platform));
             Pane {
                 title: a.name.clone(),
                 cwd,
@@ -54,4 +54,25 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
 
     terminal::launch(mux, &panes, &session)?;
     Ok(())
+}
+
+/// Platform-appropriate default shell command. The Claude Code CLI
+/// (`claude`) auto-loads `CLAUDE.md` from cwd, so if it's installed
+/// we drop the agent straight into it. Otherwise fall back to an
+/// interactive shell.
+fn default_cmd(platform: &str) -> String {
+    match platform {
+        "windows" => {
+            // PowerShell 5.1+ syntax. `Get-Command -ea SilentlyContinue`
+            // returns $null if claude isn't on PATH, which the `if`
+            // treats as falsy.
+            "if (Get-Command claude -ErrorAction SilentlyContinue) { claude }".to_string()
+        }
+        _ => {
+            // POSIX bash. `command -v` is portable; `exec bash` keeps
+            // the shell open after claude exits so the agent can take
+            // over manually if needed.
+            "command -v claude >/dev/null && claude || true".to_string()
+        }
+    }
 }

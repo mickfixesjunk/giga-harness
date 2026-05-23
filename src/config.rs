@@ -61,6 +61,11 @@ pub struct Agent {
     /// directory). If absent, giga generates a minimal one.
     #[serde(default)]
     pub claudemd_template: Option<PathBuf>,
+    /// Override the shell command spawned in this agent's terminal.
+    /// If absent, giga picks a platform-appropriate default that
+    /// drops into the Claude Code CLI when available.
+    #[serde(default)]
+    pub launch_cmd: Option<String>,
 }
 
 fn default_platform() -> String {
