@@ -74,14 +74,23 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
 /// with the concrete actions to take (arm watchers, post intro,
 /// etc.). Project configs can override via
 /// `[project].launch_intro_prompt`.
+///
+/// We always launch with `claude -c`, which resumes the most-recent
+/// session for the agent's cwd if one exists and starts fresh if
+/// not. The prompt has to work in both cases — so it tells the
+/// agent: if you were mid-task, finish it; otherwise do the
+/// Session Start protocol.
 const DEFAULT_INTRO_PROMPT: &str =
-    "Begin your session. Follow the Session Start protocol in CLAUDE.md \
-     — arm your inbox watchers, post a one-line introduction on each \
-     of your channels announcing you're online, then standby for messages.";
+    "Session start. If you were in the middle of a task in the previous \
+     session (check your most recent assistant message), continue from \
+     where you left off. Otherwise, follow the Session Start protocol in \
+     CLAUDE.md — arm your inbox watchers, post a one-line introduction \
+     on each of your channels announcing you're online, then standby \
+     for messages.";
 
 /// Platform-appropriate default shell command. Drops the agent into
-/// `claude` with an opening prompt so the session kicks off
-/// immediately rather than waiting for human input.
+/// `claude -c` so a prior session in that cwd gets resumed if one
+/// exists (and falls back to a fresh session otherwise).
 fn default_cmd(platform: &str, intro: &str) -> String {
     match platform {
         "windows" => {
@@ -89,13 +98,13 @@ fn default_cmd(platform: &str, intro: &str) -> String {
             // single quotes (PS's `''` escape).
             let ps_intro = intro.replace('\'', "''");
             format!(
-                "if (Get-Command claude -ErrorAction SilentlyContinue) {{ claude '{ps_intro}' }}",
+                "if (Get-Command claude -ErrorAction SilentlyContinue) {{ claude -c '{ps_intro}' }}",
             )
         }
         _ => {
             // POSIX bash. shell_escape gives us a safely-quoted form.
             let sh_intro = shell_escape::unix::escape(intro.into());
-            format!("command -v claude >/dev/null && claude {sh_intro} || true")
+            format!("command -v claude >/dev/null && claude -c {sh_intro} || true")
         }
     }
 }
