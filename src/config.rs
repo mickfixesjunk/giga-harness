@@ -213,4 +213,268 @@ impl Config {
     pub fn agent_by_name(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|a| a.name == name)
     }
+
+    /// Parse a config from a string (no file I/O). Used by tests so
+    /// fixtures can be inline rather than requiring tempfiles for
+    /// every scenario. Pure validation only — no path resolution
+    /// beyond what's in the string.
+    #[cfg(test)]
+    pub fn load_str_for_test(text: &str) -> Result<Self> {
+        let cfg: Config = toml::from_str(text)
+            .with_context(|| "parsing inline test TOML")?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal() -> &'static str {
+        r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "a-b.md"
+side = "wsl"
+participants = ["a", "b"]
+"#
+    }
+
+    #[test]
+    fn parses_minimal_config() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert_eq!(cfg.project.name, "t");
+        assert_eq!(cfg.agents.len(), 2);
+        assert_eq!(cfg.channels.len(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_participant() {
+        let body = minimal().replace(
+            r#"participants = ["a", "b"]"#,
+            r#"participants = ["a", "ghost"]"#,
+        );
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("ghost"));
+        assert!(err.to_string().contains("isn't in [[agents]]"));
+    }
+
+    #[test]
+    fn rejects_unknown_channel_side() {
+        let body = minimal().replace(r#"side = "wsl""#, r#"side = "macos""#);
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("unknown side"));
+    }
+
+    #[test]
+    fn rejects_windows_channel_without_windows_inbox() {
+        let body = minimal().replace(r#"side = "wsl""#, r#"side = "windows""#);
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("windows_inbox"));
+    }
+
+    #[test]
+    fn rejects_wsl_channel_without_wsl_inbox() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+windows_inbox = "/tmp/iw"
+
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "a-b.md"
+side = "wsl"
+participants = ["a", "b"]
+"#;
+        let err = Config::load_str_for_test(body).unwrap_err();
+        assert!(err.to_string().contains("wsl_inbox"));
+    }
+
+    #[test]
+    fn rejects_multiple_bench_schedulers() {
+        let body = minimal()
+            .replace(
+                r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl""#,
+                r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+bench_scheduler = true"#,
+            )
+            .replace(
+                r#"name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl""#,
+                r#"name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl"
+bench_scheduler = true"#,
+            );
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("multiple agents"));
+    }
+
+    #[test]
+    fn accepts_single_bench_scheduler() {
+        let body = minimal().replace(
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl""#,
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+bench_scheduler = true"#,
+        );
+        let cfg = Config::load_str_for_test(&body).unwrap();
+        assert_eq!(cfg.agents.iter().filter(|a| a.bench_scheduler).count(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_platform() {
+        let body = minimal().replace(
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl""#,
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "linux""#,
+        );
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("unknown platform"));
+    }
+
+    #[test]
+    fn channel_path_resolves_wsl_side() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        let ch = &cfg.channels[0];
+        let p = cfg.channel_path(ch).unwrap();
+        assert!(p.ends_with("a-b.md"));
+        assert!(p.starts_with("/tmp/i"));
+    }
+
+    #[test]
+    fn config_with_no_channels_validates() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        assert_eq!(cfg.agents.len(), 1);
+        assert_eq!(cfg.channels.len(), 0);
+    }
+
+    #[test]
+    fn config_with_no_agents_validates() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        assert_eq!(cfg.agents.len(), 0);
+    }
+
+    #[test]
+    fn defaults_platform_to_wsl_when_omitted() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        assert_eq!(cfg.agents[0].platform, "wsl");
+    }
+
+    #[test]
+    fn bench_protocol_defaults_slot_pool_to_this_host() {
+        let body = format!(
+            "{}\n[bench_protocol]\nscheduler = \"a\"\n",
+            minimal(),
+        );
+        let cfg = Config::load_str_for_test(&body).unwrap();
+        let bp = cfg.bench_protocol.as_ref().unwrap();
+        assert_eq!(bp.scheduler, "a");
+        assert_eq!(bp.slot_pool, "this-host");
+    }
+
+    #[test]
+    fn channel_with_three_participants_validates() {
+        let body = minimal()
+            .replace(
+                r#"[[channels]]
+file = "a-b.md"
+side = "wsl"
+participants = ["a", "b"]"#,
+                r#"[[agents]]
+name = "c"
+workdir = "/h/c"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "_all.md"
+side = "wsl"
+participants = ["a", "b", "c"]"#,
+            );
+        let cfg = Config::load_str_for_test(&body).unwrap();
+        assert_eq!(cfg.channels[0].participants.len(), 3);
+    }
 }

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod add_agent;
 mod config;
 mod fs_paths;
 mod init;
@@ -110,6 +111,57 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Scaffold a new agent into the canonical config + write the
+    /// template. Appends [[agents]] + per-peer [[channels]] blocks,
+    /// adds the slug to any broadcast channel (`_*.md`), and writes
+    /// `agents/<slug>.md`. Re-validates after.
+    ///
+    /// Designed to be runnable from any swarm agent's session — they
+    /// can add new agents on the user's behalf without hand-editing
+    /// TOML. Launch is a separate step the user owns.
+    AddAgent {
+        /// Agent slug (kebab-case). Becomes part of channel filenames
+        /// and is what `--as <slug>` expects.
+        #[arg(long, value_name = "SLUG")]
+        name: String,
+        /// Absolute workdir on the agent's target OS. Use the canonical
+        /// author's path form (e.g. `/home/neo/...` or
+        /// `C:\Users\Audio\...`); per-host localizers substitute.
+        #[arg(long)]
+        workdir: String,
+        /// One-line role description; goes in `[[agents]] role = "..."`
+        /// and into the generated template's header.
+        #[arg(long)]
+        role: String,
+        /// `wsl` (default) or `windows`.
+        #[arg(long, default_value = "wsl")]
+        platform: String,
+        /// Peer agent (repeatable). One bilateral [[channels]] block
+        /// is appended per peer; alphabetical filename convention
+        /// (e.g. `alice-charlie.md`). Side is auto-derived from peer
+        /// platforms — windows if either side is windows-platform.
+        #[arg(long, value_name = "AGENT")]
+        peer: Vec<String>,
+        /// Set this agent as the bench scheduler. Fails if another
+        /// agent already holds the role.
+        #[arg(long)]
+        bench_scheduler: bool,
+        /// Skip auto-appending the new slug to broadcast-channel
+        /// participants (channels whose `file` starts with `_`).
+        #[arg(long)]
+        no_broadcast: bool,
+        /// Use a custom CLAUDE.md template file instead of the
+        /// generated minimal stub. The contents are written verbatim
+        /// to `agents/<slug>.md`.
+        #[arg(long, value_name = "PATH")]
+        template: Option<PathBuf>,
+        /// Don't write anything; print the planned changes and exit.
+        #[arg(long)]
+        dry_run: bool,
+        /// Config file to edit.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
     /// Long-running watcher — emits one stdout line per new message.
     ///
     /// Two modes:
@@ -157,6 +209,21 @@ fn main() -> Result<()> {
             waiting_on,
             needs,
             config,
+        }),
+        Command::AddAgent {
+            name, workdir, role, platform, peer, bench_scheduler,
+            no_broadcast, template, dry_run, config,
+        } => add_agent::run(add_agent::Args {
+            config,
+            name,
+            workdir,
+            role,
+            platform,
+            peers: peer,
+            bench_scheduler,
+            no_broadcast,
+            template,
+            dry_run,
         }),
         Command::Watch { channel, r#as, config } => match channel {
             Some(c) => {

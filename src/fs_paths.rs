@@ -131,4 +131,71 @@ mod tests {
         assert!(wsl_to_windows("/mnt/").is_none());
         assert!(wsl_to_windows("/mnt").is_none());
     }
+
+    #[test]
+    fn windows_to_wsl_lowercases_drive() {
+        assert_eq!(
+            windows_to_wsl("E:\\foo").as_deref(),
+            Some("/mnt/e/foo"),
+        );
+    }
+
+    #[test]
+    fn wsl_to_windows_uppercases_drive() {
+        assert_eq!(
+            wsl_to_windows("/mnt/z/foo").as_deref(),
+            Some("Z:\\foo"),
+        );
+    }
+
+    #[test]
+    fn windows_to_wsl_rejects_too_short() {
+        assert!(windows_to_wsl("C").is_none());
+        assert!(windows_to_wsl("C:").is_none());
+        assert!(windows_to_wsl("").is_none());
+    }
+
+    #[test]
+    fn windows_to_wsl_rejects_missing_separator() {
+        // "C:foo" — no separator between colon and rest.
+        assert!(windows_to_wsl("C:foo").is_none());
+    }
+
+    #[test]
+    fn windows_to_wsl_rejects_non_letter_drive() {
+        assert!(windows_to_wsl("1:\\foo").is_none());
+        assert!(windows_to_wsl(":\\foo").is_none());
+    }
+
+    #[test]
+    fn wsl_to_windows_rejects_non_letter_drive() {
+        assert!(wsl_to_windows("/mnt/1/foo").is_none());
+    }
+
+    #[test]
+    fn round_trip_windows_to_wsl_to_windows() {
+        let orig = "C:\\Users\\NeoMatrix\\project";
+        let wsl_form = windows_to_wsl(orig).unwrap();
+        let back = wsl_to_windows(&wsl_form).unwrap();
+        assert_eq!(back, orig);
+    }
+
+    #[test]
+    fn windows_to_wsl_preserves_deep_path() {
+        assert_eq!(
+            windows_to_wsl("C:\\a\\b\\c\\d\\e\\f\\g.txt").as_deref(),
+            Some("/mnt/c/a/b/c/d/e/f/g.txt"),
+        );
+    }
+
+    #[test]
+    fn to_host_fs_passes_through_on_unrecognized() {
+        use std::path::Path;
+        let p = Path::new("/home/neo/something");
+        // On Unix this returns the same; on Windows it would translate.
+        // Either way we don't crash and don't mangle non-matching paths.
+        let out = to_host_fs(p);
+        // No mnt-prefix garbage was inserted:
+        assert!(out.to_string_lossy().starts_with("/home/neo/") || out.to_string_lossy().starts_with("\\\\"));
+    }
 }

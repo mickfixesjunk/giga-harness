@@ -87,20 +87,33 @@ That's it. Each tab opens in the agent's workdir with `claude` already running. 
 
 ## 2. Add an agent to a running ecosystem
 
-Driven by the skill in Claude Code:
+Three ways, in increasing autonomy:
+
+**a. Single command (fastest, runnable from anywhere — including from inside a swarm agent's session):**
+
+```sh
+giga add-agent \
+  --name <slug> \
+  --workdir <abs-path> \
+  --role "<one-liner>" \
+  --platform wsl \
+  --peer <existing-agent> [--peer <another>] \
+  --config <path-to-giga-harness.toml>
+```
+
+This appends `[[agents]]` + per-peer `[[channels]]` blocks to the canonical TOML (`toml_edit` preserves comments + formatting), adds the slug to any `_broadcast.md` channel's participants, and scaffolds `agents/<slug>.md` with a minimal stub. Re-validates after writing. Use `--dry-run` to preview. Use `--template <path>` to supply a custom CLAUDE.md instead of the auto-generated stub.
+
+**b. Via the Claude Code skill (interactive, walks you through choices):**
 
 ```
 /giga-add-agent
 ```
 
-It asks for slug, workdir, peers, etc., then scaffolds:
+Asks slug / workdir / peers / etc., then does the same edits.
 
-- `[[agents]]` entry in `giga-harness.toml`
-- `agents/<slug>.md` template
-- one bilateral `[[channels]]` block per peer
-- appends `<slug>` to `_broadcast.md` participants if a broadcast channel exists
+**c. Manual TOML editing** if you prefer to write each block by hand.
 
-Manual equivalent — edit `giga-harness.toml` to add the agent + bilateral channels + broadcast participation, write `agents/<slug>.md`, then:
+Once scaffolded:
 
 ```sh
 ./setup-<host>.sh    # if your project has a per-host localizer
@@ -218,7 +231,8 @@ The inbox files for the deleted channels stay on disk as historical records. `gi
 | Cold start a fresh project | `giga validate && giga init && giga launch` |
 | Validate a config edit | `giga validate <config>` |
 | See open WAITING ON tags | `giga sweep <config>` |
-| Add an agent without disrupting running tabs | `giga launch --only <slug> --new-window <config>` |
+| Scaffold a new agent | `giga add-agent --name <slug> --workdir <path> --role "..." --peer <existing>` |
+| Add an agent's tab to the live ecosystem | `giga launch --only <slug> --new-window <config>` |
 | Post a properly-formatted message | `giga post <channel> --as <agent> --subject ... --body ...` |
 | Long-running watcher | `giga watch --as <agent>` (config-aware) |
 | Legacy single-channel watcher | `giga watch <channel> --as <agent>` |

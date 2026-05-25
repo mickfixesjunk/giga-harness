@@ -95,3 +95,82 @@ fn looks_like_channel(path: &Path) -> bool {
     let first = buf.trim_end();
     first.starts_with("# ") && first.contains("shared inbox")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn write_file(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let p = dir.join(name);
+        let mut f = fs::File::create(&p).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        p
+    }
+
+    #[test]
+    fn looks_like_channel_accepts_bilateral_header() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "ch.md", "# alice ↔ bob shared inbox\n\nbody\n");
+        assert!(looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_accepts_single_party_header() {
+        let tmp = TempDir::new().unwrap();
+        // Some channels (e.g. broadcasts) have one-party-style headers.
+        let p = write_file(tmp.path(), "ch.md", "# everyone shared inbox\n");
+        assert!(looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_claude_md() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "CLAUDE.md", "# alice agent\n\nYou are...\n");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_handover() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "HANDOVER.md", "# Handover notes\n\n...\n");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_random_md() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "scratch.md", "random notes\nno header\n");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("does-not-exist.md");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_empty_file() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "empty.md", "");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_rejects_header_without_shared_inbox() {
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "x.md", "# Some Document Title\n");
+        assert!(!looks_like_channel(&p));
+    }
+
+    #[test]
+    fn looks_like_channel_accepts_handoff_txt_style() {
+        // handoff.txt (legacy benchmarker channel) uses the same header.
+        let tmp = TempDir::new().unwrap();
+        let p = write_file(tmp.path(), "handoff.txt", "# benchmarker ↔ superdeduper shared inbox\n");
+        assert!(looks_like_channel(&p));
+    }
+}

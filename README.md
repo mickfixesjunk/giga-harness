@@ -104,6 +104,7 @@ adding an agent to a running ecosystem, standing one down — see
 |---------|--------------|
 | `giga validate <config>` | TOML schema check + cross-reference. No side effects. |
 | `giga init <config>` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). |
+| `giga add-agent --name X --workdir Y --role "..." --peer A [--peer B]` | Scaffold a new agent into the config (appends `[[agents]]` + per-peer `[[channels]]`, adds to any `_broadcast.md` channel, writes `agents/<slug>.md`). Re-validates after. `--dry-run` previews. Safe to run from within a swarm agent's session — launch is a separate step. |
 | `giga launch <config>` | One terminal per agent. Windows Terminal preferred, tmux fallback. `--only <a,b>` spawns just the named agents into the existing window/session — handy after `giga-add-agent` adds a peer to a running ecosystem. Add `--new-window` (wt only) to drop each new tab into its own fresh window — useful if you've torn the original launch window's tabs out into separate windows arranged on screen. |
 | `giga sweep <config>` | Tabulate every channel's last message + open WAITING ON tags. |
 | `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. |
