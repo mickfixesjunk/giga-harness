@@ -150,12 +150,11 @@ fn render_channel_header(cfg: &Config, ch: &crate::config::Channel) -> String {
          messages — post corrections as new messages.\n\n",
     );
     s.push_str("## Self-arm your watcher (do this once per session)\n\n");
-    s.push_str(&format!(
-        "    Monitor(\n      description: \"{} watcher\",\n      persistent: true,\n      command: \"giga watch {} --as <your-name>\"\n    )\n\n",
-        ch.participants.join(" ↔ "),
-        ch.file,
-    ));
+    s.push_str(
+        "    Monitor(\n      description: \"giga inbox watcher\",\n      persistent: true,\n      command: \"giga watch --as <your-name>\"\n    )\n\n",
+    );
     s.push_str("Replace `<your-name>` with whichever participant you are.\n");
+    s.push_str("This single watcher tracks every channel you participate in via giga-harness.toml — not just this one. New channels added later are picked up automatically (~15s).\n");
     s.push_str("Stop with TaskStop when you no longer want events.\n");
     s
 }
@@ -185,7 +184,8 @@ fn render_agent_claudemd(
     s.push_str(&format!("**Working directory:** `{}`\n\n", agent.workdir.display()));
     s.push_str(&format!("## Project pipeline\n\n_(from {} config)_\n\n", cfg.project.name));
 
-    // Channels this agent watches.
+    // Channels this agent watches — auto-discovered at runtime by a
+    // single config-aware watcher.
     let mine: Vec<&crate::config::Channel> = cfg
         .channels
         .iter()
@@ -194,15 +194,15 @@ fn render_agent_claudemd(
     if !mine.is_empty() {
         s.push_str("## Channels you watch\n\n");
         s.push_str("Arm at session start:\n\n```\n");
-        for ch in &mine {
-            let p = cfg.channel_path(ch).unwrap_or_else(|_| ch.file.clone().into());
-            s.push_str(&format!(
-                "Monitor(persistent: true, command: \"giga watch {} --as {}\")\n",
-                p.display(),
-                agent.name,
-            ));
-        }
+        s.push_str(&format!(
+            "Monitor(persistent: true, command: \"giga watch --as {}\")\n",
+            agent.name,
+        ));
         s.push_str("```\n\n");
+        s.push_str(&format!(
+            "One watcher auto-discovers every channel where you participate (currently {}). New channels added later are picked up automatically (~15s). Notifications are formatted `inbox <channel>: [sender] ...`.\n\n",
+            mine.iter().map(|c| format!("`{}`", c.file)).collect::<Vec<_>>().join(", "),
+        ));
     }
 
     // Bench-coord pointer.

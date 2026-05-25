@@ -9,7 +9,13 @@ use crate::config::Config;
 use crate::init;
 use crate::terminal::{self, Multiplexer, Pane};
 
-pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
+pub fn run(
+    config_path: &Path,
+    skip_init: bool,
+    dry_run: bool,
+    only: &[String],
+    new_window: bool,
+) -> Result<()> {
     if !skip_init {
         init::run(config_path)?;
         println!();
@@ -27,9 +33,33 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
         .as_deref()
         .unwrap_or(DEFAULT_INTRO_PROMPT);
 
-    let panes: Vec<Pane> = cfg
-        .agents
-        .iter()
+    // If --only was passed, narrow the agent list to that set and
+    // error on any name the config doesn't know — typos here are
+    // common and silent skips would be worse than a hard failure.
+    let agents_iter: Box<dyn Iterator<Item = &_>> = if only.is_empty() {
+        Box::new(cfg.agents.iter())
+    } else {
+        let known: Vec<&str> = cfg.agents.iter().map(|a| a.name.as_str()).collect();
+        let unknown: Vec<&str> = only
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !known.contains(n))
+            .collect();
+        if !unknown.is_empty() {
+            anyhow::bail!(
+                "--only names unknown agent(s): {} — known agents: {}",
+                unknown.join(", "),
+                known.join(", "),
+            );
+        }
+        Box::new(
+            cfg.agents
+                .iter()
+                .filter(|a| only.iter().any(|n| n == &a.name)),
+        )
+    };
+
+    let panes: Vec<Pane> = agents_iter
         .map(|a| {
             let cwd = a.workdir.to_string_lossy().to_string();
             // Per-agent launch_cmd override wins; otherwise pick a
@@ -48,9 +78,22 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
         })
         .collect();
 
+    let incremental = !only.is_empty();
     let mux = terminal::detect();
+    let mut tags = Vec::new();
+    if incremental {
+        tags.push("incremental");
+    }
+    if new_window {
+        tags.push("new-window");
+    }
+    let tag_str = if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", tags.join(", "))
+    };
     println!("multiplexer: {mux:?}");
-    println!("session:     {session}");
+    println!("session:     {session}{tag_str}");
     println!("panes:       {}", panes.len());
     for p in &panes {
         println!("  - {} ({}) — cwd={}", p.title, p.platform, p.cwd);
@@ -65,7 +108,7 @@ pub fn run(config_path: &Path, skip_init: bool, dry_run: bool) -> Result<()> {
         eprintln!("\nwarning: no multiplexer available — printing commands instead");
     }
 
-    terminal::launch(mux, &panes, &session)?;
+    terminal::launch(mux, &panes, &session, incremental, new_window)?;
     Ok(())
 }
 
@@ -91,23 +134,37 @@ const DEFAULT_INTRO_PROMPT: &str =
      one-line introduction on each of your channels announcing you're \
      online, then standby for messages.";
 
-/// Platform-appropriate default shell command. Drops the agent into
-/// `claude -c` so a prior session in that cwd gets resumed if one
-/// exists (and falls back to a fresh session otherwise).
+/// Platform-appropriate default shell command. Tries `claude -c`
+/// first to resume the most-recent session in this cwd; falls back
+/// to `claude` (fresh session) if `-c` fails — which it does on the
+/// first launch of a brand-new agent, where no prior session exists.
+/// (Claude Code's `-c` errors with "No conversation found to
+/// continue" rather than starting fresh, so we have to handle that
+/// here.)
 fn default_cmd(platform: &str, intro: &str) -> String {
     match platform {
         "windows" => {
             // PowerShell. Single-quote the intro and double any inner
-            // single quotes (PS's `''` escape).
+            // single quotes (PS's `''` escape). Wrap the resume + new
+            // attempts so a `-c` failure falls through to a fresh
+            // session with the same intro.
             let ps_intro = intro.replace('\'', "''");
             format!(
-                "if (Get-Command claude -ErrorAction SilentlyContinue) {{ claude -c '{ps_intro}' }}",
+                "if (Get-Command claude -ErrorAction SilentlyContinue) {{ \
+                   claude -c '{ps_intro}'; \
+                   if ($LASTEXITCODE -ne 0) {{ claude '{ps_intro}' }} \
+                 }}",
             )
         }
         _ => {
             // POSIX bash. shell_escape gives us a safely-quoted form.
+            // Group the resume + new attempts with `{ ... ; }` so the
+            // outer `|| true` only fires if claude is missing entirely.
             let sh_intro = shell_escape::unix::escape(intro.into());
-            format!("command -v claude >/dev/null && claude -c {sh_intro} || true")
+            format!(
+                "command -v claude >/dev/null && \
+                 {{ claude -c {sh_intro} || claude {sh_intro} ; }} || true",
+            )
         }
     }
 }

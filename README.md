@@ -100,10 +100,10 @@ inbox watchers armed.
 |---------|--------------|
 | `giga validate <config>` | TOML schema check + cross-reference. No side effects. |
 | `giga init <config>` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). |
-| `giga launch <config>` | One terminal per agent. Windows Terminal preferred, tmux fallback. |
+| `giga launch <config>` | One terminal per agent. Windows Terminal preferred, tmux fallback. `--only <a,b>` spawns just the named agents into the existing window/session — handy after `giga-add-agent` adds a peer to a running ecosystem. Add `--new-window` (wt only) to drop each new tab into its own fresh window — useful if you've torn the original launch window's tabs out into separate windows arranged on screen. |
 | `giga sweep <config>` | Tabulate every channel's last message + open WAITING ON tags. |
 | `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. |
-| `giga watch <channel> --as <agent>` | Long-running watcher (use under Claude Code's `Monitor` tool). |
+| `giga watch --as <agent> [<channel>]` | Long-running watcher (use under Claude Code's `Monitor` tool). Without `<channel>`: config-aware multi-channel mode — auto-tracks every channel where `<agent>` is a participant and picks up new channels added later (~15s reread). With `<channel>`: legacy single-file mode. |
 
 ## Config format
 
@@ -162,7 +162,7 @@ of failure.
 
 * **Agents** run wherever you want — WSL, Windows-native, remote SSH, doesn't matter. Each one is just a Claude Code (or other agent runtime) session in a terminal.
 * **Channels** are plain text files in shared inbox directories. Both `side = "wsl"` and `side = "windows"` are supported on the same machine via the WSL/Windows interop boundary.
-* **Watchers** are `giga watch <channel> --as <agent>` processes, run under Claude Code's `Monitor` tool with `persistent: true`. They emit one stdout line per new message; Claude Code treats each line as a notification.
+* **Watchers** are `giga watch --as <agent>` processes (one per agent), run under Claude Code's `Monitor` tool with `persistent: true`. One watcher per agent — it reads the config, tracks every channel that agent participates in, and rereads the config every ~15s so newly-added channels appear without restarting. Each new message becomes one stdout line (`inbox <channel>: ...`), which Claude Code treats as a notification.
 * **Bench coordination** is just a convention layered on top — agents post `bench-request <slot>` and wait for `bench-clear <slot>` from the configured scheduler before doing heavy work.
 
 There is deliberately no central service. If giga itself crashes, the agents keep talking.

@@ -72,7 +72,7 @@ You are the **<short role description>** for the <project-name> project.
 In order:
 
 1. **Post intro** on each of your channels via `giga post <channel> --as <slug> --subject "online" --body "<slug> session resumed — <one-line status>"`. Informational.
-2. **Arm every Monitor below.** Use the exact `Monitor(persistent: true, command: ...)` invocations — don't paraphrase.
+2. **Arm the Monitor below.** Use the exact `Monitor(persistent: true, command: ...)` invocation — don't paraphrase. One watcher; auto-discovery handles the channel list.
 3. **Standby for messages.** Don't initiate new work without being asked. If you were mid-task per HANDOVER.md or your prior session, finish that first.
 
 ## Your responsibilities
@@ -84,8 +84,10 @@ In order:
 ## Channels you watch
 
 ```
-{for each peer: Monitor(persistent: true, command: "giga watch <slug>-<peer>.md --as <slug>")}
+Monitor(persistent: true, command: "giga watch --as <slug>")
 ```
+
+One watcher auto-discovers every channel where you're a participant (per `giga-harness.toml`). New channels added later — e.g. when a new peer agent comes online — get picked up automatically on the next config reread (~15s). Notifications are formatted `inbox <channel>: [sender] ...`.
 
 ## Convention
 
@@ -115,7 +117,21 @@ Choose `side` based on where the channel file should live:
 - `wsl` for WSL ↔ WSL bilateral or anything that primarily flows through the WSL side
 - `windows` only if BOTH participants are Windows-platform agents (rare)
 
-### 4. Update README (if one exists)
+### 4. Add to the broadcast channel (if one exists)
+
+Some projects have a broadcast/announcement channel (typically `_broadcast.md` — the underscore prefix is the convention) where all agents are listed as participants. Check the existing config for any channel whose filename starts with `_` or whose `participants` list includes most/all agents. If found, append `<slug>` to that channel's `participants` array.
+
+```toml
+# before
+participants = ["superdeduper", "design", "testdesign", "testrunner", "sdd-testwin", "river5", "benchmarker", "czkawka"]
+
+# after
+participants = ["superdeduper", "design", "testdesign", "testrunner", "sdd-testwin", "river5", "benchmarker", "czkawka", "<slug>"]
+```
+
+This way the new agent's auto-discovery watcher picks up broadcast announcements the first time it starts, with no extra wiring. Skip this step if the project has no broadcast channel.
+
+### 5. Update README (if one exists)
 
 If the project has a README.md mentioning the agent count or listing agents, update both. Examples:
 - "8-agent ecosystem" → "9-agent ecosystem"
@@ -129,16 +145,20 @@ Tell the user:
 Done. To apply on this host:
 
   <project-dir>/setup-neo.sh          # or your project's setup script — re-localizes config + templates
-  ~/.local/bin/giga launch <project-dir>/giga-harness.<host>.toml
+  ~/.local/bin/giga launch --only <slug> <project-dir>/giga-harness.<host>.toml
 
-New tab opens for <slug>; existing tabs keep running with no disruption.
+New tab joins the existing wt window / tmux session for <slug>; the other agents keep running undisturbed.
 ```
+
+`--only` (added in 0.1.9) is what makes this non-disruptive. A bare `giga launch` re-spawns every tab (and nukes the prior tmux session); use it only on a cold start.
+
+If the user has torn the original launch window apart (one window per agent, arranged on screen) ask whether to add `--new-window` so the new agent gets its own standalone wt window instead of docking into a residual `giga-<project>` window.
 
 If the project has no `setup-*.sh` (i.e. simpler single-host setup):
 
 ```
   giga init <project-dir>/giga-harness.toml
-  giga launch <project-dir>/giga-harness.toml
+  giga launch --only <slug> <project-dir>/giga-harness.toml
 ```
 
 ## Verify before reporting done

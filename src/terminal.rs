@@ -40,10 +40,24 @@ pub struct Pane {
     pub platform: String,
 }
 
-pub fn launch(mux: Multiplexer, panes: &[Pane], session_name: &str) -> Result<()> {
+pub fn launch(
+    mux: Multiplexer,
+    panes: &[Pane],
+    session_name: &str,
+    incremental: bool,
+    new_window: bool,
+) -> Result<()> {
     match mux {
-        Multiplexer::WindowsTerminal => launch_wt(panes, session_name),
-        Multiplexer::Tmux => launch_tmux(panes, session_name),
+        // wt.exe's `--window <name>` flag already does the right thing
+        // for the default case: reuse the existing window with that
+        // name (adds tabs) or create one if absent. `new_window`
+        // overrides that with `-w new` to force a fresh wt window —
+        // matters when the original launch window has been torn up
+        // (tabs dragged into separate windows) and the name no longer
+        // points anywhere useful. The incremental distinction only
+        // matters for tmux.
+        Multiplexer::WindowsTerminal => launch_wt(panes, session_name, new_window),
+        Multiplexer::Tmux => launch_tmux(panes, session_name, incremental),
         Multiplexer::None => launch_print(panes),
     }
 }
@@ -64,7 +78,7 @@ fn escape_wt_semicolons(s: &str) -> String {
     out
 }
 
-fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
+fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()> {
     // Compose a single `wt.exe` invocation that opens one window
     // with one tab per agent.
     //
@@ -75,7 +89,13 @@ fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
     // For windows-side agents we use the default PowerShell profile.
     let exe = if which("wt.exe").is_ok() { "wt.exe" } else { "wt" };
     let mut cmd = Command::new(exe);
-    cmd.arg("--window").arg(session_name);
+    // `-w new` forces a fresh wt window every time; `--window <name>`
+    // reuses an existing window with that name (or creates one).
+    if new_window {
+        cmd.arg("-w").arg("new");
+    } else {
+        cmd.arg("--window").arg(session_name);
+    }
 
     for (i, pane) in panes.iter().enumerate() {
         if i > 0 {
@@ -138,17 +158,30 @@ fn launch_wt(panes: &[Pane], session_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn launch_tmux(panes: &[Pane], session_name: &str) -> Result<()> {
-    // Kill any prior session with this name (idempotent re-launch).
-    let _ = Command::new("tmux").args(["kill-session", "-t", session_name]).status();
+fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<()> {
+    // When incremental (--only), attach to an existing session if one
+    // is alive and add windows to it; otherwise create a new session.
+    // When not incremental (full launch), preserve the historical
+    // behavior of killing any prior session for a clean rebuild.
+    let session_alive = Command::new("tmux")
+        .args(["has-session", "-t", session_name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
-    for (i, pane) in panes.iter().enumerate() {
+    if !incremental {
+        let _ = Command::new("tmux").args(["kill-session", "-t", session_name]).status();
+    }
+
+    let mut create_session = !incremental || !session_alive;
+
+    for pane in panes.iter() {
         let inner = format!(
             "cd {} && {} ; exec bash",
             shell_escape::unix::escape(pane.cwd.as_str().into()),
             pane.cmd,
         );
-        if i == 0 {
+        if create_session {
             let status = Command::new("tmux")
                 .args(["new-session", "-d", "-s", session_name, "-n", &pane.title, "bash", "-lc", &inner])
                 .status()
@@ -156,6 +189,7 @@ fn launch_tmux(panes: &[Pane], session_name: &str) -> Result<()> {
             if !status.success() {
                 anyhow::bail!("tmux new-session failed");
             }
+            create_session = false;
         } else {
             let status = Command::new("tmux")
                 .args(["new-window", "-t", session_name, "-n", &pane.title, "bash", "-lc", &inner])

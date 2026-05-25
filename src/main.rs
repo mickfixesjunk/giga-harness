@@ -65,6 +65,19 @@ enum Command {
         /// Print the launch plan instead of executing it.
         #[arg(long)]
         dry_run: bool,
+        /// Spawn only the named agents (comma-separated, or repeat the
+        /// flag). New tabs join the existing wt window / tmux session
+        /// instead of replacing it — use this to add a freshly-defined
+        /// agent without disturbing tabs that are already running.
+        #[arg(long, value_delimiter = ',', value_name = "AGENT")]
+        only: Vec<String>,
+        /// Force each new tab into its own fresh wt window (uses
+        /// `wt -w new` instead of targeting the project's named window).
+        /// Use when the original launch window no longer exists in its
+        /// original form — e.g. you've torn agent tabs out into separate
+        /// windows you've arranged on screen. tmux has no equivalent.
+        #[arg(long)]
+        new_window: bool,
     },
     /// Tabulate every channel's last message + WAITING ON tag.
     Sweep {
@@ -98,13 +111,22 @@ enum Command {
         config: PathBuf,
     },
     /// Long-running watcher — emits one stdout line per new message.
+    ///
+    /// Two modes:
+    ///   * With <CHANNEL>: legacy single-file watch.
+    ///   * Without <CHANNEL>: config-aware multi-channel watch — tracks
+    ///     every channel where `--as` is a participant and rereads the
+    ///     config periodically so newly-added channels get picked up
+    ///     without restarting the watcher.
     Watch {
         /// Channel path (absolute) or bare filename to resolve via config.
-        channel: String,
+        /// If omitted, watches every channel where `--as` participates.
+        channel: Option<String>,
         /// Your agent name (own messages are filtered out).
         #[arg(long, value_name = "AGENT")]
         r#as: String,
-        /// Config file used to resolve a bare channel filename.
+        /// Config file used to resolve a bare channel filename, or
+        /// (in multi-channel mode) to enumerate participating channels.
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
@@ -115,8 +137,8 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Validate { config } => validate::run(&config),
         Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
-        Command::Launch { config, skip_init, dry_run } => {
-            launch::run(&config, skip_init, dry_run)
+        Command::Launch { config, skip_init, dry_run, only, new_window } => {
+            launch::run(&config, skip_init, dry_run, &only, new_window)
         }
         Command::Sweep { config, owed_by } => sweep::run(&config, owed_by.as_deref()),
         Command::Post {
@@ -136,10 +158,13 @@ fn main() -> Result<()> {
             needs,
             config,
         }),
-        Command::Watch { channel, r#as, config } => {
-            let path = resolve_channel(&channel, &config)?;
-            watch::run(&path, &r#as)
-        }
+        Command::Watch { channel, r#as, config } => match channel {
+            Some(c) => {
+                let path = resolve_channel(&c, &config)?;
+                watch::run_single(&path, &r#as)
+            }
+            None => watch::run_multi(&config, &r#as),
+        },
     }
 }
 
