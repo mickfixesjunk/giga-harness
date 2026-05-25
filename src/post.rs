@@ -28,18 +28,23 @@ pub fn run(args: Args) -> Result<()> {
 
     // Validate sender is a participant on this channel (when we have a config).
     if let Some(cfg) = &cfg_opt {
-        if let Some(ch) = cfg.channels.iter().find(|c| c.file == args.channel || cfg.channel_path(c).map(|p| p == path).unwrap_or(false)) {
+        if let Some(ch) = cfg.channels.iter().find(|c| {
+            c.file == args.channel || cfg.channel_path(c).map(|p| p == path).unwrap_or(false)
+        }) {
             if !ch.participants.contains(&args.me) {
                 return Err(anyhow!(
                     "`{}` is not a participant of channel `{}` (participants: {:?})",
-                    args.me, ch.file, ch.participants
+                    args.me,
+                    ch.file,
+                    ch.participants
                 ));
             }
             if let Some(target) = &args.waiting_on {
                 if !ch.participants.contains(target) {
                     return Err(anyhow!(
                         "WAITING ON target `{}` is not a participant of channel `{}`",
-                        target, ch.file
+                        target,
+                        ch.file
                     ));
                 }
             }
@@ -50,7 +55,9 @@ pub fn run(args: Args) -> Result<()> {
         Some(b) => b,
         None => {
             let mut s = String::new();
-            std::io::stdin().read_to_string(&mut s).context("reading body from stdin")?;
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("reading body from stdin")?;
             s
         }
     };
@@ -148,7 +155,14 @@ mod tests {
 
     #[test]
     fn waiting_on_with_needs() {
-        let out = format_block("design", "ping", TS, "body", Some("web"), Some("answer to Q1"));
+        let out = format_block(
+            "design",
+            "ping",
+            TS,
+            "body",
+            Some("web"),
+            Some("answer to Q1"),
+        );
         assert!(out.contains("WAITING ON: web (answer to Q1)"));
     }
 

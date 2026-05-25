@@ -84,7 +84,10 @@ pub fn run(args: Args) -> Result<()> {
             );
         }
         for f in &broadcast_targets {
-            println!("  - append `{}` to broadcast participants of {}", args.name, f);
+            println!(
+                "  - append `{}` to broadcast participants of {}",
+                args.name, f
+            );
         }
         println!("  - write template: {}", template_path.display());
         println!("(dry-run — no files modified)");
@@ -95,8 +98,7 @@ pub fn run(args: Args) -> Result<()> {
     fs::write(&args.config, &updated)
         .with_context(|| format!("writing updated {}", args.config.display()))?;
     if let Some(parent) = template_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir -p {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
     }
     if template_path.exists() {
         // Rare but possible: agents/<slug>.md already exists from a
@@ -119,7 +121,10 @@ pub fn run(args: Args) -> Result<()> {
         .context("re-validating after edit failed — config is in an unexpected state")?;
 
     // ---- summary ----------------------------------------------------
-    println!("added agent `{}` ({}, {})", args.name, args.platform, args.workdir);
+    println!(
+        "added agent `{}` ({}, {})",
+        args.name, args.platform, args.workdir
+    );
     for ch in &new_channels {
         println!(
             "  + [[channels]] {} ({}, {} ↔ {})",
@@ -127,14 +132,20 @@ pub fn run(args: Args) -> Result<()> {
         );
     }
     for f in &broadcast_targets {
-        println!("  + appended `{}` to broadcast participants of {}", args.name, f);
+        println!(
+            "  + appended `{}` to broadcast participants of {}",
+            args.name, f
+        );
     }
     println!("  + wrote {}", template_path.display());
     println!();
     println!("next:");
     println!("  giga validate {}", args.config.display());
     println!("  # if multi-host: re-localize first, then launch from your terminal:");
-    println!("  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>", args.name);
+    println!(
+        "  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>",
+        args.name
+    );
     Ok(())
 }
 
@@ -144,7 +155,11 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
     if args.name.is_empty() {
         return Err(anyhow!("--name cannot be empty"));
     }
-    if !args.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+    if !args
+        .name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
         return Err(anyhow!(
             "--name `{}` must be kebab-case: lowercase ASCII letters, digits, hyphens only",
             args.name,
@@ -182,7 +197,11 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
             return Err(anyhow!(
                 "--peer `{}` is not a known agent. Known: {}",
                 peer,
-                cfg.agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                cfg.agents
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ));
         }
     }
@@ -296,10 +315,16 @@ fn append_to_broadcast(doc: &mut DocumentMut, file: &str, slug: &str) -> Result<
         }
         return Ok(());
     }
-    Err(anyhow!("broadcast channel `{}` not found in [[channels]]", file))
+    Err(anyhow!(
+        "broadcast channel `{}` not found in [[channels]]",
+        file
+    ))
 }
 
-fn ensure_array_of_tables<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut ArrayOfTables> {
+fn ensure_array_of_tables<'a>(
+    doc: &'a mut DocumentMut,
+    key: &str,
+) -> Result<&'a mut ArrayOfTables> {
     if !doc.contains_key(key) {
         doc.insert(key, Item::ArrayOfTables(ArrayOfTables::new()));
     }
@@ -546,11 +571,14 @@ purpose = "All-hands."
 
     #[test]
     fn preflight_rejects_second_bench_scheduler() {
-        let body = format!("{}\nbench_scheduler = true\n", minimal_config_text().replace(
-            r#"name = "alice""#,
-            r#"name = "alice"
+        let body = format!(
+            "{}\nbench_scheduler = true\n",
+            minimal_config_text().replace(
+                r#"name = "alice""#,
+                r#"name = "alice"
 bench_scheduler = true"#,
-        ));
+            )
+        );
         let cfg: Config = Config::load_str_for_test(&body).unwrap();
         let mut args = base_args(PathBuf::new());
         args.bench_scheduler = true;
@@ -574,7 +602,10 @@ bench_scheduler = true"#,
         let channels = derive_channels(&cfg, &args);
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].file, "alice-charlie.md");
-        assert_eq!(channels[0].participants, ["alice".to_string(), "charlie".to_string()]);
+        assert_eq!(
+            channels[0].participants,
+            ["alice".to_string(), "charlie".to_string()]
+        );
     }
 
     #[test]
@@ -675,10 +706,7 @@ windows_inbox = "/tmp/inbox_win""#,
         append_agent(&mut doc, &args).unwrap();
         // Find the charlie block and check it doesn't have bench_scheduler.
         let out = doc.to_string();
-        let charlie_section = out
-            .split(r#"name = "charlie""#)
-            .nth(1)
-            .unwrap();
+        let charlie_section = out.split(r#"name = "charlie""#).nth(1).unwrap();
         // Section continues until next [[ or end. bench_scheduler must
         // not appear within this section.
         let cut = charlie_section.find("[[").unwrap_or(charlie_section.len());
@@ -707,10 +735,7 @@ windows_inbox = "/tmp/inbox_win""#,
         append_to_broadcast(&mut doc, "_broadcast.md", "charlie").unwrap();
         let out = doc.to_string();
         // The participants line for _broadcast.md should now include charlie.
-        let broadcast_section = out
-            .split(r#"file = "_broadcast.md""#)
-            .nth(1)
-            .unwrap();
+        let broadcast_section = out.split(r#"file = "_broadcast.md""#).nth(1).unwrap();
         let participants_line = broadcast_section
             .lines()
             .find(|l| l.contains("participants ="))
@@ -732,7 +757,11 @@ windows_inbox = "/tmp/inbox_win""#,
             .next()
             .unwrap();
         let alice_count = broadcast_section.matches(r#""alice""#).count();
-        assert_eq!(alice_count, 1, "alice should appear exactly once, got {}", alice_count);
+        assert_eq!(
+            alice_count, 1,
+            "alice should appear exactly once, got {}",
+            alice_count
+        );
     }
 
     #[test]
@@ -800,7 +829,10 @@ windows_inbox = "/tmp/inbox_win""#,
         run(args).unwrap();
         let after = fs::read_to_string(&cfg_path).unwrap();
         assert_eq!(original, after, "dry-run modified config");
-        assert!(!tmp.path().join("agents").exists(), "dry-run created agents dir");
+        assert!(
+            !tmp.path().join("agents").exists(),
+            "dry-run created agents dir"
+        );
     }
 
     #[test]

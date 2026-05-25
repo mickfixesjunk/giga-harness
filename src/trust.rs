@@ -105,15 +105,13 @@ fn extract_windows_user(workdir: &str) -> Option<String> {
 /// touched.
 fn update_claude_json(path: &Path, keys: &[String]) -> Result<usize> {
     let mut root: serde_json::Value = if path.exists() {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text)
             .with_context(|| format!("parse {} (expected JSON)", path.display()))?
     } else {
         // Create parent dir if needed.
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("mkdir -p {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
         }
         serde_json::json!({})
     };
@@ -154,10 +152,9 @@ fn update_claude_json(path: &Path, keys: &[String]) -> Result<usize> {
         }
     }
 
-    let serialized = serde_json::to_string_pretty(&root)
-        .context("serialize updated claude.json")?;
-    fs::write(path, serialized)
-        .with_context(|| format!("write {}", path.display()))?;
+    let serialized =
+        serde_json::to_string_pretty(&root).context("serialize updated claude.json")?;
+    fs::write(path, serialized).with_context(|| format!("write {}", path.display()))?;
     Ok(touched)
 }
 

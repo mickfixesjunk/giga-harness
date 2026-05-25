@@ -39,5 +39,9 @@ jobs:
         run: cargo test --release
 
       - name: Format check
-        # Soft check — flag but don't fail. Style nits aren't release-blockers.
+        # Soft check — warn-only. Style nits aren't release-blockers.
+        # `shell: bash` is required so `||` short-circuits the same way
+        # on Windows runners (default shell there is pwsh, where `||`
+        # has different semantics in older versions).
+        shell: bash
         run: cargo fmt --check || echo "::warning::rustfmt would reformat — run \`cargo fmt\` to apply"

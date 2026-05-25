@@ -18,11 +18,11 @@ mod add_agent;
 mod config;
 mod fs_paths;
 mod init;
-mod trust;
 mod launch;
 mod post;
 mod sweep;
 mod terminal;
+mod trust;
 mod validate;
 mod watch;
 
@@ -189,9 +189,13 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Validate { config } => validate::run(&config),
         Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
-        Command::Launch { config, skip_init, dry_run, only, new_window } => {
-            launch::run(&config, skip_init, dry_run, &only, new_window)
-        }
+        Command::Launch {
+            config,
+            skip_init,
+            dry_run,
+            only,
+            new_window,
+        } => launch::run(&config, skip_init, dry_run, &only, new_window),
         Command::Sweep { config, owed_by } => sweep::run(&config, owed_by.as_deref()),
         Command::Post {
             channel,
@@ -211,8 +215,16 @@ fn main() -> Result<()> {
             config,
         }),
         Command::AddAgent {
-            name, workdir, role, platform, peer, bench_scheduler,
-            no_broadcast, template, dry_run, config,
+            name,
+            workdir,
+            role,
+            platform,
+            peer,
+            bench_scheduler,
+            no_broadcast,
+            template,
+            dry_run,
+            config,
         } => add_agent::run(add_agent::Args {
             config,
             name,
@@ -225,7 +237,11 @@ fn main() -> Result<()> {
             template,
             dry_run,
         }),
-        Command::Watch { channel, r#as, config } => match channel {
+        Command::Watch {
+            channel,
+            r#as,
+            config,
+        } => match channel {
             Some(c) => {
                 let path = resolve_channel(&c, &config)?;
                 watch::run_single(&path, &r#as)

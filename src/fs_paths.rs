@@ -119,10 +119,7 @@ mod tests {
 
     #[test]
     fn translates_wsl_mount_drive_only() {
-        assert_eq!(
-            wsl_to_windows("/mnt/d").as_deref(),
-            Some("D:\\"),
-        );
+        assert_eq!(wsl_to_windows("/mnt/d").as_deref(), Some("D:\\"),);
     }
 
     #[test]
@@ -134,18 +131,12 @@ mod tests {
 
     #[test]
     fn windows_to_wsl_lowercases_drive() {
-        assert_eq!(
-            windows_to_wsl("E:\\foo").as_deref(),
-            Some("/mnt/e/foo"),
-        );
+        assert_eq!(windows_to_wsl("E:\\foo").as_deref(), Some("/mnt/e/foo"),);
     }
 
     #[test]
     fn wsl_to_windows_uppercases_drive() {
-        assert_eq!(
-            wsl_to_windows("/mnt/z/foo").as_deref(),
-            Some("Z:\\foo"),
-        );
+        assert_eq!(wsl_to_windows("/mnt/z/foo").as_deref(), Some("Z:\\foo"),);
     }
 
     #[test]
@@ -196,6 +187,9 @@ mod tests {
         // Either way we don't crash and don't mangle non-matching paths.
         let out = to_host_fs(p);
         // No mnt-prefix garbage was inserted:
-        assert!(out.to_string_lossy().starts_with("/home/neo/") || out.to_string_lossy().starts_with("\\\\"));
+        assert!(
+            out.to_string_lossy().starts_with("/home/neo/")
+                || out.to_string_lossy().starts_with("\\\\")
+        );
     }
 }

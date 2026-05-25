@@ -220,8 +220,7 @@ impl Config {
     /// beyond what's in the string.
     #[cfg(test)]
     pub fn load_str_for_test(text: &str) -> Result<Self> {
-        let cfg: Config = toml::from_str(text)
-            .with_context(|| "parsing inline test TOML")?;
+        let cfg: Config = toml::from_str(text).with_context(|| "parsing inline test TOML")?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -445,10 +444,7 @@ role = "."
 
     #[test]
     fn bench_protocol_defaults_slot_pool_to_this_host() {
-        let body = format!(
-            "{}\n[bench_protocol]\nscheduler = \"a\"\n",
-            minimal(),
-        );
+        let body = format!("{}\n[bench_protocol]\nscheduler = \"a\"\n", minimal(),);
         let cfg = Config::load_str_for_test(&body).unwrap();
         let bp = cfg.bench_protocol.as_ref().unwrap();
         assert_eq!(bp.scheduler, "a");
@@ -457,13 +453,12 @@ role = "."
 
     #[test]
     fn channel_with_three_participants_validates() {
-        let body = minimal()
-            .replace(
-                r#"[[channels]]
+        let body = minimal().replace(
+            r#"[[channels]]
 file = "a-b.md"
 side = "wsl"
 participants = ["a", "b"]"#,
-                r#"[[agents]]
+            r#"[[agents]]
 name = "c"
 workdir = "/h/c"
 role = "."
@@ -473,7 +468,7 @@ platform = "wsl"
 file = "_all.md"
 side = "wsl"
 participants = ["a", "b", "c"]"#,
-            );
+        );
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.channels[0].participants.len(), 3);
     }

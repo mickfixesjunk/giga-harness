@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::config::{Config, Agent};
+use crate::config::{Agent, Config};
 use crate::fs_paths::to_host_fs;
 use crate::trust;
 
@@ -101,12 +101,19 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 
     if do_trust {
         match trust::pre_trust(&cfg) {
-            Ok(n) => println!("  [trust] marked {} agent workdir(s) as trusted in Claude Code", n),
+            Ok(n) => println!(
+                "  [trust] marked {} agent workdir(s) as trusted in Claude Code",
+                n
+            ),
             Err(e) => eprintln!("  [trust] warning: couldn't pre-populate trust — {}", e),
         }
     }
 
-    println!("\nginit OK — {} channels + {} agent CLAUDE.md files in place", cfg.channels.len(), cfg.agents.len());
+    println!(
+        "\nginit OK — {} channels + {} agent CLAUDE.md files in place",
+        cfg.channels.len(),
+        cfg.agents.len()
+    );
     println!("next: `giga launch <config>` to open the terminals");
     Ok(())
 }
@@ -159,11 +166,7 @@ fn render_channel_header(cfg: &Config, ch: &crate::config::Channel) -> String {
     s
 }
 
-fn render_agent_claudemd(
-    cfg: &Config,
-    agent: &Agent,
-    config_dir: &Path,
-) -> Result<String> {
+fn render_agent_claudemd(cfg: &Config, agent: &Agent, config_dir: &Path) -> Result<String> {
     // If the agent has an explicit template, use it verbatim (the
     // template author owns the content). Otherwise auto-generate.
     if let Some(tpl) = &agent.claudemd_template {
@@ -181,8 +184,14 @@ fn render_agent_claudemd(
     let mut s = String::new();
     s.push_str(&format!("# {} agent\n\n", agent.name));
     s.push_str(&format!("**Role:** {}\n\n", agent.role));
-    s.push_str(&format!("**Working directory:** `{}`\n\n", agent.workdir.display()));
-    s.push_str(&format!("## Project pipeline\n\n_(from {} config)_\n\n", cfg.project.name));
+    s.push_str(&format!(
+        "**Working directory:** `{}`\n\n",
+        agent.workdir.display()
+    ));
+    s.push_str(&format!(
+        "## Project pipeline\n\n_(from {} config)_\n\n",
+        cfg.project.name
+    ));
 
     // Channels this agent watches — auto-discovered at runtime by a
     // single config-aware watcher.

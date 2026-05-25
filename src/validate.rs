@@ -12,18 +12,26 @@ use crate::fs_paths::to_host_fs;
 
 pub fn run(path: &Path) -> Result<()> {
     let cfg = Config::load(path)?;
-    println!("ok: {} ({}) — {} agents, {} channels",
+    println!(
+        "ok: {} ({}) — {} agents, {} channels",
         path.display(),
         cfg.project.name,
         cfg.agents.len(),
         cfg.channels.len(),
     );
     if let Some(bp) = &cfg.bench_protocol {
-        println!("    bench scheduler: {} (slot pool: {})", bp.scheduler, bp.slot_pool);
+        println!(
+            "    bench scheduler: {} (slot pool: {})",
+            bp.scheduler, bp.slot_pool
+        );
     }
     for ch in &cfg.channels {
         let p = cfg.channel_path(ch)?;
-        let status = if p.exists() { "exists" } else { "absent — `giga init` will create it" };
+        let status = if p.exists() {
+            "exists"
+        } else {
+            "absent — `giga init` will create it"
+        };
         println!("    [{}] {} ({})", ch.side, p.display(), status);
     }
 
@@ -44,7 +52,9 @@ pub fn run(path: &Path) -> Result<()> {
     ] {
         let Some(dir) = dir_opt else { continue };
         let host_dir = to_host_fs(dir);
-        let Ok(entries) = fs::read_dir(&host_dir) else { continue };
+        let Ok(entries) = fs::read_dir(&host_dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -87,7 +97,9 @@ pub fn run(path: &Path) -> Result<()> {
 /// channels without false-positiving on agent workdir files
 /// (CLAUDE.md, HANDOVER.md) that happen to share an inbox dir.
 fn looks_like_channel(path: &Path) -> bool {
-    let Ok(f) = fs::File::open(path) else { return false };
+    let Ok(f) = fs::File::open(path) else {
+        return false;
+    };
     let mut buf = String::new();
     if BufReader::new(f).read_line(&mut buf).is_err() {
         return false;
@@ -170,7 +182,11 @@ mod tests {
     fn looks_like_channel_accepts_handoff_txt_style() {
         // handoff.txt (legacy benchmarker channel) uses the same header.
         let tmp = TempDir::new().unwrap();
-        let p = write_file(tmp.path(), "handoff.txt", "# benchmarker ↔ superdeduper shared inbox\n");
+        let p = write_file(
+            tmp.path(),
+            "handoff.txt",
+            "# benchmarker ↔ superdeduper shared inbox\n",
+        );
         assert!(looks_like_channel(&p));
     }
 }

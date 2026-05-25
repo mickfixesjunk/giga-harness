@@ -87,7 +87,11 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
     //       new-tab --title <t2> ...
     //
     // For windows-side agents we use the default PowerShell profile.
-    let exe = if which("wt.exe").is_ok() { "wt.exe" } else { "wt" };
+    let exe = if which("wt.exe").is_ok() {
+        "wt.exe"
+    } else {
+        "wt"
+    };
     let mut cmd = Command::new(exe);
     // `-w new` forces a fresh wt window every time; `--window <name>`
     // reuses an existing window with that name (or creates one).
@@ -170,7 +174,9 @@ fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<
         .unwrap_or(false);
 
     if !incremental {
-        let _ = Command::new("tmux").args(["kill-session", "-t", session_name]).status();
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .status();
     }
 
     let mut create_session = !incremental || !session_alive;
@@ -183,7 +189,17 @@ fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<
         );
         if create_session {
             let status = Command::new("tmux")
-                .args(["new-session", "-d", "-s", session_name, "-n", &pane.title, "bash", "-lc", &inner])
+                .args([
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session_name,
+                    "-n",
+                    &pane.title,
+                    "bash",
+                    "-lc",
+                    &inner,
+                ])
                 .status()
                 .context("starting tmux session")?;
             if !status.success() {
@@ -192,7 +208,16 @@ fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<
             create_session = false;
         } else {
             let status = Command::new("tmux")
-                .args(["new-window", "-t", session_name, "-n", &pane.title, "bash", "-lc", &inner])
+                .args([
+                    "new-window",
+                    "-t",
+                    session_name,
+                    "-n",
+                    &pane.title,
+                    "bash",
+                    "-lc",
+                    &inner,
+                ])
                 .status()
                 .context("opening tmux window")?;
             if !status.success() {

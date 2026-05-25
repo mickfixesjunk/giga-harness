@@ -27,26 +27,40 @@ pub fn run(config_path: &Path, owed_by_filter: Option<&str>) -> Result<()> {
         }
         let body = fs::read_to_string(&path).unwrap_or_default();
         let last = last_header_block(&body);
-        rows.push(last.unwrap_or_else(|| Row {
-            channel: ch.file.clone(),
-            last_from: "(empty)".into(),
-            subject: "—".into(),
-            waiting_on: None,
-        }).with_channel(ch.file.clone()));
+        rows.push(
+            last.unwrap_or_else(|| Row {
+                channel: ch.file.clone(),
+                last_from: "(empty)".into(),
+                subject: "—".into(),
+                waiting_on: None,
+            })
+            .with_channel(ch.file.clone()),
+        );
     }
 
     let filtered: Vec<&Row> = if let Some(who) = owed_by_filter {
-        rows.iter().filter(|r| r.waiting_on.as_deref() == Some(who)).collect()
+        rows.iter()
+            .filter(|r| r.waiting_on.as_deref() == Some(who))
+            .collect()
     } else {
         rows.iter().collect()
     };
 
-    println!("{:<35} {:<15} {:<50} {}", "channel", "last_from", "subject", "waiting_on");
+    println!(
+        "{:<35} {:<15} {:<50} {}",
+        "channel", "last_from", "subject", "waiting_on"
+    );
     println!("{}", "-".repeat(120));
     for r in &filtered {
-        let wait = r.waiting_on.clone().unwrap_or_else(|| "informational".into());
+        let wait = r
+            .waiting_on
+            .clone()
+            .unwrap_or_else(|| "informational".into());
         let subj = trunc(&r.subject, 48);
-        println!("{:<35} {:<15} {:<50} {}", r.channel, r.last_from, subj, wait);
+        println!(
+            "{:<35} {:<15} {:<50} {}",
+            r.channel, r.last_from, subj, wait
+        );
     }
 
     if owed_by_filter.is_none() {
@@ -100,10 +114,17 @@ fn last_header_block(body: &str) -> Option<Row> {
     let mut waiting_on: Option<String> = None;
     for line in lines.iter().skip(idx + 1) {
         if let Some(rest) = line.strip_prefix("WAITING ON: ") {
-            let who = rest.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            let who = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
             // Treat synonyms-for-informational as not-waiting.
             let lower = who.to_ascii_lowercase();
-            let synonymous = matches!(lower.as_str(), "nobody" | "none" | "no-one" | "noone" | "n/a" | "informational");
+            let synonymous = matches!(
+                lower.as_str(),
+                "nobody" | "none" | "no-one" | "noone" | "n/a" | "informational"
+            );
             if !who.is_empty() && !synonymous {
                 waiting_on = Some(who.to_string());
             }
