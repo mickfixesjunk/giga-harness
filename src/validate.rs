@@ -1,10 +1,14 @@
 //! `giga validate` — config sanity check, no side effects.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::config::Config;
+use crate::fs_paths::to_host_fs;
 
 pub fn run(path: &Path) -> Result<()> {
     let cfg = Config::load(path)?;
@@ -22,5 +26,72 @@ pub fn run(path: &Path) -> Result<()> {
         let status = if p.exists() { "exists" } else { "absent — `giga init` will create it" };
         println!("    [{}] {} ({})", ch.side, p.display(), status);
     }
+
+    // Orphan detection: scan each configured inbox dir for files that
+    // look like giga channel files (giga's standard `# X ↔ Y shared
+    // inbox` header in line 1) but aren't enrolled in [[channels]].
+    //
+    // Caught us out at least once: an agent started a bilateral by
+    // creating the inbox file directly, both sides armed per-channel
+    // Monitors against it, and the channel worked invisibly for weeks
+    // until the auto-discovery watcher migration silently stopped
+    // reading it.
+    let enrolled: HashSet<&str> = cfg.channels.iter().map(|c| c.file.as_str()).collect();
+    let mut orphans: Vec<(&str, PathBuf, u64)> = Vec::new();
+    for (side, dir_opt) in [
+        ("wsl", cfg.paths.wsl_inbox.as_ref()),
+        ("windows", cfg.paths.windows_inbox.as_ref()),
+    ] {
+        let Some(dir) = dir_opt else { continue };
+        let host_dir = to_host_fs(dir);
+        let Ok(entries) = fs::read_dir(&host_dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if enrolled.contains(name) {
+                continue;
+            }
+            if !looks_like_channel(&path) {
+                continue;
+            }
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            orphans.push((side, path, size));
+        }
+    }
+    if !orphans.is_empty() {
+        println!();
+        println!(
+            "warning: {} orphan channel file(s) on disk but not enrolled in [[channels]]:",
+            orphans.len(),
+        );
+        for (side, p, size) in &orphans {
+            println!("    [{}] {} ({} bytes)", side, p.display(), size);
+        }
+        println!(
+            "    (orphans work for legacy per-channel watchers but are invisible to the auto-discovery watcher.\n     \
+             Add a [[channels]] entry naming the file, or move/rename to archive.)",
+        );
+    }
+
     Ok(())
+}
+
+/// Cheap heuristic: a giga channel file's first line matches
+/// `# <something> shared inbox`. Lets validate flag genuine orphan
+/// channels without false-positiving on agent workdir files
+/// (CLAUDE.md, HANDOVER.md) that happen to share an inbox dir.
+fn looks_like_channel(path: &Path) -> bool {
+    let Ok(f) = fs::File::open(path) else { return false };
+    let mut buf = String::new();
+    if BufReader::new(f).read_line(&mut buf).is_err() {
+        return false;
+    }
+    let first = buf.trim_end();
+    first.starts_with("# ") && first.contains("shared inbox")
 }

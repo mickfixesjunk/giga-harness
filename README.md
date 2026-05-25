@@ -94,6 +94,10 @@ giga launch
 That's it. Every agent now has its workdir, its CLAUDE.md, and its
 inbox watchers armed.
 
+For the full walkthrough — bootstrapping a new project from zero,
+adding an agent to a running ecosystem, standing one down — see
+[QUICKSTART.md](QUICKSTART.md).
+
 ## Subcommands
 
 | Command | What it does |
