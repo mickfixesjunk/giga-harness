@@ -112,8 +112,8 @@ mod tests {
     #[test]
     fn translates_wsl_mount_path() {
         assert_eq!(
-            wsl_to_windows("/mnt/c/Users/NeoMatrix/projects/mickfixesjunk").as_deref(),
-            Some("C:\\Users\\NeoMatrix\\projects\\mickfixesjunk"),
+            wsl_to_windows("/mnt/c/Users/alice/projects/myproj").as_deref(),
+            Some("C:\\Users\\alice\\projects\\myproj"),
         );
     }
 
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn round_trip_windows_to_wsl_to_windows() {
-        let orig = "C:\\Users\\NeoMatrix\\project";
+        let orig = "C:\\Users\\alice\\project";
         let wsl_form = windows_to_wsl(orig).unwrap();
         let back = wsl_to_windows(&wsl_form).unwrap();
         assert_eq!(back, orig);

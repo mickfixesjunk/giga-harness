@@ -168,13 +168,13 @@ mod tests {
     #[test]
     fn extract_user_from_windows_path() {
         assert_eq!(
-            extract_windows_user("C:\\Users\\NeoMatrix\\projects\\x"),
-            Some("NeoMatrix".to_string()),
+            extract_windows_user("C:\\Users\\alice\\projects\\x"),
+            Some("alice".to_string()),
         );
         assert_eq!(
-            extract_windows_user("c:/users/audio/foo"),
-            Some("audio".to_string()),
+            extract_windows_user("c:/users/bob/foo"),
+            Some("bob".to_string()),
         );
-        assert_eq!(extract_windows_user("/home/neo/x"), None);
+        assert_eq!(extract_windows_user("/home/alice/x"), None);
     }
 }

@@ -8,7 +8,7 @@
 //! the result before returning.
 //!
 //! Intended to be runnable from any swarm agent's session so they
-//! can add new agents on Mick's behalf without hand-editing TOML.
+//! can add new agents on the user's behalf without hand-editing TOML.
 //! Launch is a separate step the user owns (window-layout intent
 //! is theirs).
 

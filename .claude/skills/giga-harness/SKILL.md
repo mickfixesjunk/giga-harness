@@ -33,7 +33,7 @@ All commands default to `--config giga-harness.toml` in the current directory. T
   agents.<host>/             # generated, gitignored — DO NOT edit
 ```
 
-The canonical config and templates use Mick's machine-conventional paths (`/home/neo/...`, `C:\Users\Audio\...`). The per-host `setup-*.sh` substitutes these for the local user (e.g. `/home/neomatrix/`, `C:\Users\NeoMatrix\`) when generating the localized variants.
+The canonical config and templates use the original author's machine-conventional paths (e.g. `/home/neo/...`, `C:\Users\Audio\...`). The per-host `setup-*.sh` substitutes these for the local user when generating the localized variants.
 
 ## Channel-file convention
 
@@ -83,7 +83,7 @@ One agent (set `bench_scheduler = true` on it) is the gatekeeper for CPU/IO-heav
 - **Spawn only newly-added agents without disturbing running tabs** → `giga launch --only <slug>[,<slug>] <config>`. New tabs join the existing wt window (named `giga-<project>`) or tmux session; existing agents keep running. `init` still runs to create any new inbox files; rendered CLAUDE.md files are refreshed but in-flight Claude sessions don't re-read them. **Add `--new-window`** if the user has torn the original launch window apart (e.g. dragged each agent's tab into its own window arranged on screen) — that forces wt to open a fresh window via `-w new` instead of guessing where the project's named window went. With config-aware watchers (the default since 0.1.9), existing agents auto-discover the new agent's bilateral channel — no manual Monitor arming needed.
 - **Migrate an existing agent from N-Monitor to single-Monitor design** → only matters if their CLAUDE.md still has the legacy per-channel block. Have them kill all current channel watchers (drop the persistent Monitors), then arm one new `Monitor(persistent: true, command: "giga watch --as <slug>")`. The new watcher discovers all channels via the config and emits `inbox <channel>: ...` lines so they can still tell which channel fired. Existing in-flight messages aren't replayed — the new watcher starts at EOF.
 - **Diagnose a stuck channel** → `giga sweep <config>`. Surfaces the last message + open WAITING ON tag per channel. If both sides think they're waiting, that's the bug to fix.
-- **Pull an agent's runtime CLAUDE.md edits back to canonical** → diff `<workdir>/CLAUDE.md` against `agents.<host>/<slug>.md`, apply meaningful changes to `agents/<slug>.md`, reverse-substitute machine-specific paths (NeoMatrix → Audio, /home/neomatrix → /home/neo). Verify by re-running the localizer and checking the round-trip diffs to zero.
+- **Pull an agent's runtime CLAUDE.md edits back to canonical** → diff `<workdir>/CLAUDE.md` against `agents.<host>/<slug>.md`, apply meaningful changes to `agents/<slug>.md`, reverse-substitute machine-specific paths back to the canonical author's placeholders. Verify by re-running the localizer and checking the round-trip diffs to zero.
 - **Stand an agent down** → leave the `[[agents]]` entry, update `role` to `"Stood down. Watcher armed but channel inactive — only triggers if reactivated."`, rewrite the template to a minimal "you are stood down, arm watcher, standby" form. (Don't remove — keeping the watcher armed lets the agent be reactivated by a single channel message.)
 
 ## Don't

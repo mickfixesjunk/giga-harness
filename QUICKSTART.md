@@ -145,7 +145,7 @@ giga post _broadcast.md --as <announcer> --subject "stand-down: <slug>" \
   --body "Standing <slug> down as of $(date -u +%Y-%m-%d). <Brief reason.>
 Their watcher will be armed in standby mode — they won't respond on
 their bilaterals. To reactivate later: post on any of their channels and
-ping Mick to restore the full template + role.
+ping the user to restore the full template + role.
 (Informational, no response required.)"
 ```
 
@@ -175,7 +175,7 @@ You are currently **stood down**. You exist to keep the channel structure intact
 
 1. Read `./HANDOVER.md` if it exists.
 2. Arm `Monitor(persistent: true, command: "giga watch --as <slug>")`.
-3. Standby. If a message arrives, read it. If it asks you to do work, reply on the originating channel: "I'm currently stood down. Confirm with Mick before I resume." Don't act without confirmation.
+3. Standby. If a message arrives, read it. If it asks you to do work, reply on the originating channel: "I'm currently stood down. Confirm with the user before I resume." Don't act without confirmation.
 
 ## Convention
 
