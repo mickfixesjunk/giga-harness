@@ -73,6 +73,13 @@ pub struct Agent {
     /// drops into the Claude Code CLI when available.
     #[serde(default)]
     pub launch_cmd: Option<String>,
+    /// The directory where this agent actually edits code. Separate
+    /// from `workdir` (the launch context where CLAUDE.md lives) so
+    /// an agent can have an isolated home while working against a
+    /// shared codebase. When set, giga injects it into the agent's
+    /// CLAUDE.md and the launch intro prompt.
+    #[serde(default)]
+    pub code_root: Option<PathBuf>,
 }
 
 fn default_platform() -> String {
@@ -471,5 +478,76 @@ participants = ["a", "b", "c"]"#,
         );
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.channels[0].participants.len(), 3);
+    }
+
+    #[test]
+    fn code_root_field_is_optional_and_absent_by_default() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert!(
+            cfg.agents.iter().all(|a| a.code_root.is_none()),
+            "minimal config has no code_root → all agents should deserialize with None",
+        );
+    }
+
+    #[test]
+    fn code_root_field_round_trips() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "a"
+workdir = "/h/a"
+code_root = "/code/shared"
+role = "."
+platform = "wsl"
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        assert_eq!(
+            cfg.agents[0]
+                .code_root
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            Some("/code/shared".to_string()),
+        );
+    }
+
+    #[test]
+    fn multiple_agents_can_share_one_code_root() {
+        // Common pattern: each agent has its own isolated workdir but
+        // they all edit the same codebase. The schema must allow this.
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+code_root = "/code/proj"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "code"
+workdir = "/h/code"
+code_root = "/code/proj"
+role = "."
+platform = "wsl"
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        assert_eq!(cfg.agents.len(), 2);
+        let roots: Vec<_> = cfg
+            .agents
+            .iter()
+            .filter_map(|a| a.code_root.as_ref())
+            .collect();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0], roots[1]);
     }
 }

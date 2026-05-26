@@ -39,50 +39,42 @@ Confirm:
 giga --version    # should be 0.1.11 or newer
 ```
 
-### Step 2 — Paste this prompt into Claude Code (or Codex, or whatever you use)
+### Step 2 — Run `giga setup` from your project directory
 
-Open your AI coding agent in a fresh terminal session and paste:
-
-```
-I want to use giga-harness to coordinate a small team of AI agents on a project.
-
-Please bootstrap it:
-
-1. Confirm giga is installed and ≥ 0.1.11: `giga --version`.
-2. Ask me 4 questions (one at a time, or all at once — your call):
-   - Project name (kebab-case, e.g. "my-saas-side-project").
-   - What 2-4 agents I want — typically a mix like: design (scopes
-     features), code (implements), test (verifies), review (audits).
-     I'll give you a slug + one-line role for each.
-   - Where my project code lives (absolute path). Agent workdirs default
-     to subdirectories of this unless I say otherwise.
-   - Whether I want any of them to peer with each other directly, or
-     route everything through a single coordinator (design is typical).
-3. Create a project config directory at ~/giga-configs/<project-name>/.
-4. Write giga-harness.toml: one `[[agents]]` block per agent + one
-   bilateral `[[channels]]` block per peering + a `_broadcast.md`
-   channel with all agents as participants.
-5. Use `giga add-agent --help` and `giga validate --help` to see the
-   command surface. Run `giga init` (creates the inbox files + each
-   agent's CLAUDE.md) and then `giga launch` (opens one terminal tab
-   per agent, drops each into `claude` with their CLAUDE.md loaded).
-6. Tell me what just happened and what the agents are doing now.
-
-If anything's unclear, read https://github.com/mickfixesjunk/giga-harness/blob/main/MANUAL_SETUP.md
-for the full conventions. If giga is too old, the upgrade is the same
-one-line install command from the README.
+```sh
+cd ~/code/my-project   # wherever your codebase lives
+giga setup
 ```
 
-That's it. The agent walks you through the bootstrap, scaffolds the config, and launches your swarm. After this you can ask the same agent — or any of the spawned ones — to add more agents, tweak roles, or stand one down ("can you add a `docs` agent that owns README + API docs and routes through design?"). They'll know how because they read the same protocol.
+That's it. `giga setup` launches Claude Code with a baked-in bootstrap prompt — no README copy/paste, no external docs to keep in sync. Claude asks you five questions:
+
+1. **Project name** (kebab-case slug — becomes the config dir name)
+2. **Which 2–4 agents** to spawn (typical: design + code + test, or with a review agent too)
+3. **Where your code lives** (defaults to cwd)
+4. **Topology** — single coordinator (recommended) vs. fully peer-to-peer
+5. **Launcher** — `mac-terminal` (one Terminal.app window per agent on macOS), `tmux` (one session, N windows — works anywhere), `wt` (Windows Terminal), or `auto`
+
+…then scaffolds the config, writes per-agent CLAUDE.md templates, runs `giga init` and `giga launch` for you. The agents come up, self-arm their inbox watchers, post hellos, and stand by for work.
+
+### Resuming after a reboot
+
+Just `cd` to your codebase and `giga launch`:
+
+```sh
+cd ~/code/my-project
+giga launch
+```
+
+`giga init` registers each swarm in `~/.giga/swarms.toml`, mapping code roots to their config paths. `giga launch` (and `validate`/`sweep`/`watch`/`post`) auto-resolve via the registry — so any command, from anywhere under your code root, finds the right swarm.
 
 ### What just happened
 
-- `giga` is now on your `PATH`.
-- A config repo lives at `~/giga-configs/<your-project>/` with one TOML file describing your agents and their shared inbox channels.
-- A terminal multiplexer (Windows Terminal on WSL, tmux on Linux) is running one tab per agent, each tab in the agent's workdir with `claude` listening on its inbox.
-- Agents are coordinating through plain Markdown files in `~/giga-configs/<your-project>/inbox/`.
+- `giga` is on your `PATH`.
+- Your swarm config lives at `~/.giga/configs/<project-name>/` — one TOML file describing your agents and their shared inbox channels, plus a workdir per agent, plus the inbox directory.
+- A registry entry at `~/.giga/swarms.toml` maps your project's code root to this config.
+- One terminal per agent (Terminal.app windows on macOS by default, tmux on Linux, Windows Terminal on WSL/Windows). Each agent's window title is the agent's slug; every reply they make is prefixed `[slug]` so you can always tell who's talking.
 
-When you want to add another agent, ask one of them: "please add a `<role>` agent that does X — peer with `<existing>`. Use `giga add-agent`." They'll scaffold + validate; you run `giga launch --only <new-slug> --new-window` to bring up the tab.
+When you want to add another agent, ask one of them: "please add a `<role>` agent that does X — peer with `<existing>`. Use `giga add-agent`." They'll scaffold + validate; you run `giga launch --only <new-slug>` to bring up the new terminal.
 
 ## When you want more control
 
@@ -94,13 +86,21 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 
 | Command | What it does |
 |---------|--------------|
+| `giga setup` | One-command bootstrap. Launches Claude Code with a baked-in prompt that walks you through scaffolding a new swarm end-to-end. Run this from any project directory. |
 | `giga validate [config]` | TOML schema + cross-reference check. Flags on-disk inbox files not enrolled in `[[channels]]`. No side effects. |
-| `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). |
-| `giga add-agent --name X --workdir Y --role "..." --peer A [--peer B]` | Scaffold a new agent — `[[agents]]` + `[[channels]]` + broadcast participation + a stub template. `--dry-run` previews. |
-| `giga launch [config]` | One terminal per agent. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` (Windows Terminal only) forces a fresh window. |
+| `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). Registers the swarm in `~/.giga/swarms.toml`. |
+| `giga add-agent --name X --workdir Y --role "..." [--code-root Z] --peer A [--peer B]` | Scaffold a new agent — `[[agents]]` + `[[channels]]` + broadcast participation + a stub template. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--dry-run` previews. |
+| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto`, `mac-terminal` (Terminal.app), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Auto-resolves config via `~/.giga/swarms.toml` registry if not in cwd. |
 | `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
 | `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. |
 | `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. |
+
+## Key concepts
+
+- **`workdir`** — the agent's isolated launch context. Their `CLAUDE.md` lives here; `claude` opens here. Default: `~/.giga/configs/<project>/workdirs/<agent>/`.
+- **`code_root`** — *optional, separate from workdir.* The directory the agent actually edits in. Lets multiple agents share a single codebase while each has their own clean workdir. Set per-agent in TOML or via `giga add-agent --code-root <path>`.
+- **Registry (`~/.giga/swarms.toml`)** — auto-maintained map of `code_root → config_path`. Lets `giga <command>` work from anywhere under your codebase, no `cd` required.
+- **Window titles + reply prefixes** — every agent's terminal window is titled with their slug; every reply they post starts with `[slug]`. Hard to lose track of who's talking.
 
 ## License
 

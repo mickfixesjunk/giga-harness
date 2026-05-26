@@ -5,6 +5,8 @@ description: Set up a new giga-harness project from scratch. Use when the user a
 
 # giga-bootstrap-project
 
+> **For most single-host projects, just run `giga setup` from your project directory.** It launches a Claude Code session with a baked-in bootstrap prompt that asks five questions and scaffolds everything end-to-end (config at `~/.giga/configs/<name>/`, per-agent CLAUDE.md, registry entry in `~/.giga/swarms.toml`). This skill remains the reference for the multi-host / multi-developer layouts described below, which `giga setup` doesn't yet handle.
+
 How to lay out your giga config so it scales from "one box" to "multiple developers, multiple hosts, multiple ecosystems" without painful migrations.
 
 ## Decision: which layout fits?
