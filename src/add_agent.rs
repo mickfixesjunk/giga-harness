@@ -719,6 +719,58 @@ windows_inbox = "/tmp/inbox_win""#,
     }
 
     #[test]
+    fn append_agent_with_code_root_emits_field() {
+        let mut doc: DocumentMut = minimal_config_text().parse().unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.code_root = Some("/code/myproj".to_string());
+        append_agent(&mut doc, &args).unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"code_root = "/code/myproj""#),
+            "TOML output missing code_root field. Full output:\n{}",
+            out,
+        );
+    }
+
+    #[test]
+    fn append_agent_without_code_root_omits_field() {
+        let mut doc: DocumentMut = minimal_config_text().parse().unwrap();
+        let args = base_args(PathBuf::new()); // code_root: None
+        append_agent(&mut doc, &args).unwrap();
+        let out = doc.to_string();
+        let charlie_section = out.split(r#"name = "charlie""#).nth(1).unwrap();
+        let cut = charlie_section.find("[[").unwrap_or(charlie_section.len());
+        assert!(
+            !charlie_section[..cut].contains("code_root"),
+            "code_root should not appear when not set",
+        );
+    }
+
+    #[test]
+    fn end_to_end_code_root_survives_reload() {
+        // After add-agent runs, Config::load on the updated TOML must
+        // see the code_root field on the new agent.
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = write_config(tmp.path(), minimal_config_text());
+        let mut args = base_args(cfg_path.clone());
+        args.code_root = Some("/code/myproj".to_string());
+        run(args).unwrap();
+        let reloaded = Config::load(&cfg_path).unwrap();
+        let charlie = reloaded
+            .agents
+            .iter()
+            .find(|a| a.name == "charlie")
+            .expect("charlie should exist");
+        assert_eq!(
+            charlie
+                .code_root
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            Some("/code/myproj".to_string()),
+        );
+    }
+
+    #[test]
     fn append_channel_writes_complete_block() {
         let mut doc: DocumentMut = minimal_config_text().parse().unwrap();
         let ch = DerivedChannel {

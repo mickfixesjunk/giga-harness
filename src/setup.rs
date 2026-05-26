@@ -5,7 +5,7 @@
 //! the README-paste step: every giga release ships with a prompt that
 //! knows about *that release's* command surface and conventions.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -24,8 +24,22 @@ pub fn run() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("~"));
     let configs_default = home.join(".giga").join("configs");
+    let prompt = build_prompt(&cwd, &configs_default, current_platform_hint());
 
-    let platform_hint = if cfg!(target_os = "macos") {
+    let status = Command::new("claude")
+        .arg(prompt)
+        .status()
+        .context("invoking claude")?;
+    if !status.success() {
+        anyhow::bail!("claude exited with {status}");
+    }
+    Ok(())
+}
+
+/// One-line description of the host OS for the bootstrap prompt.
+/// Tells the bootstrap agent which `--terminal` mode to recommend.
+fn current_platform_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
         "macOS — use `giga launch --terminal mac-terminal` to open one Terminal.app window per agent"
     } else if cfg!(target_os = "linux") {
         "Linux — `giga launch` will use tmux by default (one session, N windows)"
@@ -33,9 +47,15 @@ pub fn run() -> Result<()> {
         "Windows — `giga launch` will use Windows Terminal (wt.exe) by default"
     } else {
         "unknown OS — `giga launch --terminal print` will print commands you can paste manually"
-    };
+    }
+}
 
-    let prompt = format!(
+/// Build the bootstrap prompt baked into `giga setup`. Pulled out of
+/// `run()` so unit tests can verify all the format placeholders were
+/// interpolated (a missing argument produces a literal `{cwd}` in the
+/// output, which would silently break the bootstrap flow).
+fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> String {
+    format!(
         "You are a giga-harness bootstrap agent running in a fresh Claude Code \
          session. The user just typed `giga setup` from `{cwd}`. giga v{ver} is \
          already installed and on PATH. Your job is to walk them through scaffolding \
@@ -177,14 +197,113 @@ pub fn run() -> Result<()> {
         ver = env!("CARGO_PKG_VERSION"),
         platform_hint = platform_hint,
         configs = configs_default.display(),
-    );
+    )
+}
 
-    let status = Command::new("claude")
-        .arg(prompt)
-        .status()
-        .context("invoking claude")?;
-    if !status.success() {
-        anyhow::bail!("claude exited with {status}");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_prompt() -> String {
+        build_prompt(
+            Path::new("/Users/me/code/myproj"),
+            Path::new("/Users/me/.giga/configs"),
+            "macOS — sample hint",
+        )
     }
-    Ok(())
+
+    #[test]
+    fn prompt_contains_no_unresolved_placeholders() {
+        // The format!() call has named args (`cwd`, `ver`, `platform_hint`,
+        // `configs`). If anyone removes one of the bindings or adds a
+        // new `{...}` without binding it, format! errors at compile-time
+        // — but a typo like `{cwd2}` could slip through as a literal.
+        // Guard against that.
+        let out = sample_prompt();
+        assert!(!out.contains("{cwd}"), "unresolved {{cwd}} in prompt");
+        assert!(!out.contains("{ver}"), "unresolved {{ver}} in prompt");
+        assert!(
+            !out.contains("{platform_hint}"),
+            "unresolved {{platform_hint}} in prompt"
+        );
+        assert!(
+            !out.contains("{configs}"),
+            "unresolved {{configs}} in prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_interpolates_cwd() {
+        let out = sample_prompt();
+        assert!(
+            out.contains("/Users/me/code/myproj"),
+            "cwd not in prompt — bootstrap agent won't know where the user is"
+        );
+    }
+
+    #[test]
+    fn prompt_interpolates_configs_default() {
+        let out = sample_prompt();
+        assert!(
+            out.contains("/Users/me/.giga/configs"),
+            "configs default path not in prompt — bootstrap agent might pick the wrong location"
+        );
+    }
+
+    #[test]
+    fn prompt_interpolates_platform_hint() {
+        let out = sample_prompt();
+        assert!(out.contains("macOS — sample hint"));
+    }
+
+    #[test]
+    fn prompt_includes_giga_version() {
+        // Pinning the version into the prompt makes the bootstrap
+        // agent aware of what command surface to expect. If the
+        // env! lookup ever breaks, the prompt would have a literal
+        // empty string here.
+        let out = sample_prompt();
+        assert!(
+            out.contains(env!("CARGO_PKG_VERSION")),
+            "compiled-in giga version is missing from prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_references_all_five_questions() {
+        let out = sample_prompt();
+        // The bootstrap flow hinges on these five questions being
+        // mentioned. If a future edit accidentally drops one, this
+        // test catches it.
+        assert!(out.contains("Project name"));
+        assert!(out.contains("Which 2"));
+        assert!(out.contains("project code lives"));
+        assert!(out.contains("Topology"));
+        assert!(out.contains("launch the agents"));
+    }
+
+    #[test]
+    fn prompt_mentions_code_root_separation() {
+        // Bootstrap must scaffold with code_root (workdir != codebase).
+        // If this guidance gets dropped the agent will fall back to
+        // the old pattern of dumping CLAUDE.md into the codebase.
+        let out = sample_prompt();
+        assert!(out.contains("code_root"));
+        assert!(out.contains("workdir"));
+    }
+
+    #[test]
+    fn platform_hint_picks_correct_string_for_host() {
+        // Compile-time selection — just verify it returns something
+        // sensible for whichever OS the tests are running on.
+        let hint = current_platform_hint();
+        assert!(!hint.is_empty());
+        if cfg!(target_os = "macos") {
+            assert!(hint.contains("mac-terminal"));
+        } else if cfg!(target_os = "linux") {
+            assert!(hint.contains("tmux"));
+        } else if cfg!(target_os = "windows") {
+            assert!(hint.contains("Windows Terminal"));
+        }
+    }
 }

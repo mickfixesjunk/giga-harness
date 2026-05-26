@@ -279,3 +279,140 @@ fn prepend_header(body: &str, agent: &Agent) -> String {
     out.push_str(body);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn config_with_one_agent(code_root: Option<&str>) -> Config {
+        let cr_line = code_root
+            .map(|p| format!("code_root = \"{p}\"\n"))
+            .unwrap_or_default();
+        let body = format!(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+{cr_line}role = "scope owner"
+platform = "wsl"
+"#,
+        );
+        Config::load_str_for_test(&body).unwrap()
+    }
+
+    #[test]
+    fn claudemd_always_contains_identity_callout() {
+        let cfg = config_with_one_agent(None);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path()).unwrap();
+        assert!(
+            body.contains("You are the `design` agent"),
+            "identity callout missing — agent won't self-identify in replies"
+        );
+        assert!(
+            body.contains("[design]"),
+            "reply-prefix instruction missing — agent won't prefix its replies"
+        );
+    }
+
+    #[test]
+    fn claudemd_contains_code_root_callout_when_set() {
+        let cfg = config_with_one_agent(Some("/code/myproj"));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path()).unwrap();
+        assert!(
+            body.contains("Code root:") && body.contains("/code/myproj"),
+            "code_root callout missing or path wrong:\n{}",
+            body,
+        );
+    }
+
+    #[test]
+    fn claudemd_omits_code_root_callout_when_unset() {
+        let cfg = config_with_one_agent(None);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path()).unwrap();
+        assert!(
+            !body.contains("Code root:"),
+            "code_root callout should not appear when field is unset",
+        );
+    }
+
+    #[test]
+    fn claudemd_preserves_template_body_under_callout_header() {
+        // When the agent has a custom template, prepend_header injects
+        // the callouts at the top but must preserve the template body
+        // verbatim below them. (Templates are user-authored and should
+        // never be silently modified.)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        let tpl_path = agents_dir.join("design.md");
+        let tpl_body = "# my custom template\n\nCustom body content the user wrote.\n";
+        fs::write(&tpl_path, tpl_body).unwrap();
+
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+claudemd_template = "agents/design.md"
+"#;
+        let cfg = Config::load_str_for_test(cfg_text).unwrap();
+        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path()).unwrap();
+        assert!(body.contains(tpl_body), "custom template body was modified");
+        assert!(
+            body.contains("You are the `design` agent"),
+            "identity callout still injected for custom templates",
+        );
+    }
+
+    #[test]
+    fn claudemd_lists_channels_the_agent_participates_in() {
+        // Auto-generated CLAUDE.md (no template) lists the agent's
+        // channels so the watcher arming command is self-documenting.
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "code"
+workdir = "/h/code"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "code-design.md"
+side = "wsl"
+participants = ["code", "design"]
+"#;
+        let cfg = Config::load_str_for_test(body).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let claudemd = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path()).unwrap();
+        assert!(claudemd.contains("code-design.md"));
+        assert!(claudemd.contains("giga watch --as design"));
+    }
+}

@@ -378,3 +378,64 @@ fn chmod_executable(path: &Path) -> Result<()> {
 fn chmod_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_override_accepts_canonical_names() {
+        assert_eq!(parse_override("tmux"), Some(Multiplexer::Tmux));
+        assert_eq!(parse_override("wt"), Some(Multiplexer::WindowsTerminal));
+        assert_eq!(
+            parse_override("mac-terminal"),
+            Some(Multiplexer::MacTerminal)
+        );
+        assert_eq!(parse_override("print"), Some(Multiplexer::None));
+    }
+
+    #[test]
+    fn parse_override_accepts_aliases() {
+        // `windows-terminal` is the long-form alias for `wt`.
+        assert_eq!(
+            parse_override("windows-terminal"),
+            Some(Multiplexer::WindowsTerminal)
+        );
+        // `mac` is the short alias for `mac-terminal`.
+        assert_eq!(parse_override("mac"), Some(Multiplexer::MacTerminal));
+        // `none` is the alias for `print`.
+        assert_eq!(parse_override("none"), Some(Multiplexer::None));
+    }
+
+    #[test]
+    fn parse_override_auto_returns_detect_result() {
+        // `auto` defers to `detect()`. We can't assert which variant
+        // comes back (depends on what's installed on the test host),
+        // but it should always return Some.
+        assert!(parse_override("auto").is_some());
+    }
+
+    #[test]
+    fn parse_override_rejects_unknown_value() {
+        assert_eq!(parse_override("kitty"), None);
+        assert_eq!(parse_override(""), None);
+        assert_eq!(parse_override("TMUX"), None, "case-sensitive");
+    }
+
+    #[test]
+    fn sanitize_filename_passes_through_slugs() {
+        assert_eq!(sanitize_for_filename("design"), "design");
+        assert_eq!(sanitize_for_filename("code-review"), "code-review");
+        assert_eq!(sanitize_for_filename("agent_42"), "agent_42");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_unsafe_chars() {
+        // Path separators, spaces, shell metachars — all become `_`.
+        assert_eq!(sanitize_for_filename("a/b"), "a_b");
+        assert_eq!(sanitize_for_filename("a b"), "a_b");
+        assert_eq!(sanitize_for_filename("a;b"), "a_b");
+        assert_eq!(sanitize_for_filename("a$b"), "a_b");
+        assert_eq!(sanitize_for_filename("../etc"), "___etc");
+    }
+}

@@ -66,27 +66,7 @@ pub fn run(
             // Per-agent launch_cmd override wins; otherwise pick a
             // default that matches the platform and includes the
             // intro prompt so the agent starts working immediately.
-            // Self-identification preamble: gives every reply a `[slug]`
-            // prefix so the user can tell at a glance which terminal
-            // window they're reading. Reinforced in the agent's CLAUDE.md
-            // header so the rule survives session restarts.
-            let identity = format!(
-                "You are the `{slug}` agent in this giga-harness swarm. EVERY response \
-                 you make to the user in this terminal MUST start with `[{slug}]` so the \
-                 user knows which agent is talking — this applies to every assistant turn, \
-                 not just channel messages. ",
-                slug = a.name,
-            );
-            let agent_intro = if let Some(cr) = &a.code_root {
-                format!(
-                    "{identity}{intro} Your code root (where all code work happens) is `{cr}` — cd there before editing files.",
-                    identity = identity,
-                    intro = intro,
-                    cr = cr.display(),
-                )
-            } else {
-                format!("{identity}{intro}")
-            };
+            let agent_intro = intro_for_agent(intro, a);
             let cmd = a
                 .launch_cmd
                 .clone()
@@ -193,5 +173,116 @@ fn default_cmd(platform: &str, intro: &str) -> String {
                  {{ claude -c {sh_intro} || claude {sh_intro} ; }} || true",
             )
         }
+    }
+}
+
+/// Build the intro prompt for one agent. Composes:
+///   1. An identity preamble — tells the agent its slug and the
+///      hard rule that every reply must start with `[<slug>]`.
+///   2. The project-level intro (HANDOVER.md handling, session-start
+///      protocol pointer, etc.).
+///   3. A code-root note if the agent has one set.
+///
+/// Extracted from `run()` so the wiring is testable without spawning
+/// terminals. The identity rule is reinforced in CLAUDE.md as well so
+/// it survives session restarts — but this is what the agent sees on
+/// the very first turn, before it's read its CLAUDE.md.
+pub(crate) fn intro_for_agent(intro: &str, agent: &crate::config::Agent) -> String {
+    let identity = format!(
+        "You are the `{slug}` agent in this giga-harness swarm. EVERY response \
+         you make to the user in this terminal MUST start with `[{slug}]` so the \
+         user knows which agent is talking — this applies to every assistant turn, \
+         not just channel messages. ",
+        slug = agent.name,
+    );
+    if let Some(cr) = &agent.code_root {
+        format!(
+            "{identity}{intro} Your code root (where all code work happens) is `{cr}` — cd there before editing files.",
+            identity = identity,
+            intro = intro,
+            cr = cr.display(),
+        )
+    } else {
+        format!("{identity}{intro}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Agent;
+    use std::path::PathBuf;
+
+    fn agent_named(name: &str, code_root: Option<&str>) -> Agent {
+        Agent {
+            name: name.to_string(),
+            workdir: PathBuf::from(format!("/h/{name}")),
+            role: "test".into(),
+            platform: "wsl".into(),
+            bench_scheduler: false,
+            claudemd_template: None,
+            launch_cmd: None,
+            code_root: code_root.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn intro_identifies_the_agent_by_slug() {
+        let a = agent_named("design", None);
+        let out = intro_for_agent("base intro.", &a);
+        assert!(out.contains("`design` agent"), "missing identity:\n{out}");
+    }
+
+    #[test]
+    fn intro_demands_bracketed_reply_prefix() {
+        // The `[slug]` prefix rule is what lets the user tell which
+        // window/agent is responding. Don't let a future refactor
+        // silently drop it.
+        let a = agent_named("code", None);
+        let out = intro_for_agent("base.", &a);
+        assert!(
+            out.contains("`[code]`"),
+            "reply-prefix rule missing:\n{out}"
+        );
+        assert!(out.contains("EVERY response"), "rule wording softened?");
+    }
+
+    #[test]
+    fn intro_preserves_base_intro_verbatim() {
+        let a = agent_named("design", None);
+        let base = "If HANDOVER.md exists, read it. Otherwise follow Session Start.";
+        let out = intro_for_agent(base, &a);
+        assert!(out.contains(base), "base intro got mangled");
+    }
+
+    #[test]
+    fn intro_appends_code_root_clause_when_set() {
+        let a = agent_named("code", Some("/code/myproj"));
+        let out = intro_for_agent("base.", &a);
+        assert!(out.contains("/code/myproj"));
+        assert!(
+            out.contains("cd there"),
+            "code_root clause should tell the agent to cd:\n{out}",
+        );
+    }
+
+    #[test]
+    fn intro_omits_code_root_clause_when_unset() {
+        let a = agent_named("code", None);
+        let out = intro_for_agent("base.", &a);
+        assert!(
+            !out.contains("code root"),
+            "code_root language leaked into intro when field is None:\n{out}",
+        );
+    }
+
+    #[test]
+    fn intro_for_distinct_agents_uses_distinct_slugs() {
+        // Regression guard: if the formatter ever closed over the wrong
+        // variable, both agents could end up with the same slug.
+        let a = intro_for_agent("base.", &agent_named("design", None));
+        let b = intro_for_agent("base.", &agent_named("code", None));
+        assert!(a.contains("`design`") && !a.contains("`code`"));
+        assert!(b.contains("`code`") && !b.contains("`design`"));
     }
 }
