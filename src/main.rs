@@ -20,6 +20,8 @@ mod fs_paths;
 mod init;
 mod launch;
 mod post;
+mod registry;
+mod setup;
 mod sweep;
 mod terminal;
 mod trust;
@@ -40,6 +42,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// One-command bootstrap: launches a Claude Code session that walks
+    /// the user through scaffolding a multi-agent swarm. No external
+    /// docs or paste-prompts required — everything's baked in.
+    Setup,
     /// Validate a config file without touching the filesystem.
     Validate {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
@@ -79,6 +85,12 @@ enum Command {
         /// windows you've arranged on screen. tmux has no equivalent.
         #[arg(long)]
         new_window: bool,
+        /// Which terminal multiplexer / launcher to use. `auto` (default)
+        /// detects: wt.exe > tmux > print. Use `mac-terminal` on macOS to
+        /// open one native Terminal.app window per agent. Other values:
+        /// `tmux`, `wt`, `print`.
+        #[arg(long, value_name = "MODE", default_value = "auto")]
+        terminal: String,
     },
     /// Tabulate every channel's last message + WAITING ON tag.
     Sweep {
@@ -158,6 +170,12 @@ enum Command {
         /// Don't write anything; print the planned changes and exit.
         #[arg(long)]
         dry_run: bool,
+        /// The directory where this agent actually edits code, separate
+        /// from --workdir (the launch context where CLAUDE.md lives).
+        /// When set, giga injects it into the agent's CLAUDE.md and
+        /// the launch intro prompt.
+        #[arg(long, value_name = "PATH")]
+        code_root: Option<String>,
         /// Config file to edit.
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
@@ -187,7 +205,11 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Validate { config } => validate::run(&config),
+        Command::Setup => setup::run(),
+        Command::Validate { config } => {
+            let config = registry::resolve_config(config)?;
+            validate::run(&config)
+        }
         Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
         Command::Launch {
             config,
@@ -195,8 +217,15 @@ fn main() -> Result<()> {
             dry_run,
             only,
             new_window,
-        } => launch::run(&config, skip_init, dry_run, &only, new_window),
-        Command::Sweep { config, owed_by } => sweep::run(&config, owed_by.as_deref()),
+            terminal,
+        } => {
+            let config = registry::resolve_config(config)?;
+            launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
+        }
+        Command::Sweep { config, owed_by } => {
+            let config = registry::resolve_config(config)?;
+            sweep::run(&config, owed_by.as_deref())
+        }
         Command::Post {
             channel,
             r#as,
@@ -205,15 +234,18 @@ fn main() -> Result<()> {
             waiting_on,
             needs,
             config,
-        } => post::run(post::Args {
-            channel,
-            me: r#as,
-            subject,
-            body,
-            waiting_on,
-            needs,
-            config,
-        }),
+        } => {
+            let config = registry::resolve_config(config)?;
+            post::run(post::Args {
+                channel,
+                me: r#as,
+                subject,
+                body,
+                waiting_on,
+                needs,
+                config,
+            })
+        }
         Command::AddAgent {
             name,
             workdir,
@@ -224,6 +256,7 @@ fn main() -> Result<()> {
             no_broadcast,
             template,
             dry_run,
+            code_root,
             config,
         } => add_agent::run(add_agent::Args {
             config,
@@ -236,18 +269,22 @@ fn main() -> Result<()> {
             no_broadcast,
             template,
             dry_run,
+            code_root,
         }),
         Command::Watch {
             channel,
             r#as,
             config,
-        } => match channel {
-            Some(c) => {
-                let path = resolve_channel(&c, &config)?;
-                watch::run_single(&path, &r#as)
+        } => {
+            let config = registry::resolve_config(config)?;
+            match channel {
+                Some(c) => {
+                    let path = resolve_channel(&c, &config)?;
+                    watch::run_single(&path, &r#as)
+                }
+                None => watch::run_multi(&config, &r#as),
             }
-            None => watch::run_multi(&config, &r#as),
-        },
+        }
     }
 }
 

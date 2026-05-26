@@ -2,19 +2,19 @@
 
 Three flows: bootstrap a new project, add an agent to a running one, stand an agent down.
 
-If you drive Claude Code, the `giga-bootstrap-project` and `giga-add-agent` skills walk these flows interactively. The commands below are the manual equivalents — useful for understanding what's going on and for non-Claude users.
+> **Fastest path:** `giga setup` — runs Claude Code with a baked-in bootstrap prompt that does everything below interactively. See [README.md](README.md). The commands here are the manual equivalents — useful for understanding what's going on, scripting, or non-Claude users.
 
 ## 1. Bootstrap a new project
 
-A "project" is one TOML file + a folder of agent templates. From zero to N agents talking:
+A "project" is one TOML file + a folder of agent templates. The canonical location is `~/.giga/configs/<project>/`. From zero to N agents talking:
 
 ```sh
-# Install giga (Linux/WSL):
+# Install giga (Linux/macOS/WSL):
 curl -sSfL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
 
 # Scaffold the project directory:
-mkdir -p ~/giga-configs/myproject/agents
-cd ~/giga-configs/myproject
+mkdir -p ~/.giga/configs/myproject/agents
+cd ~/.giga/configs/myproject
 ```
 
 Write `giga-harness.toml`. Minimal 2-agent example:
@@ -24,18 +24,20 @@ Write `giga-harness.toml`. Minimal 2-agent example:
 name = "myproject"
 
 [paths]
-wsl_inbox = "/home/me/projects/inbox"   # required if any channel side = "wsl"
+wsl_inbox = "/home/me/.giga/configs/myproject/inbox"   # required if any channel side = "wsl"
 
 [[agents]]
 name = "alice"
-workdir = "/home/me/projects/alice-work"
+workdir = "/home/me/.giga/configs/myproject/workdirs/alice"
+code_root = "/home/me/code/myproject"   # optional — where alice edits code
 role = "Implementation."
 platform = "wsl"
 claudemd_template = "agents/alice.md"
 
 [[agents]]
 name = "bob"
-workdir = "/home/me/projects/bob-work"
+workdir = "/home/me/.giga/configs/myproject/workdirs/bob"
+code_root = "/home/me/code/myproject"
 role = "Review."
 platform = "wsl"
 claudemd_template = "agents/bob.md"
@@ -78,10 +80,16 @@ Validate, scaffold inboxes + CLAUDE.md, launch:
 ```sh
 giga validate
 giga init       # creates inbox files + renders each agent's CLAUDE.md in their workdir
-giga launch     # one terminal tab per agent (wt on Windows/WSL, tmux on Linux)
+                # also registers the swarm in ~/.giga/swarms.toml
+giga launch     # one terminal per agent
+                # macOS:   add --terminal mac-terminal for one native window per agent
+                # Linux:   defaults to tmux (one session, N windows)
+                # WSL/Win: defaults to Windows Terminal (one window, N tabs)
 ```
 
-That's it. Each tab opens in the agent's workdir with `claude` already running. Each agent reads its CLAUDE.md, arms its watcher, posts its intro, waits for the other side to talk.
+That's it. Each terminal opens in the agent's workdir with `claude` already running. Each agent reads its CLAUDE.md, arms its watcher, posts its intro, waits for the other side to talk. Each window's title is set to the agent's slug; every reply they make is prefixed `[slug]` so you always know which agent is talking.
+
+**Resuming after a reboot:** `giga init` registered your swarm against its `code_root`. Just `cd ~/code/myproject && giga launch` — the registry resolves to the right config.
 
 **Scaling up.** For more than ~3 agents on more than one host, the `giga-bootstrap-project` skill scaffolds the harder layout — canonical templates in `agents/`, per-host localizer in `setup-<host>.sh`, generated `agents.<host>/` and `giga-harness.<host>.toml` so the same canonical config works for multiple developers/hosts. Loading that skill via Claude Code (`/giga-bootstrap-project`) is faster than recreating the pattern by hand.
 

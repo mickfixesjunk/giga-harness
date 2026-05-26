@@ -27,6 +27,14 @@ pub fn pre_trust(cfg: &Config) -> Result<usize> {
     for agent in &cfg.agents {
         let (config_path, project_key) = trust_target(agent)?;
         buckets.entry(config_path).or_default().push(project_key);
+        // Also trust code_root so the agent doesn't hit a trust prompt
+        // when it cd's there to do actual code work.
+        if let Some(cr) = &agent.code_root {
+            let home = dirs_home()?;
+            let claude_json = home.join(".claude.json");
+            let key = fs_paths::to_host_fs(cr).to_string_lossy().to_string();
+            buckets.entry(claude_json).or_default().push(key);
+        }
     }
 
     let mut total = 0;
@@ -161,6 +169,7 @@ fn update_claude_json(path: &Path, keys: &[String]) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn extract_user_from_windows_path() {
@@ -173,5 +182,98 @@ mod tests {
             Some("bob".to_string()),
         );
         assert_eq!(extract_windows_user("/home/alice/x"), None);
+    }
+
+    #[test]
+    fn update_claude_json_creates_file_when_absent() {
+        // When .claude.json doesn't exist, pre_trust must create it
+        // with the right shape. Without this guarantee, a brand-new
+        // install would error on first init.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nonexistent").join(".claude.json");
+        let touched = update_claude_json(&path, &["/Users/me/workdir".to_string()]).unwrap();
+        assert_eq!(touched, 1);
+        assert!(path.exists());
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["projects"]["/Users/me/workdir"]["hasTrustDialogAccepted"],
+            serde_json::Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn update_claude_json_writes_multiple_keys_in_one_pass() {
+        // The code_root pre-trust I added pushes additional keys into
+        // the same call. This locks in that N keys all land correctly.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let keys = vec![
+            "/Users/me/workdirs/design".to_string(),
+            "/Users/me/code/myproj".to_string(),
+            "/Users/me/workdirs/code".to_string(),
+        ];
+        let touched = update_claude_json(&path, &keys).unwrap();
+        assert_eq!(touched, 3);
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for k in &keys {
+            assert_eq!(
+                written["projects"][k]["hasTrustDialogAccepted"],
+                serde_json::Value::Bool(true),
+                "key `{k}` was not trusted",
+            );
+        }
+    }
+
+    #[test]
+    fn update_claude_json_is_idempotent() {
+        // Running pre_trust twice in a row should not report any
+        // touches the second time — important because `giga init`
+        // (which triggers pre_trust) is idempotent by design.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let key = vec!["/Users/me/workdir".to_string()];
+        let first = update_claude_json(&path, &key).unwrap();
+        let second = update_claude_json(&path, &key).unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(second, 0, "second pass should report 0 touches");
+    }
+
+    #[test]
+    fn update_claude_json_preserves_unrelated_fields() {
+        // ~/.claude.json holds far more than just trust state. The
+        // pre_trust path must touch the projects[key].hasTrustDialogAccepted
+        // and nothing else.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "userId": "abc-123",
+                "projects": {
+                    "/some/other/dir": {
+                        "hasTrustDialogAccepted": true,
+                        "lastSessionAt": "2026-01-01"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        update_claude_json(&path, &["/Users/me/new-workdir".to_string()]).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        // Original fields survive:
+        assert_eq!(written["userId"], "abc-123");
+        assert_eq!(
+            written["projects"]["/some/other/dir"]["lastSessionAt"],
+            "2026-01-01",
+        );
+        // New key was added:
+        assert_eq!(
+            written["projects"]["/Users/me/new-workdir"]["hasTrustDialogAccepted"],
+            serde_json::Value::Bool(true),
+        );
     }
 }
