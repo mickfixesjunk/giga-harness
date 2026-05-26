@@ -32,6 +32,7 @@ pub struct Args {
     pub no_broadcast: bool,
     pub template: Option<PathBuf>,
     pub dry_run: bool,
+    pub code_root: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -273,6 +274,9 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     if args.bench_scheduler {
         block["bench_scheduler"] = value(true);
     }
+    if let Some(cr) = &args.code_root {
+        block["code_root"] = value(cr.as_str());
+    }
     block["claudemd_template"] = value(format!("agents/{}.md", args.name));
     agents.push(block);
     Ok(())
@@ -492,6 +496,7 @@ purpose = "All-hands."
             no_broadcast: false,
             template: None,
             dry_run: false,
+            code_root: None,
         }
     }
 
@@ -788,6 +793,7 @@ windows_inbox = "/tmp/inbox_win""#,
             no_broadcast: false,
             template: None,
             dry_run: false,
+            code_root: None,
         };
         run(args).unwrap();
 
@@ -825,6 +831,7 @@ windows_inbox = "/tmp/inbox_win""#,
             no_broadcast: false,
             template: None,
             dry_run: true,
+            code_root: None,
         };
         run(args).unwrap();
         let after = fs::read_to_string(&cfg_path).unwrap();
@@ -850,6 +857,7 @@ windows_inbox = "/tmp/inbox_win""#,
             no_broadcast: false,
             template: None,
             dry_run: false,
+            code_root: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();
@@ -873,6 +881,7 @@ windows_inbox = "/tmp/inbox_win""#,
             no_broadcast: true,
             template: None,
             dry_run: false,
+            code_root: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();

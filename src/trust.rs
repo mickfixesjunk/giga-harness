@@ -27,6 +27,14 @@ pub fn pre_trust(cfg: &Config) -> Result<usize> {
     for agent in &cfg.agents {
         let (config_path, project_key) = trust_target(agent)?;
         buckets.entry(config_path).or_default().push(project_key);
+        // Also trust code_root so the agent doesn't hit a trust prompt
+        // when it cd's there to do actual code work.
+        if let Some(cr) = &agent.code_root {
+            let home = dirs_home()?;
+            let claude_json = home.join(".claude.json");
+            let key = fs_paths::to_host_fs(cr).to_string_lossy().to_string();
+            buckets.entry(claude_json).or_default().push(key);
+        }
     }
 
     let mut total = 0;

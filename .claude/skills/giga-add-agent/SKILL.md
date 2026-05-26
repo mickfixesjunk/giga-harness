@@ -7,6 +7,8 @@ description: Add a new agent to a giga-harness ecosystem. Use when the user says
 
 Scaffold a new agent into an existing giga-harness ecosystem. This skill encodes the steps to keep `giga-harness.toml`, `agents/<slug>.md`, and `[[channels]]` consistent — getting them out of sync is the most common way to wedge a project.
 
+> When the new agent shares a codebase with existing ones, pass `--code-root <path>` so the agent gets a clean workdir but edits in the shared code location. The bilateral and broadcast channels are still set up the same way.
+
 ## When to use
 
 User wants to add an agent to a giga ecosystem. Phrasings:

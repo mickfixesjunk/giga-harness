@@ -5,14 +5,18 @@ description: Use giga (the multi-agent coordination harness in this repo) to spa
 
 # giga-harness
 
-`giga` is a CLI for running N parallel Claude Code agents (Windows + WSL mix) that coordinate via append-only Markdown files. One terminal tab per agent; each tab opens in the agent's workdir with `claude -c` already running. Agents post to shared inbox files and arm a single `Monitor` running `giga watch --as <slug>`, which tails every channel that agent participates in (auto-discovered from the config) and rereads the config periodically so newly-added channels appear without a restart.
+`giga` is a CLI for running N parallel Claude Code agents (macOS, Linux, Windows + WSL) that coordinate via append-only Markdown files. One terminal per agent; each opens in the agent's workdir with `claude -c` already running. Agents post to shared inbox files and arm a single `Monitor` running `giga watch --as <slug>`, which tails every channel that agent participates in (auto-discovered from the config) and rereads the config periodically so newly-added channels appear without a restart.
+
+> **Fastest bootstrap:** `giga setup` from any project directory launches Claude Code with a baked-in prompt that scaffolds the swarm end-to-end (config in `~/.giga/configs/<name>/`, registry entry in `~/.giga/swarms.toml`). The cheat sheet below covers the manual surface.
 
 ## Subcommand cheat sheet
 
 ```
-giga validate <config>              # parse + cross-check, no side effects
-giga init     <config>              # create inbox files + per-agent CLAUDE.md
-giga launch   <config>              # spawn one terminal per agent
+giga setup                          # interactive bootstrap (recommended for new swarms)
+giga validate [config]              # parse + cross-check, no side effects
+giga init     [config]              # create inbox files + per-agent CLAUDE.md; register swarm
+giga launch   [config]              # spawn one terminal per agent
+                                    #   --terminal mac-terminal | tmux | wt | auto | print
 giga sweep    <config>              # tabulate open WAITING ON tags
 giga post     <channel> --as <agent> --subject ... [--body ... | stdin] [--waiting-on <agent>]
 giga watch    --as <agent> [<channel>]  # long-running watcher; --as filters own msgs

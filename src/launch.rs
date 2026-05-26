@@ -15,6 +15,7 @@ pub fn run(
     dry_run: bool,
     only: &[String],
     new_window: bool,
+    terminal: &str,
 ) -> Result<()> {
     if !skip_init {
         init::run(config_path)?;
@@ -65,10 +66,31 @@ pub fn run(
             // Per-agent launch_cmd override wins; otherwise pick a
             // default that matches the platform and includes the
             // intro prompt so the agent starts working immediately.
+            // Self-identification preamble: gives every reply a `[slug]`
+            // prefix so the user can tell at a glance which terminal
+            // window they're reading. Reinforced in the agent's CLAUDE.md
+            // header so the rule survives session restarts.
+            let identity = format!(
+                "You are the `{slug}` agent in this giga-harness swarm. EVERY response \
+                 you make to the user in this terminal MUST start with `[{slug}]` so the \
+                 user knows which agent is talking — this applies to every assistant turn, \
+                 not just channel messages. ",
+                slug = a.name,
+            );
+            let agent_intro = if let Some(cr) = &a.code_root {
+                format!(
+                    "{identity}{intro} Your code root (where all code work happens) is `{cr}` — cd there before editing files.",
+                    identity = identity,
+                    intro = intro,
+                    cr = cr.display(),
+                )
+            } else {
+                format!("{identity}{intro}")
+            };
             let cmd = a
                 .launch_cmd
                 .clone()
-                .unwrap_or_else(|| default_cmd(&a.platform, intro));
+                .unwrap_or_else(|| default_cmd(&a.platform, &agent_intro));
             Pane {
                 title: a.name.clone(),
                 cwd,
@@ -79,7 +101,12 @@ pub fn run(
         .collect();
 
     let incremental = !only.is_empty();
-    let mux = terminal::detect();
+    let mux = terminal::parse_override(terminal).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown --terminal value `{}` — valid: auto, tmux, mac-terminal, wt, print",
+            terminal
+        )
+    })?;
     let mut tags = Vec::new();
     if incremental {
         tags.push("incremental");

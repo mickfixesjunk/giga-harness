@@ -2,7 +2,7 @@
 
 This is the hand-driven walkthrough — every step you'd type, every file you'd write. It's the right doc to read if you want to understand how the pieces fit, are debugging an unusual setup, or prefer not to delegate the bootstrap to an agent.
 
-For the agent-driven flow (one-line install + paste-this-prompt), see [README.md](README.md). The agent ultimately does everything below for you — this doc is the reference of what they're doing.
+For the agent-driven flow, just run `giga setup` from your project directory — Claude Code opens with a baked-in prompt that does everything below for you. See [README.md](README.md). This doc is the reference of what `giga setup` is doing under the hood.
 
 ## Background
 
@@ -44,10 +44,14 @@ Three bilateral channels + one broadcast for all-hands announcements.
 
 (Install giga first if you haven't — see [README.md § Install](README.md#install).)
 
+The canonical location for swarm configs is `~/.giga/configs/<project>/`:
+
 ```sh
-mkdir -p ~/myproj-giga/agents ~/myproj-giga/inbox
-cd ~/myproj-giga
+mkdir -p ~/.giga/configs/myproj/{agents,inbox,workdirs/design,workdirs/code,workdirs/test}
+cd ~/.giga/configs/myproj
 ```
+
+> Each agent gets its own **workdir** (where `CLAUDE.md` lives and `claude` launches) but they can share a **code_root** — the directory the agent actually edits. This keeps the launch context clean while letting multiple agents collaborate on one codebase.
 
 ### 2. Write `giga-harness.toml`
 
@@ -56,27 +60,31 @@ cd ~/myproj-giga
 name = "myproj"
 
 [paths]
-wsl_inbox = "/home/me/myproj-giga/inbox"
+wsl_inbox = "/home/me/.giga/configs/myproj/inbox"
 
 # ---------- agents ----------
+# Each agent has an isolated workdir but shares one code_root.
 
 [[agents]]
 name = "design"
-workdir = "/home/me/myproj-design"
+workdir = "/home/me/.giga/configs/myproj/workdirs/design"
+code_root = "/home/me/code/myproj"
 role = "Scope features. Decide what gets built and in what order."
 platform = "wsl"
 claudemd_template = "agents/design.md"
 
 [[agents]]
 name = "code"
-workdir = "/home/me/myproj-code"
+workdir = "/home/me/.giga/configs/myproj/workdirs/code"
+code_root = "/home/me/code/myproj"
 role = "Implement the spec. Talk to test for verification."
 platform = "wsl"
 claudemd_template = "agents/code.md"
 
 [[agents]]
 name = "test"
-workdir = "/home/me/myproj-test"
+workdir = "/home/me/.giga/configs/myproj/workdirs/test"
+code_root = "/home/me/code/myproj"
 role = "Write tests against the spec. Verify code's implementation."
 platform = "wsl"
 claudemd_template = "agents/test.md"
@@ -257,13 +265,25 @@ For the broader operational guide (multi-host setups, stand-down → reactivatio
 
 | Command | What it does |
 |---------|--------------|
-| `giga validate <config>` | TOML schema check + cross-reference. Also flags orphan channel files on disk that aren't enrolled in `[[channels]]`. No side effects. |
-| `giga init <config>` | Creates inbox files + per-agent `CLAUDE.md` (idempotent — existing inbox files are kept). |
-| `giga add-agent --name X --workdir Y --role "..." --peer A [--peer B]` | Scaffold a new agent — appends `[[agents]]` + per-peer `[[channels]]`, adds to any `_broadcast.md` channel, writes `agents/<slug>.md`. Re-validates after. `--dry-run` previews. Safe to run from within an agent's session. |
-| `giga launch <config>` | One terminal per agent (Windows Terminal preferred, tmux fallback). `--only <a,b>` spawns just the named agents into the existing window/session — non-disruptive add to a live ecosystem. `--new-window` (wt only) forces each new tab into a fresh window. |
-| `giga sweep <config>` | Tabulate every channel's last message + open `WAITING ON` tags. |
+| `giga setup` | One-command bootstrap. Launches Claude Code with a baked-in prompt that walks you through scaffolding a new swarm end-to-end. Run from your project directory. |
+| `giga validate [config]` | TOML schema check + cross-reference. Also flags orphan channel files on disk that aren't enrolled in `[[channels]]`. No side effects. |
+| `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent — existing inbox files are kept). Registers the swarm in `~/.giga/swarms.toml`. |
+| `giga add-agent --name X --workdir Y --role "..." [--code-root Z] --peer A [--peer B]` | Scaffold a new agent — appends `[[agents]]` + per-peer `[[channels]]`, adds to any `_broadcast.md` channel, writes `agents/<slug>.md`. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--dry-run` previews. Safe to run from within an agent's session. |
+| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto` (default — wt > tmux > print), `mac-terminal` (one Terminal.app window per agent on macOS), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Resolves config via `~/.giga/swarms.toml` registry if not in cwd. |
+| `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
 | `giga post <channel> --as <agent> --subject ... [--body ... \| stdin] [--waiting-on <agent>]` | Append a properly-formatted message. Validates that the sender is a participant. |
 | `giga watch --as <agent> [<channel>]` | Long-running watcher (use under Claude Code's `Monitor` tool). Without `<channel>`: config-aware multi-channel mode — auto-tracks every channel where `<agent>` is a participant and picks up new channels added later (~15s reread). With `<channel>`: legacy single-file mode. |
+
+## Resuming after a reboot
+
+`giga init` registers each swarm in `~/.giga/swarms.toml`, mapping `code_root` → config path. Any subsequent `giga launch` / `validate` / `sweep` / `watch` / `post` resolves the config via that registry — so you can `cd` to any directory under any agent's code root and run the command without `--config`:
+
+```sh
+cd ~/code/myproj
+giga launch     # finds ~/.giga/configs/myproj/giga-harness.toml via the registry
+```
+
+If no swarm is registered for the current directory (or any ancestor), giga prints a clear error pointing you to `giga setup`.
 
 ## The convention
 

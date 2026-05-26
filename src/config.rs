@@ -73,6 +73,13 @@ pub struct Agent {
     /// drops into the Claude Code CLI when available.
     #[serde(default)]
     pub launch_cmd: Option<String>,
+    /// The directory where this agent actually edits code. Separate
+    /// from `workdir` (the launch context where CLAUDE.md lives) so
+    /// an agent can have an isolated home while working against a
+    /// shared codebase. When set, giga injects it into the agent's
+    /// CLAUDE.md and the launch intro prompt.
+    #[serde(default)]
+    pub code_root: Option<PathBuf>,
 }
 
 fn default_platform() -> String {
