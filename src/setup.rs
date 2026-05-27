@@ -85,14 +85,21 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          \n\
          1. **Project name** (kebab-case slug, e.g. `my-saas-side-project`). \
          Becomes the config dir name and the tmux session label.\n\
-         2. **Which 2–4 agents** they want. Typical mixes: design+code+test, \
-         design+code+test+review, code+test+review. Each agent is a slug + a \
-         one-line role description. Suggest the typical mixes as options.\n\
+         2. **Which 2–4 agents** they want. Suggest these standard mixes as options:\n\
+         * `design + code + test` — recommended starting point\n\
+         * `design + code + test + review` — add review when code quality / PR \
+         feedback matters\n\
+         * `code + test` — minimal, no design coordinator\n\
+         Each agent has a fixed role with hard boundaries — see the role definitions \
+         below in Step 3. Don't let the user rename them arbitrarily without \
+         explaining the boundary rules.\n\
          3. **Where their project code lives** (absolute path). Default to `{cwd}` \
          (their cwd). This becomes `code_root` for every agent.\n\
-         4. **Topology**: single coordinator (recommended — typically `design` is \
-         the hub, code and test talk only to design) vs. fully peer-to-peer \
-         (every agent has a bilateral channel with every other agent).\n\
+         4. **Topology**: single coordinator (recommended — `design` is the hub; \
+         `code` and `test` talk only to `design`, never directly to each other) vs. \
+         fully peer-to-peer (every agent has a bilateral channel with every other \
+         agent). Coordinator is the default; use peer-to-peer only if the user \
+         explicitly asks.\n\
          5. **How to launch the agents**: pick the launcher mode for \
          `giga launch --terminal <MODE>`. Options:\n\
          * `mac-terminal` — one native Terminal.app window per agent (macOS only; \
@@ -103,6 +110,46 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          * `auto` — let giga pick (wt → tmux → print).\n\
          Default the recommended option to whichever matches the platform \
          detected above.\n\
+         \n\
+         ## Standard agent role definitions\n\
+         \n\
+         These are the canonical roles for the standard slugs. When writing each \
+         agent's `agents/<slug>.md`, copy the ownership and boundary rules verbatim \
+         into the \"Your responsibilities\" section — this is what prevents overlap \
+         and drift between agents.\n\
+         \n\
+         **`design`** — Scope owner and coordinator.\n\
+         OWNS: requirements, task breakdown, specs, routing decisions. Talks to the \
+         user, translates intent into actionable tasks, and posts them to `code` and \
+         `test`. Arbitrates disagreements between agents.\n\
+         DOES NOT: write production code, write tests, run builds, read stack traces. \
+         If asked to implement something, push back and route to `code` instead.\n\
+         \n\
+         **`code`** — Implementation only.\n\
+         OWNS: production source files. Receives task specs from `design`, edits \
+         source code, runs the build/linter, posts results back.\n\
+         DOES NOT: write test files (files named `*_test.*`, `*.test.*`, `*_spec.*`, \
+         or living under `test/`, `tests/`, `__tests__/`, `spec/`). If a task \
+         requires new tests, post to `design` requesting `test` be assigned the \
+         test-writing work. Does not scope work or make product decisions.\n\
+         \n\
+         **`test`** — Test authorship and execution.\n\
+         OWNS: all test files. Receives a signal from `design` that new code is \
+         ready, reads the implementation, writes or updates tests, runs the test \
+         suite, and reports pass/fail + coverage delta back to `design`.\n\
+         DOES NOT: edit production source files (files outside test directories). \
+         If a test is failing because of a bug in production code, report the \
+         failing assertion and the suspected location to `design` — do not fix the \
+         production code directly.\n\
+         \n\
+         **`review`** (optional) — Code review.\n\
+         OWNS: the diff review pass. Receives a \"ready for review\" message from \
+         `design` with a branch name or file list, reads the diff, posts findings \
+         (bugs, security issues, style violations, missing edge cases) back to \
+         `design`.\n\
+         DOES NOT: write code, write tests, or apply fixes. All findings are \
+         comments routed back through `design`, which decides whether to assign \
+         them to `code` or `test`.\n\
          \n\
          ## Step 3 — scaffold\n\
          \n\
@@ -120,7 +167,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          name = \"design\"\n\
          workdir = \"{configs}/PROJECT_NAME/workdirs/design\"\n\
          code_root = \"USER_CODE_ROOT\"\n\
-         role = \"...\"\n\
+         role = \"Scope owner and coordinator. Routes tasks to code and test.\"\n\
          platform = \"wsl\"   # use \"wsl\" on macOS/Linux too — it just means \"unix paths\"\n\
          claudemd_template = \"agents/design.md\"\n\
          # ...repeat per agent...\n\
@@ -129,7 +176,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          file = \"code-design.md\"\n\
          side = \"wsl\"\n\
          participants = [\"code\", \"design\"]\n\
-         purpose = \"Spec questions, scope refinements, implementation tradeoffs.\"\n\
+         purpose = \"Task specs from design to code; build results back.\"\n\
          # ...one bilateral channel per peering, plus one broadcast...\n\
          \n\
          [[channels]]\n\
@@ -146,14 +193,29 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          * Channel filenames for bilateral channels: alphabetical, e.g. \
          `code-design.md` (not `design-code.md`).\n\
          * Broadcast channels start with `_` and include every agent.\n\
-         * For coordinator topology, only create channels between the coordinator \
-         and each other agent — NOT between peripheral agents.\n\
+         * For coordinator topology (the default), only create channels between \
+         `design` and each other agent — NOT between `code` and `test` directly.\n\
          \n\
          Then write one `agents/<slug>.md` per agent — their CLAUDE.md template. \
-         Include: role, channel table, Session Start instructions (run \
-         `giga watch --as <slug> --config <full-toml-path>` to tail channels), and \
-         the message format convention (every message ends with `WAITING ON: <agent>` \
-         or `(Informational, no response required.)`).\n\
+         For each standard slug, copy the ownership and DOES NOT rules from the \
+         role definitions above into a prominent \"## Your responsibilities\" section. \
+         Also include:\n\
+         \n\
+         **Session Start section** (must appear in this order):\n\
+         1. Arm the Monitor. Use exactly: \
+         `Monitor(persistent: true, command: \"giga watch --as <slug>\")`. \
+         This is a Monitor TOOL call — NOT a Bash command. Running giga watch via \
+         Bash exits immediately. `persistent: true` is REQUIRED to keep it alive. \
+         On the first arm, the watcher auto-replays any unread messages from prior \
+         sessions as the initial batch of notifications (it reads a stored per-agent \
+         cursor at `~/.giga/cursors/<slug>/<channel>.pos` to know where to resume), \
+         then transitions to live tailing. The agent should read those initial \
+         notifications before doing anything else.\n\
+         2. Standby for messages.\n\
+         \n\
+         Also include: channel file list (so agents know what to read in step 1), \
+         and the message format convention (every message ends with \
+         `WAITING ON: <agent>` or `(Informational, no response required.)`).\n\
          \n\
          ## Step 4 — discover the command surface\n\
          \n\
@@ -280,6 +342,27 @@ mod tests {
         assert!(out.contains("project code lives"));
         assert!(out.contains("Topology"));
         assert!(out.contains("launch the agents"));
+    }
+
+    #[test]
+    fn prompt_defines_role_boundaries_for_standard_slugs() {
+        let out = sample_prompt();
+        assert!(
+            out.contains("DOES NOT: write production code"),
+            "design boundary missing"
+        );
+        assert!(
+            out.contains("DOES NOT: write test files"),
+            "code boundary missing"
+        );
+        assert!(
+            out.contains("DOES NOT: edit production source files"),
+            "test boundary missing"
+        );
+        assert!(
+            out.contains("DOES NOT: write code, write tests"),
+            "review boundary missing"
+        );
     }
 
     #[test]

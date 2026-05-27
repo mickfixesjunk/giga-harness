@@ -35,6 +35,18 @@ pub struct Project {
     /// giga uses a generic default.
     #[serde(default)]
     pub launch_intro_prompt: Option<String>,
+    /// Model passed to each spawned claude session via `--model`.
+    /// Default: `claude-opus-4-7`. Agents need to follow nuanced
+    /// instructions (Monitor TOOL vs Bash, role boundaries, etc.)
+    /// and Opus follows those more reliably than Sonnet. Override
+    /// per-swarm if you have a reason — e.g. `"claude-sonnet-4-6"`
+    /// for cheaper agents.
+    #[serde(default = "default_launch_model")]
+    pub launch_model: String,
+}
+
+fn default_launch_model() -> String {
+    "claude-opus-4-7".to_string()
 }
 
 #[derive(Debug, Deserialize)]

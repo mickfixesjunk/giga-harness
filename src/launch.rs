@@ -67,10 +67,9 @@ pub fn run(
             // default that matches the platform and includes the
             // intro prompt so the agent starts working immediately.
             let agent_intro = intro_for_agent(intro, a);
-            let cmd = a
-                .launch_cmd
-                .clone()
-                .unwrap_or_else(|| default_cmd(&a.platform, &agent_intro));
+            let cmd = a.launch_cmd.clone().unwrap_or_else(|| {
+                default_cmd(&a.platform, &agent_intro, &cfg.project.launch_model)
+            });
             Pane {
                 title: a.name.clone(),
                 cwd,
@@ -137,9 +136,15 @@ const DEFAULT_INTRO_PROMPT: &str =
      may not include. Then: if you were in the middle of a task in the \
      previous session (check your most recent assistant message), \
      continue from where you left off. Otherwise, follow the Session \
-     Start protocol in CLAUDE.md — arm your inbox watchers, post a \
-     one-line introduction on each of your channels announcing you're \
-     online, then standby for messages.";
+     Start protocol in CLAUDE.md. CRITICAL: arm the inbox watcher using \
+     the Monitor TOOL with persistent:true — copy the invocation from \
+     CLAUDE.md verbatim. Do NOT run `giga watch` via the Bash tool, even \
+     with run_in_background:true — Bash's stdout never reaches your \
+     conversation, so the watcher will be alive but you'll receive zero \
+     notifications and idle silently. Only Monitor delivers messages into \
+     your context. The watcher auto-replays unread history as the first \
+     batch of notifications — read those, then post a one-line intro on \
+     each channel and standby.";
 
 /// Platform-appropriate default shell command. Tries `claude -c`
 /// first to resume the most-recent session in this cwd; falls back
@@ -148,7 +153,7 @@ const DEFAULT_INTRO_PROMPT: &str =
 /// (Claude Code's `-c` errors with "No conversation found to
 /// continue" rather than starting fresh, so we have to handle that
 /// here.)
-fn default_cmd(platform: &str, intro: &str) -> String {
+fn default_cmd(platform: &str, intro: &str, model: &str) -> String {
     match platform {
         "windows" => {
             // PowerShell. Single-quote the intro and double any inner
@@ -156,10 +161,11 @@ fn default_cmd(platform: &str, intro: &str) -> String {
             // attempts so a `-c` failure falls through to a fresh
             // session with the same intro.
             let ps_intro = intro.replace('\'', "''");
+            let ps_model = model.replace('\'', "''");
             format!(
                 "if (Get-Command claude -ErrorAction SilentlyContinue) {{ \
-                   claude -c '{ps_intro}'; \
-                   if ($LASTEXITCODE -ne 0) {{ claude '{ps_intro}' }} \
+                   claude -c --model '{ps_model}' '{ps_intro}'; \
+                   if ($LASTEXITCODE -ne 0) {{ claude --model '{ps_model}' '{ps_intro}' }} \
                  }}",
             )
         }
@@ -168,9 +174,10 @@ fn default_cmd(platform: &str, intro: &str) -> String {
             // Group the resume + new attempts with `{ ... ; }` so the
             // outer `|| true` only fires if claude is missing entirely.
             let sh_intro = shell_escape::unix::escape(intro.into());
+            let sh_model = shell_escape::unix::escape(model.into());
             format!(
                 "command -v claude >/dev/null && \
-                 {{ claude -c {sh_intro} || claude {sh_intro} ; }} || true",
+                 {{ claude -c --model {sh_model} {sh_intro} || claude --model {sh_model} {sh_intro} ; }} || true",
             )
         }
     }
