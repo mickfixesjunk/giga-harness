@@ -60,6 +60,8 @@ pub struct Pane {
     pub cmd: String,
     /// "wsl" or "windows" — affects which wt profile we pick.
     pub platform: String,
+    /// Request UAC elevation for this tab (Windows Terminal only).
+    pub admin: bool,
 }
 
 pub fn launch(
@@ -102,95 +104,140 @@ fn escape_wt_semicolons(s: &str) -> String {
 }
 
 fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()> {
-    // Compose a single `wt.exe` invocation that opens one window
-    // with one tab per agent.
+    // Compose wt.exe invocations — one tab per agent.
     //
-    // Layout we use:
-    //   wt.exe new-tab --title <t1> -p <profile> --suppressApplicationTitle wsl.exe -d Ubuntu bash -lc "cd <cwd> && <cmd>; bash" ;
-    //       new-tab --title <t2> ...
-    //
-    // For windows-side agents we use the default PowerShell profile.
+    // Admin panes get a SEPARATE wt.exe call with `-w new`. This is
+    // necessary because wt.exe silently drops `--admin` when it
+    // attaches to an existing non-elevated WT window. Forcing `-w new`
+    // makes WT open a fresh window for those tabs, which triggers the
+    // UAC prompt correctly. Non-admin panes go into the named session
+    // window as before.
     let exe = if which("wt.exe").is_ok() {
         "wt.exe"
     } else {
         "wt"
     };
-    let mut cmd = Command::new(exe);
-    // `-w new` forces a fresh wt window every time; `--window <name>`
-    // reuses an existing window with that name (or creates one).
-    if new_window {
-        cmd.arg("-w").arg("new");
-    } else {
-        cmd.arg("--window").arg(session_name);
-    }
 
-    for (i, pane) in panes.iter().enumerate() {
-        if i > 0 {
-            cmd.arg(";");
-        }
-        cmd.arg("new-tab")
-            .arg("--title")
-            .arg(&pane.title)
-            .arg("--suppressApplicationTitle");
+    // Temp dir for WSL launch scripts. The agent identity prompt
+    // contains backtick-wrapped slugs (e.g. `design`) that are safe
+    // inside bash single-quoted strings but get treated as command
+    // substitution if any layer in the wt.exe→wsl.exe chain
+    // re-processes the argument under double-quote semantics — which
+    // it does. The slug command fails silently, the name disappears,
+    // and the agent hears "You are the  agent." Passing a plain
+    // script path instead has no metacharacters; the quoting gauntlet
+    // can't corrupt it. Same rationale as launch_mac_terminal.
+    let tmpdir = std::env::temp_dir().join(format!(
+        "giga-launch-{}-{}",
+        session_name,
+        std::process::id()
+    ));
 
-        // wt.exe parses `;` as its tab separator even inside quoted
-        // args, so any inner `;` (PowerShell statement separator,
-        // bash command separator) gets eaten and severs the
-        // commandline. The documented workaround is `\;` — wt
-        // un-escapes it to a literal `;` and passes the rest through
-        // to the spawned shell as one command. Build the inner
-        // spawn command first, then escape every `;` in one shot so
-        // user-supplied `launch_cmd` strings are covered too.
-        if pane.platform == "windows" {
-            // Rebuild $env:Path from the Machine + User registry
-            // entries. Without this, the spawned PowerShell inherits
-            // the Path that wt.exe got from the WSL giga process —
-            // which doesn't include Windows-side User PATH entries
-            // (e.g. %LOCALAPPDATA%\Programs\giga\). Result: tools
-            // installed via [Environment]::SetEnvironmentVariable
-            // 'User' (giga.exe, plus most user-scoped installers)
-            // wouldn't resolve.
-            //
-            // `$Host.UI.RawUI.WindowTitle` sets the wt window/tab
-            // title to the agent name — visible in the OS chrome,
-            // not just the wt tab strip.
-            let spawn = format!(
-                "$Host.UI.RawUI.WindowTitle = '{title}'; \
-                 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); \
-                 Set-Location -LiteralPath '{cwd}'; {cmd}",
-                title = pane.title.replace('\'', "''"),
-                cwd = pane.cwd.replace('\'', "''"),
-                cmd = pane.cmd,
-            );
-            cmd.arg("powershell.exe")
-                .arg("-NoExit")
-                .arg("-Command")
-                .arg(escape_wt_semicolons(&spawn));
+    let regular: Vec<&Pane> = panes.iter().filter(|p| !p.admin).collect();
+    let admin: Vec<&Pane> = panes.iter().filter(|p| p.admin).collect();
+
+    // Regular (non-admin) panes: attach to or create the named window.
+    if !regular.is_empty() {
+        let mut cmd = Command::new(exe);
+        if new_window {
+            cmd.arg("-w").arg("new");
         } else {
-            // OSC 0 sets the terminal window title to the agent name.
-            let spawn = format!(
-                "printf '\\033]0;{name}\\007' ; cd {cwd} && {cmd} ; exec bash",
-                name = pane.title,
-                cwd = shell_escape::unix::escape(pane.cwd.as_str().into()),
-                cmd = pane.cmd,
-            );
-            // `-lic`: login + interactive + command. The interactive
-            // flag forces ~/.bashrc to fully process (Ubuntu's default
-            // ~/.bashrc returns early when non-interactive, before any
-            // PATH exports). Without -i, claude installs under
-            // ~/.local/bin / ~/.npm-global/bin / etc. won't be found.
-            cmd.arg("wsl.exe")
-                .arg("bash")
-                .arg("-lic")
-                .arg(escape_wt_semicolons(&spawn));
+            cmd.arg("--window").arg(session_name);
+        }
+        for (i, pane) in regular.iter().enumerate() {
+            if i > 0 {
+                cmd.arg(";");
+            }
+            append_tab_args(&mut cmd, pane, &tmpdir)?;
+        }
+        let status = cmd.status().context("spawning Windows Terminal (regular tabs)")?;
+        if !status.success() {
+            anyhow::bail!("wt.exe exited with status {status}");
         }
     }
 
-    let status = cmd.status().context("spawning Windows Terminal")?;
-    if !status.success() {
-        anyhow::bail!("wt.exe exited with status {status}");
+    // Admin panes: force a new window so --admin triggers UAC.
+    if !admin.is_empty() {
+        let mut cmd = Command::new(exe);
+        cmd.arg("-w").arg("new");
+        for (i, pane) in admin.iter().enumerate() {
+            if i > 0 {
+                cmd.arg(";");
+            }
+            cmd.arg("new-tab")
+                .arg("--title")
+                .arg(&pane.title)
+                .arg("--suppressApplicationTitle")
+                .arg("--admin");
+            append_windows_tab_cmd(&mut cmd, pane);
+        }
+        let status = cmd.status().context("spawning Windows Terminal (admin tabs)")?;
+        if !status.success() {
+            anyhow::bail!("wt.exe exited with status {status} (admin tabs)");
+        }
+    }
+
+    Ok(())
+}
+
+// Appends new-tab args for a single non-admin pane to an in-progress
+// wt.exe command. Handles wsl vs windows platform branching.
+fn append_tab_args(cmd: &mut Command, pane: &Pane, tmpdir: &std::path::Path) -> Result<()> {
+    cmd.arg("new-tab")
+        .arg("--title")
+        .arg(&pane.title)
+        .arg("--suppressApplicationTitle");
+    debug_assert!(!pane.admin);
+
+    if pane.platform == "windows" {
+        append_windows_tab_cmd(cmd, pane);
+    } else {
+        // Write the spawn body to a temp script and pass wsl.exe just
+        // the path — no shell metacharacters in the wt.exe command
+        // line, no quoting corruption.
+        //
+        // `-li`: login + interactive so PATH includes ~/.local/bin and
+        // the user's ~/.bashrc additions are applied.
+        fs::create_dir_all(tmpdir)
+            .with_context(|| format!("creating launch script dir {}", tmpdir.display()))?;
+        let script_path = tmpdir.join(format!("{}.sh", sanitize_for_filename(&pane.title)));
+        let body = format!(
+            "#!/bin/bash\nprintf '\\033]0;{name}\\007'\ncd {cwd} && {cmd}\nexec bash\n",
+            name = pane.title,
+            cwd = shell_escape::unix::escape(pane.cwd.as_str().into()),
+            cmd = pane.cmd,
+        );
+        fs::write(&script_path, &body)
+            .with_context(|| format!("writing launch script {}", script_path.display()))?;
+        chmod_executable(&script_path)?;
+        cmd.arg("wsl.exe")
+            .arg("bash")
+            .arg("-li")
+            .arg(script_path.to_string_lossy().as_ref());
     }
     Ok(())
+}
+
+// Appends the powershell.exe invocation for a Windows-platform pane.
+// Shared between the regular and admin wt.exe call paths.
+fn append_windows_tab_cmd(cmd: &mut Command, pane: &Pane) {
+    // Rebuild $env:Path from Machine + User registry so tools installed
+    // via the User scope (giga.exe, most user-scoped installers) resolve.
+    // wt.exe parses `;` as a tab separator even inside quoted args —
+    // escape_wt_semicolons converts inner `;` to `\;` so wt passes them
+    // through to PowerShell intact.
+    let spawn = format!(
+        "$Host.UI.RawUI.WindowTitle = '{title}'; \
+         $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); \
+         Set-Location -LiteralPath '{cwd}'; {cmd}",
+        title = pane.title.replace('\'', "''"),
+        cwd = pane.cwd.replace('\'', "''"),
+        cmd = pane.cmd,
+    );
+    cmd.arg("powershell.exe")
+        .arg("-NoExit")
+        .arg("-Command")
+        .arg(escape_wt_semicolons(&spawn));
 }
 
 fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<()> {

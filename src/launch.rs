@@ -75,6 +75,7 @@ pub fn run(
                 cwd,
                 cmd,
                 platform: a.platform.clone(),
+                admin: a.admin,
             }
         })
         .collect();
@@ -239,6 +240,7 @@ mod tests {
             claudemd_template: None,
             launch_cmd: None,
             code_root: code_root.map(PathBuf::from),
+            admin: false,
         }
     }
 
