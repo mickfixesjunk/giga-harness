@@ -60,6 +60,8 @@ pub struct Pane {
     pub cmd: String,
     /// "wsl" or "windows" — affects which wt profile we pick.
     pub platform: String,
+    /// Request UAC elevation for this tab (Windows Terminal only).
+    pub admin: bool,
 }
 
 pub fn launch(
@@ -106,7 +108,7 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
     // with one tab per agent.
     //
     // Layout we use:
-    //   wt.exe new-tab --title <t1> -p <profile> --suppressApplicationTitle wsl.exe -d Ubuntu bash -lc "cd <cwd> && <cmd>; bash" ;
+    //   wt.exe new-tab --title <t1> --suppressApplicationTitle wsl.exe bash -li /tmp/.../agent.sh ;
     //       new-tab --title <t2> ...
     //
     // For windows-side agents we use the default PowerShell profile.
@@ -115,6 +117,22 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
     } else {
         "wt"
     };
+
+    // Temp dir for WSL launch scripts. The agent identity prompt
+    // contains backtick-wrapped slugs (e.g. `design`) that are safe
+    // inside bash single-quoted strings but get treated as command
+    // substitution if any layer in the wt.exe→wsl.exe chain
+    // re-processes the argument under double-quote semantics — which
+    // it does. The slug command fails silently, the name disappears,
+    // and the agent hears "You are the  agent." Passing a plain
+    // script path instead has no metacharacters; the quoting gauntlet
+    // can't corrupt it. Same rationale as launch_mac_terminal.
+    let tmpdir = std::env::temp_dir().join(format!(
+        "giga-launch-{}-{}",
+        session_name,
+        std::process::id()
+    ));
+
     let mut cmd = Command::new(exe);
     // `-w new` forces a fresh wt window every time; `--window <name>`
     // reuses an existing window with that name (or creates one).
@@ -132,6 +150,9 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
             .arg("--title")
             .arg(&pane.title)
             .arg("--suppressApplicationTitle");
+        if pane.admin {
+            cmd.arg("--admin");
+        }
 
         // wt.exe parses `;` as its tab separator even inside quoted
         // args, so any inner `;` (PowerShell statement separator,
@@ -167,22 +188,32 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
                 .arg("-Command")
                 .arg(escape_wt_semicolons(&spawn));
         } else {
-            // OSC 0 sets the terminal window title to the agent name.
-            let spawn = format!(
-                "printf '\\033]0;{name}\\007' ; cd {cwd} && {cmd} ; exec bash",
+            // Write the spawn body to a temp script and pass wsl.exe
+            // just the path — no shell metacharacters in the wt.exe
+            // command line, no quoting corruption.
+            //
+            // `-li`: login (loads /etc/profile + ~/.bash_profile so
+            // PATH includes ~/.local/bin etc.) + interactive (forces
+            // Ubuntu's ~/.bashrc past its early-return guard so the
+            // user's PATH additions are applied). Same as the former
+            // `-lic` flags but without the inline command string.
+            fs::create_dir_all(&tmpdir)
+                .with_context(|| format!("creating launch script dir {}", tmpdir.display()))?;
+            let script_path =
+                tmpdir.join(format!("{}.sh", sanitize_for_filename(&pane.title)));
+            let body = format!(
+                "#!/bin/bash\nprintf '\\033]0;{name}\\007'\ncd {cwd} && {cmd}\nexec bash\n",
                 name = pane.title,
                 cwd = shell_escape::unix::escape(pane.cwd.as_str().into()),
                 cmd = pane.cmd,
             );
-            // `-lic`: login + interactive + command. The interactive
-            // flag forces ~/.bashrc to fully process (Ubuntu's default
-            // ~/.bashrc returns early when non-interactive, before any
-            // PATH exports). Without -i, claude installs under
-            // ~/.local/bin / ~/.npm-global/bin / etc. won't be found.
+            fs::write(&script_path, &body)
+                .with_context(|| format!("writing launch script {}", script_path.display()))?;
+            chmod_executable(&script_path)?;
             cmd.arg("wsl.exe")
                 .arg("bash")
-                .arg("-lic")
-                .arg(escape_wt_semicolons(&spawn));
+                .arg("-li")
+                .arg(script_path.to_string_lossy().as_ref());
         }
     }
 

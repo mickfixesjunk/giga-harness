@@ -85,6 +85,11 @@ pub struct Agent {
     /// drops into the Claude Code CLI when available.
     #[serde(default)]
     pub launch_cmd: Option<String>,
+    /// If `true`, request administrator elevation for this agent's
+    /// terminal tab. Windows Terminal only (`wt.exe`); triggers a UAC
+    /// prompt at launch time. Ignored on non-Windows platforms.
+    #[serde(default)]
+    pub admin: bool,
     /// The directory where this agent actually edits code. Separate
     /// from `workdir` (the launch context where CLAUDE.md lives) so
     /// an agent can have an isolated home while working against a

@@ -17,8 +17,9 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Context, Result, bail};
 
@@ -310,6 +311,7 @@ fn write_account_placeholder(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
     let mut perm = fs::metadata(path)
         .with_context(|| format!("stat {}", path.display()))?
@@ -317,6 +319,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     perm.set_mode(mode);
     fs::set_permissions(path, perm)
         .with_context(|| format!("chmod {} -> {:o}", path.display(), mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
