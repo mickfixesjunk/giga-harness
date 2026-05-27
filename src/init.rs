@@ -224,16 +224,30 @@ fn render_agent_claudemd(cfg: &Config, agent: &Agent, config_dir: &Path) -> Resu
         .filter(|ch| ch.participants.iter().any(|p| p == &agent.name))
         .collect();
     if !mine.is_empty() {
-        s.push_str("## Channels you watch\n\n");
-        s.push_str("Arm at session start:\n\n```\n");
+        let channel_list = mine
+            .iter()
+            .map(|c| format!("`{}`", c.file))
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push_str("## Session Start (do this first, every session)\n\n");
+        s.push_str("**Arm the inbox watcher using the Monitor TOOL.** Use exactly:\n\n");
+        s.push_str("```\n");
         s.push_str(&format!(
-            "Monitor(persistent: true, command: \"giga watch --as {}\")\n",
+            "Monitor(\n  description: \"giga inbox watcher\",\n  persistent: true,\n  command: \"giga watch --as {}\"\n)\n",
             agent.name,
         ));
         s.push_str("```\n\n");
+        s.push_str("**CRITICAL — read this twice.** The Monitor TOOL is the ONLY correct way. Do NOT do any of these:\n\n");
         s.push_str(&format!(
-            "One watcher auto-discovers every channel where you participate (currently {}). New channels added later are picked up automatically (~15s). Notifications are formatted `inbox <channel>: [sender] ...`.\n\n",
-            mine.iter().map(|c| format!("`{}`", c.file)).collect::<Vec<_>>().join(", "),
+            "* ❌ `Bash(command: \"giga watch --as {}\")` — blocks the conversation, you idle forever.\n\
+             * ❌ `Bash(command: \"giga watch --as {}\", run_in_background: true)` — runs detached but its stdout never reaches your conversation. Watcher is alive, you receive ZERO notifications. Most common silent failure.\n\
+             * ❌ `Bash(command: \"giga watch --as {} &\")` — same problem.\n\
+             * ❌ `Monitor(persistent: false, ...)` — stops after first message, misses everything after.\n\n",
+            agent.name, agent.name, agent.name,
+        ));
+        s.push_str(&format!(
+            "Only the Monitor TOOL with `persistent: true` delivers each new message into your context as a notification. On first arm, the watcher replays unread messages from prior sessions across your channels ({}) as the initial notification batch, then transitions to live tailing. Read those notifications before doing anything else, then standby.\n\n",
+            channel_list,
         ));
     }
 

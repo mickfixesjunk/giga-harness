@@ -28,6 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+use crate::cursor;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// How many poll ticks between config rereads. 5 ticks * 3s = ~15s,
@@ -77,9 +78,10 @@ pub fn run_single(channel: &Path, me: &str) -> Result<()> {
 /// Multi-channel mode — discovers every channel in the config where
 /// `me` participates, tracks all of them, and rereads the config
 /// every RELOAD_EVERY_N_TICKS ticks so new channels are picked up
-/// automatically. Newly-discovered channels start tracking at the
-/// file's current EOF so historic messages don't replay as
-/// notifications.
+/// automatically. Each channel starts from its stored read cursor
+/// (written by `giga catchup` or a previous watch session) so the
+/// agent is not re-notified about messages it has already seen.
+/// Newly-discovered channels with no cursor fall back to current EOF.
 pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
     if !config_path.exists() {
         anyhow::bail!(
@@ -87,12 +89,13 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
             config_path.display(),
         );
     }
+    let giga_home = cursor::giga_home();
     let me_tag = format!("[{me}] ");
     let mut tracked: HashMap<String, ChannelState> = HashMap::new();
     let mut tick: u64 = 0;
     // Seed the file set immediately so we don't sit idle for the
     // first poll interval before discovering anything to watch.
-    refresh_tracked(config_path, me, &mut tracked);
+    refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
     if tracked.is_empty() {
         eprintln!(
             "watch: no channels in {} list `{me}` as a participant — sitting idle, will reload config every ~{}s",
@@ -110,7 +113,7 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
         if tick % RELOAD_EVERY_N_TICKS == 0 {
-            refresh_tracked(config_path, me, &mut tracked);
+            refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
         }
         for state in tracked.values_mut() {
             let cur = match fs::metadata(&state.path) {
@@ -128,6 +131,7 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                 Err(_) => continue,
             };
             state.last_size = cur;
+            let mut notified = false;
             for line in delta.lines() {
                 if !is_header_line(line) {
                     continue;
@@ -136,6 +140,14 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                     continue;
                 }
                 println!("inbox {}: {line}", state.name);
+                notified = true;
+            }
+            // Advance the cursor after each batch of notifications so
+            // the next session doesn't re-deliver messages from this one.
+            if notified {
+                if let Some(home) = &giga_home {
+                    cursor::write(home, me, &state.name, state.last_size);
+                }
             }
         }
     }
@@ -148,13 +160,21 @@ struct ChannelState {
 }
 
 /// Reread the config and adjust the tracked set:
-/// * add channels that now list `me` as a participant (start at EOF
-///   so we don't replay history),
+/// * add channels that now list `me` as a participant, starting from
+///   the stored read cursor when one exists, or from byte 0 when no
+///   cursor exists (first time this agent has watched this channel —
+///   auto-replay history as notifications so the agent catches up on
+///   anything posted while they were offline),
 /// * drop channels that no longer do (or that were removed entirely).
 ///
 /// Errors are logged to stderr but don't kill the watcher — a
 /// transient config-edit race shouldn't take down the watcher.
-fn refresh_tracked(config_path: &Path, me: &str, tracked: &mut HashMap<String, ChannelState>) {
+fn refresh_tracked(
+    config_path: &Path,
+    me: &str,
+    tracked: &mut HashMap<String, ChannelState>,
+    giga_home: Option<&Path>,
+) {
     let cfg = match Config::load(config_path) {
         Ok(c) => c,
         Err(e) => {
@@ -180,18 +200,31 @@ fn refresh_tracked(config_path: &Path, me: &str, tracked: &mut HashMap<String, C
         if tracked.contains_key(name) {
             continue;
         }
-        // New channel — track from EOF (or 0 if the file doesn't
-        // exist yet; `giga init` should create it, but be tolerant).
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let eof = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        // Use the stored cursor if one exists; otherwise start from
+        // byte 0 so the first watch session on a channel replays the
+        // whole history as notifications and the agent gets caught up.
+        // After the first poll tick advances the cursor to EOF, future
+        // sessions only see new messages.
+        let start = giga_home
+            .and_then(|home| cursor::read(home, me, name))
+            .unwrap_or(0);
         tracked.insert(
             name.clone(),
             ChannelState {
                 name: name.clone(),
                 path: path.clone(),
-                last_size: size,
+                last_size: start,
             },
         );
-        eprintln!("watch: now tracking new channel `{name}`");
+        if start < eof {
+            eprintln!(
+                "watch: catching up on `{name}` ({} unread bytes)",
+                eof - start,
+            );
+        } else {
+            eprintln!("watch: tracking `{name}` (at EOF, no backlog)");
+        }
     }
     let to_drop: Vec<String> = tracked
         .keys()
