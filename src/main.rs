@@ -24,6 +24,7 @@ mod post;
 mod registry;
 mod setup;
 mod sweep;
+mod switch;
 mod terminal;
 mod trust;
 mod validate;
@@ -181,6 +182,36 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Manage which runtime account is active. Today only `--runtime claude`
+    /// is supported. Credentials live in `~/.claude-accounts/<name>.json`
+    /// snapshots; switching copies the chosen snapshot into
+    /// `~/.claude/.credentials.json` (saving the previously-active one
+    /// back first so any in-place token refreshes are preserved).
+    ///
+    /// Examples:
+    ///   giga switch --runtime claude                  # show current + list
+    ///   giga switch --runtime claude --setup primary  # one-time bootstrap
+    ///   giga switch --runtime claude --add overflow   # provision empty slot
+    ///   giga switch --runtime claude overflow         # switch to overflow
+    Switch {
+        /// Which agent runtime's credentials to manage. Only `claude` today.
+        #[arg(long, value_name = "RUNTIME")]
+        runtime: String,
+        /// Account name. Required by --setup / --add and for a switch
+        /// (positional). Omit with --list / no flags to see current state.
+        account: Option<String>,
+        /// List known accounts and exit.
+        #[arg(long, conflicts_with_all = ["setup", "add"])]
+        list: bool,
+        /// One-time: adopt the existing ~/.claude/.credentials.json as
+        /// a named snapshot.
+        #[arg(long, conflicts_with_all = ["list", "add"])]
+        setup: bool,
+        /// Provision an empty credential slot. Populate by switching
+        /// to it and running `claude` / going through /login.
+        #[arg(long, conflicts_with_all = ["list", "setup"])]
+        add: bool,
+    },
     /// Long-running watcher — emits one stdout line per new message.
     ///
     /// Two modes:
@@ -272,6 +303,30 @@ fn main() -> Result<()> {
             dry_run,
             code_root,
         }),
+        Command::Switch {
+            runtime,
+            account,
+            list,
+            setup,
+            add,
+        } => {
+            let op = if setup {
+                switch::Op::Setup
+            } else if add {
+                switch::Op::Add
+            } else if list {
+                switch::Op::List
+            } else if account.is_some() {
+                switch::Op::Switch
+            } else {
+                switch::Op::Status
+            };
+            switch::run(switch::Args {
+                runtime,
+                account,
+                op,
+            })
+        }
         Command::Watch {
             channel,
             r#as,

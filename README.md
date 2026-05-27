@@ -94,6 +94,42 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
 | `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. |
 | `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. |
+| `giga switch --runtime claude [<account>]` | Multi-account credential manager. `--setup <name>` bootstraps the active account, `--add <name>` provisions an overflow slot, bare `<account>` switches. See [§ Multi-account switching](#multi-account-switching). |
+
+## Multi-account switching
+
+When you hit a rate-limit cap and want to migrate the whole swarm to an overflow account (different Anthropic plan, billing identity, whatever) without losing per-agent transcripts.
+
+**One-time setup** — name your current credentials:
+
+```sh
+giga switch --runtime claude --setup primary
+```
+
+This creates `~/.claude-accounts/primary.json` from your existing `~/.claude/.credentials.json` and records `primary` as active.
+
+**Add an overflow account:**
+
+```sh
+giga switch --runtime claude --add overflow
+giga switch --runtime claude overflow      # make it active (empty slot, so /login required)
+claude                                     # opens; go through /login as the overflow identity
+giga switch --runtime claude primary       # switch back; the new tokens are saved to overflow.json
+```
+
+**Day-to-day switching:**
+
+```sh
+giga switch --runtime claude overflow      # flip the active credentials
+pkill -f '^claude$'                        # or close the agent tabs
+giga launch                                # tabs re-spawn as `claude -c`, resuming on the new account
+```
+
+Running `claude` processes keep their old auth in memory — they need to be killed and re-launched. `claude -c` (which `giga launch` uses) resumes each agent's transcript per-workdir, so conversation history and in-flight work survive the switch unchanged. Only the billing account changes.
+
+**How it works.** `~/.claude/.credentials.json` is the real, live credentials file claude reads + refreshes. `~/.claude-accounts/<name>.json` is a snapshot per account, plus `.active` marks which one is currently live. Switching copies the live file back to its snapshot (preserving any in-place OAuth refreshes), then copies the target snapshot into the live file. No symlinks — `/login` and silent token refreshes use write-temp-then-rename, which destroys symlinks, so we use plain file copies instead.
+
+**Limitations.** Claude-only today (`--runtime claude`). Linux/macOS/WSL only — Windows-native isn't wired up yet. Whole-swarm switch, not per-agent.
 
 ## Key concepts
 
