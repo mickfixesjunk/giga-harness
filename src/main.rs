@@ -358,7 +358,18 @@ fn resolve_channel(channel: &str, config: &std::path::Path) -> Result<PathBuf> {
         ));
     }
     let cfg = config::Config::load(config)?;
-    if let Some(ch) = cfg.channels.iter().find(|c| c.file == channel) {
+    // Accept bare names without `.md` — channel files in config always
+    // carry the suffix, but users (and agents) commonly drop it.
+    let with_md = if channel.ends_with(".md") {
+        None
+    } else {
+        Some(format!("{channel}.md"))
+    };
+    if let Some(ch) = cfg
+        .channels
+        .iter()
+        .find(|c| c.file == channel || with_md.as_deref().map(|m| c.file == m).unwrap_or(false))
+    {
         return cfg.channel_path(ch);
     }
     // Fallback: if user passed a relative path that exists, use it.

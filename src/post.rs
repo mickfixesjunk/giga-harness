@@ -113,7 +113,19 @@ fn resolve(channel: &str, cfg: Option<&Config>, config_path: &Path) -> Result<Pa
         return Ok(as_path.to_path_buf());
     }
     if let Some(cfg) = cfg {
-        if let Some(ch) = cfg.channels.iter().find(|c| c.file == channel) {
+        // Channel files in config always carry the `.md` suffix. Accept
+        // bare names from the caller so agents don't have to remember it
+        // (`giga post pipeline-usage` ≡ `giga post pipeline-usage.md`).
+        let with_md = if channel.ends_with(".md") {
+            None
+        } else {
+            Some(format!("{channel}.md"))
+        };
+        if let Some(ch) = cfg
+            .channels
+            .iter()
+            .find(|c| c.file == channel || with_md.as_deref().map(|m| c.file == m).unwrap_or(false))
+        {
             return cfg.channel_path(ch);
         }
     }

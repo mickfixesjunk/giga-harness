@@ -129,6 +129,13 @@ pub fn run(
 /// not. The prompt has to work in both cases — so it tells the
 /// agent: if you were mid-task, finish it; otherwise do the
 /// Session Start protocol.
+// NOTE: Do NOT put backtick-formatted code spans in any prompt string
+// that ends up on a shell command line — backticks survive single-
+// quoting through the wt.exe → wsl.exe → bash hop and end up being
+// shell-evaluated as command substitution. The launched shell runs
+// whatever's inside the backticks (aws, giga, [slug], paths…) and
+// the substituted output gets baked into the intro that Claude
+// actually receives, corrupting the prompt. Use plain text instead.
 const DEFAULT_INTRO_PROMPT: &str =
     "Session start. First, if ./HANDOVER.md exists in cwd, read it — it \
      carries cross-session / cross-machine state (recent decisions, \
@@ -138,7 +145,7 @@ const DEFAULT_INTRO_PROMPT: &str =
      continue from where you left off. Otherwise, follow the Session \
      Start protocol in CLAUDE.md. CRITICAL: arm the inbox watcher using \
      the Monitor TOOL with persistent:true — copy the invocation from \
-     CLAUDE.md verbatim. Do NOT run `giga watch` via the Bash tool, even \
+     CLAUDE.md verbatim. Do NOT run giga watch via the Bash tool, even \
      with run_in_background:true — Bash's stdout never reaches your \
      conversation, so the watcher will be alive but you'll receive zero \
      notifications and idle silently. Only Monitor delivers messages into \
@@ -195,16 +202,18 @@ fn default_cmd(platform: &str, intro: &str, model: &str) -> String {
 /// it survives session restarts — but this is what the agent sees on
 /// the very first turn, before it's read its CLAUDE.md.
 pub(crate) fn intro_for_agent(intro: &str, agent: &crate::config::Agent) -> String {
+    // See the note above DEFAULT_INTRO_PROMPT — no backticks in this
+    // string ever. They get shell-evaluated on the wt → wsl → bash hop.
     let identity = format!(
-        "You are the `{slug}` agent in this giga-harness swarm. EVERY response \
-         you make to the user in this terminal MUST start with `[{slug}]` so the \
+        "You are the {slug} agent in this giga-harness swarm. EVERY response \
+         you make to the user in this terminal MUST start with [{slug}] so the \
          user knows which agent is talking — this applies to every assistant turn, \
          not just channel messages. ",
         slug = agent.name,
     );
     if let Some(cr) = &agent.code_root {
         format!(
-            "{identity}{intro} Your code root (where all code work happens) is `{cr}` — cd there before editing files.",
+            "{identity}{intro} Your code root (where all code work happens) is {cr} — cd there before editing files.",
             identity = identity,
             intro = intro,
             cr = cr.display(),
@@ -237,21 +246,31 @@ mod tests {
     fn intro_identifies_the_agent_by_slug() {
         let a = agent_named("design", None);
         let out = intro_for_agent("base intro.", &a);
-        assert!(out.contains("`design` agent"), "missing identity:\n{out}");
+        assert!(out.contains("design agent"), "missing identity:\n{out}");
     }
 
     #[test]
     fn intro_demands_bracketed_reply_prefix() {
-        // The `[slug]` prefix rule is what lets the user tell which
+        // The [slug] prefix rule is what lets the user tell which
         // window/agent is responding. Don't let a future refactor
         // silently drop it.
         let a = agent_named("code", None);
         let out = intro_for_agent("base.", &a);
-        assert!(
-            out.contains("`[code]`"),
-            "reply-prefix rule missing:\n{out}"
-        );
+        assert!(out.contains("[code]"), "reply-prefix rule missing:\n{out}");
         assert!(out.contains("EVERY response"), "rule wording softened?");
+    }
+
+    #[test]
+    fn intro_never_contains_backticks() {
+        // Backticks survive single-quoting through the wt.exe → wsl.exe
+        // → bash hop and get evaluated as command substitution, which
+        // corrupts the prompt Claude actually receives. Lock this out.
+        let a = agent_named("code", Some("/code/myproj"));
+        let out = intro_for_agent("base intro with no ticks.", &a);
+        assert!(
+            !out.contains('`'),
+            "backtick leaked into intro — will be shell-evaluated:\n{out}",
+        );
     }
 
     #[test]
@@ -289,7 +308,7 @@ mod tests {
         // variable, both agents could end up with the same slug.
         let a = intro_for_agent("base.", &agent_named("design", None));
         let b = intro_for_agent("base.", &agent_named("code", None));
-        assert!(a.contains("`design`") && !a.contains("`code`"));
-        assert!(b.contains("`code`") && !b.contains("`design`"));
+        assert!(a.contains("design agent") && !a.contains("code agent"));
+        assert!(b.contains("code agent") && !b.contains("design agent"));
     }
 }
