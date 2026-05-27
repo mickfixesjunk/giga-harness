@@ -369,8 +369,28 @@ fn render_template(args: &Args) -> String {
          \n\
          In order:\n\
          \n\
-         1. **Post intro** on each of your channels via `giga post <channel> --as {name} --subject \"online\" --body \"{name} session resumed\"`. Informational.\n\
-         2. **Arm the Monitor below.** Use the exact `Monitor(persistent: true, command: ...)` invocation — don't paraphrase. One watcher; auto-discovery handles the channel list.\n\
+         1. **Arm the inbox watcher using the Monitor TOOL.** Use exactly this invocation — copy it verbatim:\n\
+         \n\
+         ```\n\
+         Monitor(\n\
+           description: \"giga inbox watcher\",\n\
+           persistent: true,\n\
+           command: \"giga watch --as {name}\"\n\
+         )\n\
+         ```\n\
+         \n\
+         **CRITICAL — read this twice.** The Monitor tool is the ONLY correct way to arm the watcher. It is NOT the Bash tool. Do NOT do any of these — they look plausible but all of them silently break the harness:\n\
+         \n\
+         * ❌ `Bash(command: \"giga watch --as {name}\")` — runs in foreground, blocks the conversation, you'll idle forever.\n\
+         * ❌ `Bash(command: \"giga watch --as {name}\", run_in_background: true)` — runs detached, but its stdout never reaches your conversation. The watcher process is alive but you receive ZERO notifications. This is the most common failure mode; the agent thinks it's listening but is actually deaf.\n\
+         * ❌ `Bash(command: \"giga watch --as {name} &\")` — same problem.\n\
+         * ❌ `Monitor(persistent: false, ...)` — the tool stops after the first message, you'll miss everything after that.\n\
+         \n\
+         Only the Monitor TOOL with `persistent: true` delivers each new message into your context as a notification you can react to. If you find yourself reaching for Bash to start the watcher: stop, and use the Monitor tool instead.\n\
+         \n\
+         On first arm in a session, the watcher delivers any unread messages from prior sessions as the initial batch of notifications, then transitions to live tailing. Read those notifications before doing anything else.\n\
+         \n\
+         2. **Post intro** on each of your channels via `giga post <channel> --as {name} --subject \"online\" --body \"{name} session resumed\"`. Informational.\n\
          3. **Standby for messages.** Don't initiate work without being asked. If you were mid-task per HANDOVER.md, finish that first.\n\
          \n\
          ## Your responsibilities\n\
@@ -381,11 +401,7 @@ fn render_template(args: &Args) -> String {
          \n\
          ## Channels you watch\n\
          \n\
-         ```\n\
-         Monitor(persistent: true, command: \"giga watch --as {name}\")\n\
-         ```\n\
-         \n\
-         One watcher auto-discovers every channel where you're a participant (per `giga-harness.toml`). New channels added later are picked up automatically (~15s reread). Notifications are formatted `inbox <channel>: [sender] ...`.\n\
+         The Monitor invocation in Session Start (above) auto-discovers every channel where you're a participant (per `giga-harness.toml`). New channels added later are picked up automatically (~15s reread). Notifications are formatted `inbox <channel>: [sender] ...`.\n\
          \n\
          ## Convention\n\
          \n\

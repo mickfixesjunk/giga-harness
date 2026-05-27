@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 
 mod add_agent;
 mod config;
+mod cursor;
 mod fs_paths;
 mod init;
 mod launch;
