@@ -499,6 +499,12 @@ mod tests {
         assert!(validate_name("active").is_err());
     }
 
+    // The runtime-check is the first thing `run()` does on Unix, but on
+    // Windows `run()` bails earlier with a "not supported on Windows"
+    // message — so the assertion below would never see "unsupported
+    // --runtime". Gate the test to where the code path it exercises
+    // actually runs.
+    #[cfg(unix)]
     #[test]
     fn unsupported_runtime_rejected() {
         let err = run(Args {
