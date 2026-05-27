@@ -17,6 +17,7 @@
 
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -72,6 +73,15 @@ pub enum Op {
     Switch,
 }
 
+#[cfg(not(unix))]
+pub fn run(_args: Args) -> Result<()> {
+    bail!(
+        "giga switch is not yet supported on Windows-native. Use WSL, Linux, or macOS — \
+         the credential snapshots live at POSIX paths under ~/.claude-accounts/."
+    )
+}
+
+#[cfg(unix)]
 pub fn run(args: Args) -> Result<()> {
     if args.runtime != "claude" {
         bail!(
@@ -310,6 +320,7 @@ fn write_account_placeholder(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
     let mut perm = fs::metadata(path)
         .with_context(|| format!("stat {}", path.display()))?
@@ -317,6 +328,16 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     perm.set_mode(mode);
     fs::set_permissions(path, perm)
         .with_context(|| format!("chmod {} -> {:o}", path.display(), mode))?;
+    Ok(())
+}
+
+// Windows has no POSIX-mode permission bits — ACLs are managed
+// separately and not equivalent. `run()` bails on Windows before any
+// path reaches this no-op, but we keep the symbol defined so the
+// rest of switch.rs (and its unit tests) compile on the Windows
+// CI target.
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
