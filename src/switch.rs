@@ -20,7 +20,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Filesystem layout for the claude runtime. Decoupled from
 /// `dirs::home_dir()` so tests can point it at a TempDir.
@@ -237,8 +237,7 @@ fn read_active(paths: &ClaudePaths) -> Result<Option<String>> {
     if !marker.exists() {
         return Ok(None);
     }
-    let s = fs::read_to_string(&marker)
-        .with_context(|| format!("reading {}", marker.display()))?;
+    let s = fs::read_to_string(&marker).with_context(|| format!("reading {}", marker.display()))?;
     let trimmed = s.trim().to_string();
     if trimmed.is_empty() {
         Ok(None)
@@ -293,7 +292,8 @@ fn copy_cred_file(from: &Path, to: &Path) -> Result<()> {
     // half-written credentials file (which would brick claude).
     let tmp = to.with_extension("json.tmp");
     {
-        let mut f = fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut f =
+            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
         f.write_all(&data)
             .with_context(|| format!("writing {}", tmp.display()))?;
         f.sync_all().ok();
@@ -401,7 +401,10 @@ mod tests {
         op_setup(&paths, "alice").unwrap();
         op_add(&paths, "bob").unwrap();
         assert!(paths.account_file("bob").exists());
-        assert_eq!(fs::read_to_string(paths.account_file("bob")).unwrap(), "{}\n");
+        assert_eq!(
+            fs::read_to_string(paths.account_file("bob")).unwrap(),
+            "{}\n"
+        );
     }
 
     #[test]
@@ -423,7 +426,10 @@ mod tests {
         fs::write(paths.account_file("bob"), "{\"bob\":2}").unwrap();
         op_switch(&paths, "bob").unwrap();
         assert_eq!(read_active(&paths).unwrap().unwrap(), "bob");
-        assert_eq!(fs::read_to_string(paths.cred_file()).unwrap(), "{\"bob\":2}");
+        assert_eq!(
+            fs::read_to_string(paths.cred_file()).unwrap(),
+            "{\"bob\":2}"
+        );
     }
 
     #[test]
