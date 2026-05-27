@@ -17,11 +17,11 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Filesystem layout for the claude runtime. Decoupled from
 /// `dirs::home_dir()` so tests can point it at a TempDir.
@@ -73,6 +73,15 @@ pub enum Op {
     Switch,
 }
 
+#[cfg(not(unix))]
+pub fn run(_args: Args) -> Result<()> {
+    bail!(
+        "giga switch is not yet supported on Windows-native. Use WSL, Linux, or macOS — \
+         the credential snapshots live at POSIX paths under ~/.claude-accounts/."
+    )
+}
+
+#[cfg(unix)]
 pub fn run(args: Args) -> Result<()> {
     if args.runtime != "claude" {
         bail!(
@@ -238,8 +247,7 @@ fn read_active(paths: &ClaudePaths) -> Result<Option<String>> {
     if !marker.exists() {
         return Ok(None);
     }
-    let s = fs::read_to_string(&marker)
-        .with_context(|| format!("reading {}", marker.display()))?;
+    let s = fs::read_to_string(&marker).with_context(|| format!("reading {}", marker.display()))?;
     let trimmed = s.trim().to_string();
     if trimmed.is_empty() {
         Ok(None)
@@ -294,7 +302,8 @@ fn copy_cred_file(from: &Path, to: &Path) -> Result<()> {
     // half-written credentials file (which would brick claude).
     let tmp = to.with_extension("json.tmp");
     {
-        let mut f = fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut f =
+            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
         f.write_all(&data)
             .with_context(|| format!("writing {}", tmp.display()))?;
         f.sync_all().ok();
@@ -322,6 +331,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+// Windows has no POSIX-mode permission bits — ACLs are managed
+// separately and not equivalent. `run()` bails on Windows before any
+// path reaches this no-op, but we keep the symbol defined so the
+// rest of switch.rs (and its unit tests) compile on the Windows
+// CI target.
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
@@ -408,7 +422,10 @@ mod tests {
         op_setup(&paths, "alice").unwrap();
         op_add(&paths, "bob").unwrap();
         assert!(paths.account_file("bob").exists());
-        assert_eq!(fs::read_to_string(paths.account_file("bob")).unwrap(), "{}\n");
+        assert_eq!(
+            fs::read_to_string(paths.account_file("bob")).unwrap(),
+            "{}\n"
+        );
     }
 
     #[test]
@@ -430,7 +447,10 @@ mod tests {
         fs::write(paths.account_file("bob"), "{\"bob\":2}").unwrap();
         op_switch(&paths, "bob").unwrap();
         assert_eq!(read_active(&paths).unwrap().unwrap(), "bob");
-        assert_eq!(fs::read_to_string(paths.cred_file()).unwrap(), "{\"bob\":2}");
+        assert_eq!(
+            fs::read_to_string(paths.cred_file()).unwrap(),
+            "{\"bob\":2}"
+        );
     }
 
     #[test]
@@ -479,6 +499,12 @@ mod tests {
         assert!(validate_name("active").is_err());
     }
 
+    // The runtime-check is the first thing `run()` does on Unix, but on
+    // Windows `run()` bails earlier with a "not supported on Windows"
+    // message — so the assertion below would never see "unsupported
+    // --runtime". Gate the test to where the code path it exercises
+    // actually runs.
+    #[cfg(unix)]
     #[test]
     fn unsupported_runtime_rejected() {
         let err = run(Args {

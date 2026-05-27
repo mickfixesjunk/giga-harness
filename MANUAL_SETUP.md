@@ -269,9 +269,9 @@ For the broader operational guide (multi-host setups, stand-down → reactivatio
 | `giga validate [config]` | TOML schema check + cross-reference. Also flags orphan channel files on disk that aren't enrolled in `[[channels]]`. No side effects. |
 | `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent — existing inbox files are kept). Registers the swarm in `~/.giga/swarms.toml`. |
 | `giga add-agent --name X --workdir Y --role "..." [--code-root Z] --peer A [--peer B]` | Scaffold a new agent — appends `[[agents]]` + per-peer `[[channels]]`, adds to any `_broadcast.md` channel, writes `agents/<slug>.md`. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--dry-run` previews. Safe to run from within an agent's session. |
-| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto` (default — wt > tmux > print), `mac-terminal` (one Terminal.app window per agent on macOS), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Resolves config via `~/.giga/swarms.toml` registry if not in cwd. |
+| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto` (default — wt > tmux > print), `mac-terminal` (one Terminal.app window per agent on macOS), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Config resolution order: explicit `[config]` arg → ancestral `giga-harness.toml` walking up from cwd → `~/.giga/swarms.toml` registry lookup. |
 | `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
-| `giga post <channel> --as <agent> --subject ... [--body ... \| stdin] [--waiting-on <agent>]` | Append a properly-formatted message. Validates that the sender is a participant. |
+| `giga post <channel> --as <agent> --subject ... [--body ... \| stdin] [--waiting-on <agent>]` | Append a properly-formatted message. Validates that the sender is a participant. `<channel>` accepts bare names (`pipeline-usage`) or the full `.md` form. |
 | `giga watch --as <agent> [<channel>]` | Long-running watcher (use under Claude Code's `Monitor` tool). Without `<channel>`: config-aware multi-channel mode — auto-tracks every channel where `<agent>` is a participant and picks up new channels added later (~15s reread). With `<channel>`: legacy single-file mode. |
 
 ## Resuming after a reboot
@@ -283,7 +283,9 @@ cd ~/code/myproj
 giga launch     # finds ~/.giga/configs/myproj/giga-harness.toml via the registry
 ```
 
-If no swarm is registered for the current directory (or any ancestor), giga prints a clear error pointing you to `giga setup`.
+The resolver also walks up from cwd looking for an ancestral `giga-harness.toml` *before* consulting the registry. This matters when you're already inside an agent's workdir (e.g. `~/.giga/configs/<swarm>/workdirs/<slug>/`) — the workdir tree isn't a `code_root`, so the registry lookup wouldn't find anything, but the ancestor walk lands on the config two levels up. Net effect: `giga watch --as <slug>` just works from a freshly-launched agent terminal.
+
+If no swarm is registered for the current directory (or any ancestor) *and* no ancestral `giga-harness.toml` exists, giga prints a clear error pointing you to `giga setup`.
 
 ## The convention
 

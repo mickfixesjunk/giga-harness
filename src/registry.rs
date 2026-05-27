@@ -145,12 +145,33 @@ pub fn resolve_config(provided: PathBuf) -> Result<PathBuf> {
         return Ok(provided);
     }
     let cwd = std::env::current_dir().context("getting cwd for registry lookup")?;
+    // Walk up looking for an ancestral `giga-harness.toml`. This
+    // matters for agents whose workdir lives under the config dir
+    // (the canonical layout under `~/.giga/configs/<swarm>/workdirs/<agent>/`)
+    // — the registry only indexes code_roots, but the config file
+    // itself is sitting two levels up from the workdir. Without this
+    // walk, `giga watch --as <slug>` from a workdir fails even
+    // though the config is right there.
+    {
+        let canon_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+        let mut cursor: &Path = &canon_cwd;
+        loop {
+            let candidate = cursor.join("giga-harness.toml");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            match cursor.parent() {
+                Some(p) => cursor = p,
+                None => break,
+            }
+        }
+    }
     if let Some(found) = find_by_cwd(&cwd)? {
         return Ok(found);
     }
-    // No config in cwd, no swarm registered for this directory or any
-    // of its ancestors. Most likely: the user is in a project dir and
-    // hasn't bootstrapped a swarm yet.
+    // No config in cwd or any ancestor, no swarm registered for this
+    // directory or any ancestor. Most likely: the user is in a project
+    // dir and hasn't bootstrapped a swarm yet.
     anyhow::bail!(
         "no giga-harness.toml in {} and no swarm registered for this directory or any \
          ancestor.\n\n\
