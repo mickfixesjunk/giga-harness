@@ -36,7 +36,7 @@ irm https://github.com/mickfixesjunk/giga-harness/releases/latest/download/insta
 Confirm:
 
 ```sh
-giga --version    # should be 0.1.11 or newer
+giga --version    # should be 0.1.12 or newer
 ```
 
 ### Step 2 — Run `giga setup` from your project directory
@@ -90,10 +90,10 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga validate [config]` | TOML schema + cross-reference check. Flags on-disk inbox files not enrolled in `[[channels]]`. No side effects. |
 | `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). Registers the swarm in `~/.giga/swarms.toml`. |
 | `giga add-agent --name X --workdir Y --role "..." [--code-root Z] --peer A [--peer B]` | Scaffold a new agent — `[[agents]]` + `[[channels]]` + broadcast participation + a stub template. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--dry-run` previews. |
-| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto`, `mac-terminal` (Terminal.app), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Auto-resolves config via `~/.giga/swarms.toml` registry if not in cwd. |
+| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto`, `mac-terminal` (Terminal.app), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Resolves the config in this order: explicit `[config]` arg → `giga-harness.toml` in cwd or any ancestor → `~/.giga/swarms.toml` registry lookup by code_root. |
 | `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
-| `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. |
-| `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. |
+| `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. `<channel>` accepts the bare name or `.md`-suffixed form (`pipeline-usage` ≡ `pipeline-usage.md`). |
+| `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. Works from any cwd that's under a registered code_root or has an ancestral `giga-harness.toml` (e.g. an agent workdir under `~/.giga/configs/<swarm>/workdirs/<slug>/`). |
 | `giga switch --runtime claude [<account>]` | Multi-account credential manager. `--setup <name>` bootstraps the active account, `--add <name>` provisions an overflow slot, bare `<account>` switches. See [§ Multi-account switching](#multi-account-switching). |
 
 ## Multi-account switching

@@ -239,8 +239,15 @@ fn refresh_tracked(
 
 fn is_header_line(line: &str) -> bool {
     // Header blocks look like `[sender] subject — UTC-ISO-8601-timestamp`.
-    // Filter on the cheap `[` prefix + `] ` separator.
-    line.starts_with('[') && line.contains("] ")
+    // Filter on the cheap `[` prefix + `] ` separator. Channel files
+    // include a literal example header in the convention preamble with
+    // a `<sender>` placeholder — `[<sender>] <subject> — <UTC...>`. If
+    // we accepted that, the watcher would emit it as a fake event on
+    // first arm (the channel preamble gets read from byte 0).
+    if !line.starts_with('[') || !line.contains("] ") {
+        return false;
+    }
+    !line.starts_with("[<")
 }
 
 fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
