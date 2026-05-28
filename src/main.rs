@@ -25,6 +25,7 @@ mod registry;
 mod setup;
 mod sweep;
 mod switch;
+mod templates;
 mod terminal;
 mod trust;
 mod validate;

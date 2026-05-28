@@ -239,15 +239,69 @@ fn refresh_tracked(
 
 fn is_header_line(line: &str) -> bool {
     // Header blocks look like `[sender] subject — UTC-ISO-8601-timestamp`.
-    // Filter on the cheap `[` prefix + `] ` separator. Channel files
-    // include a literal example header in the convention preamble with
-    // a `<sender>` placeholder — `[<sender>] <subject> — <UTC...>`. If
-    // we accepted that, the watcher would emit it as a fake event on
-    // first arm (the channel preamble gets read from byte 0).
     if !line.starts_with('[') || !line.contains("] ") {
         return false;
     }
-    !line.starts_with("[<")
+    // Channel files include a literal example header in the convention
+    // preamble with a `<sender>` placeholder — filter that out.
+    if line.starts_with("[<") {
+        return false;
+    }
+    // Real headers always end with a UTC timestamp produced by
+    // `%Y-%m-%dT%H:%M:%SZ` — exactly 20 ASCII bytes, e.g.
+    // `2026-05-28T14:30:00Z`. Body lines that open with `[agent] —`
+    // (agents addressing the recipient inline) don't have this tail
+    // and would otherwise leak past the --as self-filter, causing echo
+    // notifications.
+    if line.len() < 20 {
+        return false;
+    }
+    let tail = line[line.len() - 20..].as_bytes();
+    tail[19] == b'Z'
+        && tail[4] == b'-'
+        && tail[7] == b'-'
+        && tail[10] == b'T'
+        && tail[13] == b':'
+        && tail[16] == b':'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_header_passes() {
+        assert!(is_header_line(
+            "[design] online — 2026-05-28T14:30:00Z"
+        ));
+    }
+
+    #[test]
+    fn body_line_addressing_recipient_is_rejected() {
+        // This is the echo-bug trigger: agent body opens with [recipient] —
+        assert!(!is_header_line("[web] — Mick's explicit GO for the new feature"));
+        assert!(!is_header_line("[superdeduper] — first: v0.2.29 bench results"));
+    }
+
+    #[test]
+    fn preamble_placeholder_is_rejected() {
+        assert!(!is_header_line("[<sender>] <subject> — <UTC...>"));
+    }
+
+    #[test]
+    fn non_bracket_line_is_rejected() {
+        assert!(!is_header_line("just some body text"));
+        assert!(!is_header_line("==="));
+        assert!(!is_header_line("WAITING ON: web"));
+    }
+
+    #[test]
+    fn header_with_em_dash_in_subject_passes() {
+        // Subject itself may contain em-dashes — still valid.
+        assert!(is_header_line(
+            "[design] bench — results — 2026-05-28T14:30:00Z"
+        ));
+    }
 }
 
 fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {

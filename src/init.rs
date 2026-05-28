@@ -23,6 +23,9 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     let config_dir = config_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("config path has no parent dir"))?;
+    let abs_config = config_path
+        .canonicalize()
+        .unwrap_or_else(|_| config_path.to_path_buf());
 
     println!("project: {}", cfg.project.name);
     println!("agents:  {}", cfg.agents.len());
@@ -59,7 +62,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // `agents/<name>.handover.md` next to it. When present, copy
     // it into the workdir as `HANDOVER.md` on first init only —
     // preserving any session appends the agent has accumulated in
-    // its workdir copy. The configs repo is the round-trip
+    // its workdir copy. The config dir's template is the round-trip
     // checkpoint; the workdir copy is the agent's live append log.
     for agent in &cfg.agents {
         let host_workdir = to_host_fs(&agent.workdir);
@@ -70,6 +73,27 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         fs::write(&claudemd_path, body)
             .with_context(|| format!("write {}", claudemd_path.display()))?;
         println!("  [gen]  {}", claudemd_path.display());
+
+        // Symlink the project config into the workdir so the agent's
+        // bare `giga watch --as <name>` (whose --config defaults to
+        // `giga-harness.toml` in cwd) resolves without an explicit
+        // --config. Unix/WSL-side agents only: a unix symlink to a
+        // /home path is meaningless to a Windows-native agent. Idempotent —
+        // only created when nothing is already at that path.
+        #[cfg(unix)]
+        if agent.platform != "windows" {
+            let link = host_workdir.join("giga-harness.toml");
+            if link.symlink_metadata().is_err() {
+                match std::os::unix::fs::symlink(&abs_config, &link) {
+                    Ok(()) => println!("  [link] {}", link.display()),
+                    Err(e) => eprintln!(
+                        "  [link] warning: couldn't symlink config into {} — {}",
+                        host_workdir.display(),
+                        e,
+                    ),
+                }
+            }
+        }
 
         if let Some(tpl) = &agent.claudemd_template {
             let handover_rel = handover_template_for(tpl);
@@ -111,10 +135,8 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 
     // Upsert this swarm into the cross-swarm registry so the user can
     // resume from anywhere under any agent's code_root just by typing
-    // `giga launch` — no need to `cd` to the config dir.
-    let abs_config = config_path
-        .canonicalize()
-        .unwrap_or_else(|_| config_path.to_path_buf());
+    // `giga launch` — no need to `cd` to the config dir. (`abs_config`
+    // was resolved up top.)
     let mut code_roots: Vec<std::path::PathBuf> = cfg
         .agents
         .iter()
@@ -230,24 +252,9 @@ fn render_agent_claudemd(cfg: &Config, agent: &Agent, config_dir: &Path) -> Resu
             .collect::<Vec<_>>()
             .join(", ");
         s.push_str("## Session Start (do this first, every session)\n\n");
-        s.push_str("**Arm the inbox watcher using the Monitor TOOL.** Use exactly:\n\n");
-        s.push_str("```\n");
+        s.push_str(&crate::templates::WATCHER.replace("{{AGENT}}", &agent.name));
         s.push_str(&format!(
-            "Monitor(\n  description: \"giga inbox watcher\",\n  persistent: true,\n  command: \"giga watch --as {}\"\n)\n",
-            agent.name,
-        ));
-        s.push_str("```\n\n");
-        s.push_str("**CRITICAL — read this twice.** The Monitor TOOL is the ONLY correct way. Do NOT do any of these:\n\n");
-        s.push_str(&format!(
-            "* ❌ `Bash(command: \"giga watch --as {}\")` — blocks the conversation, you idle forever.\n\
-             * ❌ `Bash(command: \"giga watch --as {}\", run_in_background: true)` — runs detached but its stdout never reaches your conversation. Watcher is alive, you receive ZERO notifications. Most common silent failure.\n\
-             * ❌ `Bash(command: \"giga watch --as {} &\")` — same problem.\n\
-             * ❌ `Monitor(persistent: false, ...)` — stops after first message, misses everything after.\n\n",
-            agent.name, agent.name, agent.name,
-        ));
-        s.push_str(&format!(
-            "Only the Monitor TOOL with `persistent: true` delivers each new message into your context as a notification. On first arm, the watcher replays unread messages from prior sessions across your channels ({}) as the initial notification batch, then transitions to live tailing. Read those notifications before doing anything else, then standby.\n\n",
-            channel_list,
+            "\nYour channels: {channel_list}.\n\n",
         ));
     }
 
@@ -264,16 +271,16 @@ fn render_agent_claudemd(cfg: &Config, agent: &Agent, config_dir: &Path) -> Resu
         ));
     }
 
-    s.push_str(&format!(
-        "## Convention\n\nEvery channel message ends with either:\n\n* `WAITING ON: <agent> (<what's needed>)` — if a reply is expected.\n* `Informational, no response required.` — otherwise.\n\nAmbiguous closings stall the pipeline. Use the tag.\n\n",
-    ));
+    s.push_str("## Convention\n\n");
+    s.push_str(crate::templates::CONVENTION.trim_end());
+    s.push_str("\n\n");
 
     Ok(prepend_header(&s, agent))
 }
 
 fn prepend_header(body: &str, agent: &Agent) -> String {
     let mut out = format!(
-        "<!--\n  Generated by giga-harness. The source template lives in the\n  configs repo (giga-harness-configs). Edits to THIS file in the\n  agent's workdir will be overwritten on the next `giga init` or\n  `giga launch`. To persist, modify the source template.\n  Agent: {}\n-->\n\n",
+        "<!--\n  Generated by giga-harness from this swarm's agent template\n  (its `claudemd_template`, or a built-in default if none is set).\n  Edits to THIS workdir copy are overwritten on the next `giga init`\n  or `giga launch` — to persist changes, edit the source template.\n  Agent: {}\n-->\n\n",
         agent.name,
     );
     out.push_str(&format!(
