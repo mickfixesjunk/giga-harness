@@ -36,6 +36,49 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// "instant" without thrashing the disk.
 const RELOAD_EVERY_N_TICKS: u64 = 5;
 
+/// A busy-lock older than this is treated as idle (flush). This is the
+/// fail-safe for a missed unlock: if an agent's turn crashes before its
+/// Stop hook removes the lock, the watcher must NOT buffer forever and
+/// go permanently deaf — after this window it flushes anyway. Generous
+/// because legitimate agentic turns can run minutes; a turn quieter than
+/// this with no lock refresh is pathological, and flushing then is the
+/// safe choice.
+const BUSY_LOCK_STALE_AFTER: Duration = Duration::from_secs(300);
+
+/// Path of the per-agent busy-lock. An agent's turn-start hook
+/// (`UserPromptSubmit` / `PreToolUse`) touches this file; its `Stop`
+/// hook removes it. While it is present and fresh, `giga watch` BUFFERS
+/// notifications instead of emitting them — so a queued inbox event is
+/// never spliced onto an in-flight assistant turn. (Doing so modifies
+/// the latest assistant message's interleaved-thinking blocks, which the
+/// Anthropic API rejects with a 400 "thinking blocks ... cannot be
+/// modified", permanently wedging the session.) Buffered events flush at
+/// the next idle tick — between turns, the safe boundary.
+///
+/// Returns None when there's no giga home, which disables gating
+/// entirely: with no lock the watcher behaves exactly as before, so this
+/// is a no-op unless the hooks are installed (opt-in, zero default change).
+fn busy_lock_path(giga_home: Option<&Path>, me: &str) -> Option<PathBuf> {
+    giga_home.map(|h| h.join("busy").join(format!("{me}.lock")))
+}
+
+/// True only when the lock exists AND is fresher than the stale window.
+/// Biased toward NOT-busy (flush) on every uncertainty — an unreadable
+/// mtime, a stale lock, or no lock at all all resolve to "idle". Deafness
+/// is the catastrophic failure mode here; an occasional unprotected flush
+/// is not. So we never let lock-state ambiguity buffer events forever.
+fn agent_is_busy(lock: Option<&PathBuf>) -> bool {
+    let Some(lock) = lock else { return false };
+    let Ok(meta) = fs::metadata(lock) else { return false };
+    match meta.modified() {
+        Ok(mtime) => mtime
+            .elapsed()
+            .map(|age| age < BUSY_LOCK_STALE_AFTER)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// Single-file mode — legacy form, preserved for backward compat with
 /// agents whose CLAUDE.md still spells out one Monitor per channel.
 pub fn run_single(channel: &Path, me: &str) -> Result<()> {
@@ -46,31 +89,37 @@ pub fn run_single(channel: &Path, me: &str) -> Result<()> {
         .with_context(|| format!("stat {}", channel.display()))?
         .len();
     let me_tag = format!("[{me}] ");
+    let lock = busy_lock_path(cursor::giga_home().as_deref(), me);
+    let mut pending: Vec<String> = Vec::new();
     loop {
         thread::sleep(POLL_INTERVAL);
         let cur = match fs::metadata(channel) {
             Ok(m) => m.len(),
             Err(_) => continue,
         };
-        if cur <= last {
-            if cur < last {
+        if cur < last {
+            last = cur;
+        } else if cur > last {
+            if let Ok(delta) = read_delta(channel, last, cur) {
                 last = cur;
+                for line in delta.lines() {
+                    if !is_header_line(line) {
+                        continue;
+                    }
+                    if line.starts_with(&me_tag) {
+                        continue;
+                    }
+                    pending.push(format!("inbox: {line}"));
+                }
             }
+        }
+        // Same busy-lock gate as multi-channel mode: hold notifications
+        // while the agent's turn is in flight, flush them when idle.
+        if agent_is_busy(lock.as_ref()) {
             continue;
         }
-        let delta = match read_delta(channel, last, cur) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        last = cur;
-        for line in delta.lines() {
-            if !is_header_line(line) {
-                continue;
-            }
-            if line.starts_with(&me_tag) {
-                continue;
-            }
-            println!("inbox: {line}");
+        for line in pending.drain(..) {
+            println!("{line}");
         }
     }
 }
@@ -90,6 +139,7 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
         );
     }
     let giga_home = cursor::giga_home();
+    let lock = busy_lock_path(giga_home.as_deref(), me);
     let me_tag = format!("[{me}] ");
     let mut tracked: HashMap<String, ChannelState> = HashMap::new();
     let mut tick: u64 = 0;
@@ -115,6 +165,10 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
         if tick % RELOAD_EVERY_N_TICKS == 0 {
             refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
         }
+        // Phase 1 — read new content into each channel's pending buffer.
+        // We advance the in-memory read position (last_size) as we consume
+        // bytes, but do NOT emit or persist the cursor here: emission is
+        // gated on the agent being idle (phase 2).
         for state in tracked.values_mut() {
             let cur = match fs::metadata(&state.path) {
                 Ok(m) => m.len(),
@@ -131,7 +185,6 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                 Err(_) => continue,
             };
             state.last_size = cur;
-            let mut notified = false;
             for line in delta.lines() {
                 if !is_header_line(line) {
                     continue;
@@ -139,15 +192,28 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                 if line.starts_with(&me_tag) {
                     continue;
                 }
-                println!("inbox {}: {line}", state.name);
-                notified = true;
+                state.pending.push(format!("inbox {}: {line}", state.name));
             }
-            // Advance the cursor after each batch of notifications so
-            // the next session doesn't re-deliver messages from this one.
-            if notified {
-                if let Some(home) = &giga_home {
-                    cursor::write(home, me, &state.name, state.last_size);
-                }
+        }
+
+        // Phase 2 — flush pending notifications ONLY when the agent is
+        // idle. While the busy-lock is held, queued events stay buffered
+        // so they're never spliced onto an in-flight (interleaved-thinking)
+        // assistant turn. When idle, they flush together — between turns,
+        // the safe boundary — and only THEN is the cursor persisted, so a
+        // crash while buffered re-delivers rather than loses.
+        if agent_is_busy(lock.as_ref()) {
+            continue;
+        }
+        for state in tracked.values_mut() {
+            if state.pending.is_empty() {
+                continue;
+            }
+            for line in state.pending.drain(..) {
+                println!("{line}");
+            }
+            if let Some(home) = &giga_home {
+                cursor::write(home, me, &state.name, state.last_size);
             }
         }
     }
@@ -157,6 +223,12 @@ struct ChannelState {
     name: String,
     path: PathBuf,
     last_size: u64,
+    /// Notifications read from the channel but not yet emitted, because
+    /// the agent was busy when they arrived. Flushed at the next idle
+    /// tick. The persisted cursor is NOT advanced until these are
+    /// actually emitted, so a crash while buffered re-delivers them next
+    /// session (re-delivery is safe; loss is not).
+    pending: Vec<String>,
 }
 
 /// Reread the config and adjust the tracked set:
@@ -215,6 +287,7 @@ fn refresh_tracked(
                 name: name.clone(),
                 path: path.clone(),
                 last_size: start,
+                pending: Vec::new(),
             },
         );
         if start < eof {
@@ -253,10 +326,17 @@ fn is_header_line(line: &str) -> bool {
     // (agents addressing the recipient inline) don't have this tail
     // and would otherwise leak past the --as self-filter, causing echo
     // notifications.
-    if line.len() < 20 {
+    //
+    // Index the WHOLE line's bytes (`as_bytes()`), NOT a `&str` byte-slice
+    // like `line[line.len()-20..]` — the latter panics when the 20-bytes-
+    // from-end boundary lands inside a multibyte char (e.g. an em-dash in
+    // the subject/body). The timestamp tail is pure ASCII, so checking the
+    // last 20 bytes is correct regardless of multibyte chars earlier in the line.
+    let bytes = line.as_bytes();
+    if bytes.len() < 20 {
         return false;
     }
-    let tail = line[line.len() - 20..].as_bytes();
+    let tail = &bytes[bytes.len() - 20..];
     tail[19] == b'Z'
         && tail[4] == b'-'
         && tail[7] == b'-'
@@ -284,6 +364,22 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_char_at_tail_boundary_does_not_panic() {
+        // Regression: `line[line.len()-20..]` panicked when the 20-bytes-from-end
+        // boundary fell inside a multibyte char (em-dash). A body line ending with
+        // em-dashes near the tail must be rejected WITHOUT panicking.
+        assert!(!is_header_line(
+            "[superdeduper] — relocate the FULL stack (NOT a feature — fits the freeze)."
+        ));
+        // Em-dash exactly straddling the 20-from-end boundary.
+        assert!(!is_header_line("[design] aaaaaaaaaaaaaaaa — bbbbbbbbbbbbbbbb"));
+        // A real header with an em-dash in the subject still passes (ASCII tail intact).
+        assert!(is_header_line(
+            "[design] bench — results — 2026-05-28T14:30:00Z"
+        ));
+    }
+
+    #[test]
     fn preamble_placeholder_is_rejected() {
         assert!(!is_header_line("[<sender>] <subject> — <UTC...>"));
     }
@@ -301,6 +397,53 @@ mod tests {
         assert!(is_header_line(
             "[design] bench — results — 2026-05-28T14:30:00Z"
         ));
+    }
+
+    #[test]
+    fn busy_when_no_giga_home_is_never_busy() {
+        // No home -> no lock path -> gating disabled -> behaves as before.
+        assert!(!agent_is_busy(busy_lock_path(None, "design").as_ref()));
+    }
+
+    #[test]
+    fn busy_when_lock_absent_is_idle() {
+        let dir = std::env::temp_dir().join(format!("giga-watch-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let lock = busy_lock_path(Some(&dir), "design");
+        // busy/design.lock does not exist -> idle.
+        assert!(!agent_is_busy(lock.as_ref()));
+    }
+
+    #[test]
+    fn busy_when_fresh_lock_present() {
+        let dir = std::env::temp_dir().join(format!("giga-watch-busy-{}", std::process::id()));
+        let busy = dir.join("busy");
+        fs::create_dir_all(&busy).unwrap();
+        let lock = busy_lock_path(Some(&dir), "design").unwrap();
+        fs::write(&lock, b"").unwrap(); // just-created -> fresh
+        assert!(agent_is_busy(Some(&lock)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn busy_when_stale_lock_is_idle() {
+        // A lock older than the stale window must read as idle (flush), so
+        // a missed Stop-hook can't make the agent permanently deaf.
+        let dir = std::env::temp_dir().join(format!("giga-watch-stale-{}", std::process::id()));
+        let busy = dir.join("busy");
+        fs::create_dir_all(&busy).unwrap();
+        let lock = busy_lock_path(Some(&dir), "design").unwrap();
+        fs::write(&lock, b"").unwrap();
+        // Backdate mtime well past BUSY_LOCK_STALE_AFTER.
+        let stale = std::time::SystemTime::now() - BUSY_LOCK_STALE_AFTER - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+        assert!(!agent_is_busy(Some(&lock)));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 
 mod add_agent;
 mod config;
+mod codex_channel;
 mod cursor;
 mod fs_paths;
 mod init;
@@ -233,6 +234,24 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Forward giga inbox notifications into a running Codex filesystem channel.
+    CodexChannel {
+        /// Agent name to watch as.
+        #[arg(long, value_name = "AGENT")]
+        r#as: String,
+        /// Codex channel directory used by the experimental source-built Codex.
+        #[arg(long, value_name = "DIR")]
+        channel_dir: PathBuf,
+        /// Start from stored cursors (or byte 0) instead of current EOF.
+        #[arg(long)]
+        catch_up: bool,
+        /// Skip broadcast channels such as `_broadcast.md`.
+        #[arg(long)]
+        direct_only: bool,
+        /// Config file used to enumerate participating channels.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -341,6 +360,22 @@ fn main() -> Result<()> {
                 }
                 None => watch::run_multi(&config, &r#as),
             }
+        }
+        Command::CodexChannel {
+            r#as,
+            channel_dir,
+            catch_up,
+            direct_only,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            codex_channel::run(codex_channel::Args {
+                me: r#as,
+                channel_dir,
+                config,
+                catch_up,
+                direct_only,
+            })
         }
     }
 }
