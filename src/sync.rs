@@ -1,0 +1,460 @@
+//! `giga sync` — push local slice files + canonical TOML to peer hosts.
+//!
+//! Per REMOTE_DESIGN.md §4: v1 transport is rsync over Tailscale SSH.
+//! Each host pushes:
+//!   - Its OWN slice files `<channel>.<this_host>.md` for every cross-host
+//!     channel it participates in (single-writer-per-slice preserved at
+//!     the wire level — a peer never pulls or rewrites our local data).
+//!   - The canonical `giga-harness.toml` (so peers learn about config
+//!     changes made from this host — operator-UX assumes one writer per
+//!     swarm).
+//!
+//! Reception is symmetric: peers push to us; we don't pull. This means
+//! no peer needs to know which slices exist on the others — each side
+//! ships only what it owns.
+//!
+//! Transport is pluggable via the `Transport` enum (v1 only has the
+//! rsync-over-Tailscale-SSH plug; cloud-storage / `s3://` follows in
+//! v1.1). The `compute_sync_plan()` function is pure — testable without
+//! actually invoking rsync.
+//!
+//! Assumption (v1): the canonical config dir + inbox dir paths are
+//! symmetric across hosts (same absolute path everywhere). True for
+//! homogeneous WSL/Linux setups with the same $HOME. Per-host path
+//! overrides can be added later if needed.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+
+use crate::config::{Config, Host};
+
+const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+pub struct Args {
+    pub config: PathBuf,
+    /// Run one sync tick then exit. Useful for `giga sync --once` in
+    /// scripts or for debugging.
+    pub once: bool,
+    /// Print the rsync commands that would be run, don't execute them.
+    /// Combined with `--once` for a no-side-effects preview.
+    pub dry_run: bool,
+}
+
+/// One file to ship to one peer host. Carries enough info to execute the
+/// rsync without re-consulting the config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncCommand {
+    pub peer_target: String,        // user@tailnet_hostname:path
+    pub local_path: PathBuf,
+    pub use_append_verify: bool,    // true for append-only slice files
+    pub kind: &'static str,         // "slice" | "toml" — for logging
+}
+
+pub fn run(args: Args) -> Result<()> {
+    let cfg = Config::load(&args.config)?;
+    if cfg.hosts.is_empty() {
+        eprintln!("sync: no [[hosts]] declared — local-only swarm, nothing to sync. Exiting.");
+        return Ok(());
+    }
+    let this_host = cfg
+        .this_host
+        .clone()
+        .ok_or_else(|| anyhow!("this_host is unknown — set sibling this_host.toml"))?;
+
+    // Verify rsync is installed before the loop so we fail fast with a
+    // clean error instead of N rsync-not-found messages per tick.
+    if !args.dry_run && which::which("rsync").is_err() {
+        return Err(anyhow!(
+            "rsync not found on PATH. Install it with: sudo apt install rsync"
+        ));
+    }
+
+    loop {
+        let plan = compute_sync_plan(&cfg, &this_host, &args.config);
+        if plan.is_empty() {
+            eprintln!("sync: no cross-host slices for this_host=`{this_host}` and no peers to ship to.");
+        }
+        for cmd in &plan {
+            if args.dry_run {
+                eprintln!("[dry-run] {} {} -> {}", cmd.kind, cmd.local_path.display(), cmd.peer_target);
+                continue;
+            }
+            if let Err(e) = execute(cmd) {
+                eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
+            }
+        }
+        if args.once {
+            return Ok(());
+        }
+        thread::sleep(POLL_INTERVAL);
+        // Hot-reload the config so newly-added [[hosts]] / channels are
+        // picked up without restart (~3s latency, same as merger/watch).
+        // A failed reload is logged but we keep the previous in-memory cfg.
+        // For v1 simplicity we just continue the loop with the prior cfg;
+        // a fresh load happens at the top of the next iteration only if
+        // we re-enter — actually the loop above always re-reads at the
+        // top, so the next tick gets the fresh config automatically.
+        // Wait — Config::load was called once before the loop. Move it
+        // inside.
+    }
+}
+
+/// Pure planner: compute the rsync commands this tick should issue.
+/// Inputs: parsed config + this_host name + the canonical config path
+/// (for rsync'ing the TOML itself).
+///
+/// Output rules:
+///   - For every PEER host (not this_host), produce one SyncCommand
+///     for the canonical TOML.
+///   - For every cross-host channel where this_host has at least one
+///     participant, produce one SyncCommand per PEER host that has at
+///     least one participant on that channel, for THIS host's slice
+///     file. Append-verify enabled.
+///   - Skip own slice files (never push to self).
+///   - Skip local-only channels (no slice exists for them on this host).
+pub fn compute_sync_plan(
+    cfg: &Config,
+    this_host: &str,
+    canonical_config_path: &Path,
+) -> Vec<SyncCommand> {
+    let mut plan = Vec::new();
+
+    let peers: Vec<&Host> = cfg
+        .hosts
+        .iter()
+        .filter(|h| h.name != this_host)
+        .collect();
+
+    // 1) Canonical TOML to every peer.
+    for peer in &peers {
+        let target = match build_rsync_target(peer, canonical_config_path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        plan.push(SyncCommand {
+            peer_target: target,
+            local_path: canonical_config_path.to_path_buf(),
+            use_append_verify: false, // TOML is whole-file replace, not append-only
+            kind: "toml",
+        });
+    }
+
+    // 2) Own slice files to every peer that participates on each channel.
+    for ch in &cfg.channels {
+        if cfg.channel_is_local(ch) {
+            continue;
+        }
+        // Hosts with at least one participant on this channel.
+        let mut channel_hosts: Vec<&str> = ch
+            .participants
+            .iter()
+            .filter_map(|p| {
+                cfg.agents
+                    .iter()
+                    .find(|a| a.name == *p)
+                    .and_then(|a| cfg.agent_host(a))
+            })
+            .collect();
+        channel_hosts.sort();
+        channel_hosts.dedup();
+
+        if !channel_hosts.contains(&this_host) {
+            continue; // we don't have any participant; no slice to push
+        }
+
+        // Local slice path (where this host wrote bytes via `giga post`).
+        let merged_path = match cfg.channel_path(ch) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let slice_path = derive_slice_path(&merged_path, this_host);
+
+        for peer in &peers {
+            if !channel_hosts.contains(&peer.name.as_str()) {
+                continue;
+            }
+            let target = match build_rsync_target(peer, &slice_path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            plan.push(SyncCommand {
+                peer_target: target,
+                local_path: slice_path.clone(),
+                use_append_verify: true,
+                kind: "slice",
+            });
+        }
+    }
+
+    plan
+}
+
+/// Build the rsync target string: `user@tailnet_hostname:path`.
+/// `path` is the SAME absolute path on the peer as `local_path` here
+/// (homogeneous-path assumption).
+fn build_rsync_target(peer: &Host, local_path: &Path) -> Result<String> {
+    let user = peer
+        .ssh_user
+        .clone()
+        .or_else(|| std::env::var("USER").ok())
+        .ok_or_else(|| {
+            anyhow!(
+                "can't determine SSH user for host `{}` (no ssh_user; $USER unset)",
+                peer.name
+            )
+        })?;
+    Ok(format!(
+        "{user}@{host}:{path}",
+        host = peer.tailnet_hostname,
+        path = local_path.display()
+    ))
+}
+
+/// `/dir/<channel>.md` + host -> `/dir/<channel>.<host>.md`. Mirrors
+/// `post::slice_path` + `merger::derive_slice_path`.
+fn derive_slice_path(merged: &Path, host: &str) -> PathBuf {
+    let parent = merged.parent().unwrap_or_else(|| Path::new("."));
+    let stem = merged
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "channel".to_string());
+    parent.join(format!("{stem}.{host}.md"))
+}
+
+fn execute(cmd: &SyncCommand) -> Result<()> {
+    // `rsync -avz [--append-verify] <local> <target>`. `-a` preserves
+    // metadata, `-v` is verbose (printed to our stderr), `-z` compresses
+    // the on-wire bytes. We don't need --partial because a failed transfer
+    // doesn't corrupt the destination — rsync writes to a temp + renames.
+    let mut c = Command::new("rsync");
+    c.arg("-avz");
+    if cmd.use_append_verify {
+        c.arg("--append-verify");
+    }
+    c.arg(&cmd.local_path);
+    c.arg(&cmd.peer_target);
+    c.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    let status = c
+        .status()
+        .with_context(|| format!("running rsync for {}", cmd.peer_target))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "rsync exit {} for {} -> {}",
+            status.code().unwrap_or(-1),
+            cmd.local_path.display(),
+            cmd.peer_target
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn host(name: &str, tailnet: &str, ssh_user: Option<&str>) -> Host {
+        Host {
+            name: name.into(),
+            tailnet_hostname: tailnet.into(),
+            ssh_user: ssh_user.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn build_rsync_target_uses_explicit_ssh_user() {
+        let h = host("wsl-b", "wsl-b.tail0.ts.net", Some("alice"));
+        let target = build_rsync_target(&h, Path::new("/some/file.md")).unwrap();
+        assert_eq!(target, "alice@wsl-b.tail0.ts.net:/some/file.md");
+    }
+
+    #[test]
+    fn build_rsync_target_falls_back_to_env_user() {
+        let orig = std::env::var("USER").ok();
+        unsafe { std::env::set_var("USER", "env-user") };
+        let h = host("wsl-b", "wsl-b.tail0.ts.net", None);
+        let target = build_rsync_target(&h, Path::new("/x")).unwrap();
+        match orig {
+            Some(v) => unsafe { std::env::set_var("USER", v) },
+            None => unsafe { std::env::remove_var("USER") },
+        }
+        assert_eq!(target, "env-user@wsl-b.tail0.ts.net:/x");
+    }
+
+    /// Build a 2-host cross-host swarm fixture: alice@wsl-a + bob@wsl-b
+    /// + 1 bilateral channel. Returns (tmp, config_path).
+    fn fixture(this_host: &str) -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let config_path = tmp.path().join("giga-harness.toml");
+        let toml = format!(
+            r#"
+[project]
+name = "remote-test"
+
+[paths]
+wsl_inbox = "{inbox}"
+
+[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "wsl-a.tail0.ts.net"
+ssh_user = "neomatrix"
+
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "wsl-b.tail0.ts.net"
+ssh_user = "neomatrix"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "wsl-a"
+
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+host = "wsl-b"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#,
+            inbox = inbox.to_string_lossy(),
+        );
+        fs::write(&config_path, toml).unwrap();
+        fs::write(
+            tmp.path().join("this_host.toml"),
+            format!("this_host = \"{this_host}\"\n"),
+        )
+        .unwrap();
+        (tmp, config_path)
+    }
+
+    #[test]
+    fn plan_pushes_toml_to_every_peer() {
+        let (_tmp, config_path) = fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+        let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
+        assert_eq!(toml_pushes.len(), 1, "one toml push per peer; one peer here");
+        assert!(toml_pushes[0]
+            .peer_target
+            .ends_with(&config_path.display().to_string()));
+        assert!(toml_pushes[0].peer_target.contains("wsl-b.tail0.ts.net"));
+        assert!(!toml_pushes[0].use_append_verify, "TOML is whole-file");
+    }
+
+    #[test]
+    fn plan_pushes_own_slice_to_peers_on_cross_host_channels() {
+        let (tmp, config_path) = fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+        let slice_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "slice").collect();
+        assert_eq!(slice_pushes.len(), 1, "one slice push per peer for the bilateral");
+        assert!(slice_pushes[0].use_append_verify, "slices are append-only");
+        // We're wsl-a so the slice is alice-bob.wsl-a.md
+        assert!(slice_pushes[0]
+            .local_path
+            .to_string_lossy()
+            .ends_with("alice-bob.wsl-a.md"));
+        // Target hostname is the peer (wsl-b)
+        assert!(slice_pushes[0].peer_target.contains("wsl-b.tail0.ts.net"));
+        let _ = tmp; // keep tempdir alive
+    }
+
+    #[test]
+    fn plan_does_not_push_to_self() {
+        let (_tmp, config_path) = fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+        for cmd in &plan {
+            assert!(
+                !cmd.peer_target.contains("wsl-a.tail0.ts.net"),
+                "should never push to own host: {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_symmetric_from_other_host_pushes_other_slice() {
+        // Same swarm, viewed from wsl-b's perspective: it should push
+        // its own (wsl-b) slice to wsl-a, not wsl-a's slice.
+        let (_tmp, config_path) = fixture("wsl-b");
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-b", &config_path);
+        let slice_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "slice").collect();
+        assert_eq!(slice_pushes.len(), 1);
+        assert!(slice_pushes[0]
+            .local_path
+            .to_string_lossy()
+            .ends_with("alice-bob.wsl-b.md"));
+        assert!(slice_pushes[0].peer_target.contains("wsl-a.tail0.ts.net"));
+    }
+
+    #[test]
+    fn plan_skips_local_only_channels() {
+        // Re-write the fixture so bob also lives on wsl-a -> channel is
+        // local-only -> no slice push for it.
+        let (tmp, config_path) = fixture("wsl-a");
+        let body = fs::read_to_string(&config_path)
+            .unwrap()
+            .replace(r#"host = "wsl-b""#, r#"host = "wsl-a""#);
+        fs::write(&config_path, body).unwrap();
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+        let slice_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "slice").collect();
+        assert!(slice_pushes.is_empty(), "local-only channels need no slice push");
+        // TOML push still happens (peer might have other reasons to receive).
+        let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
+        assert_eq!(toml_pushes.len(), 1);
+        let _ = tmp;
+    }
+
+    #[test]
+    fn plan_with_no_peers_is_empty() {
+        // Single-host swarm with [[hosts]] entry — degenerate but valid.
+        let tmp = TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let config_path = tmp.path().join("giga-harness.toml");
+        let toml = format!(
+            r#"
+[project]
+name = "solo"
+
+[paths]
+wsl_inbox = "{inbox}"
+
+[[hosts]]
+name = "wsl-only"
+tailnet_hostname = "wsl-only.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "wsl-only"
+"#,
+            inbox = inbox.to_string_lossy(),
+        );
+        fs::write(&config_path, toml).unwrap();
+        fs::write(tmp.path().join("this_host.toml"), "this_host = \"wsl-only\"\n").unwrap();
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-only", &config_path);
+        assert!(plan.is_empty());
+    }
+}

@@ -27,6 +27,7 @@ mod registry;
 mod remote;
 mod setup;
 mod sweep;
+mod sync;
 mod switch;
 mod templates;
 mod terminal;
@@ -246,6 +247,23 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Long-running sync daemon — every ~3s, rsync the canonical
+    /// giga-harness.toml + own slice files to each peer host over
+    /// Tailscale SSH (per REMOTE_DESIGN.md §4).
+    ///
+    /// Runs alongside `giga watch` + `giga merger` per host. No-op when
+    /// the swarm has no [[hosts]] (today's local-only swarms).
+    Sync {
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Run a single sync tick and exit (useful in scripts + tests).
+        #[arg(long)]
+        once: bool,
+        /// Print the rsync commands that would be issued; don't execute.
+        /// Combine with --once for a no-side-effects preview.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Run a giga subcommand on a remote host over SSH. Looks up the
     /// host in `[[hosts]]`, shells to `ssh <user>@<tailnet_hostname>`,
     /// runs `giga <args>` from the same canonical config dir on that
@@ -399,6 +417,18 @@ fn main() -> Result<()> {
         Command::Merger { config } => {
             let config = registry::resolve_config(config)?;
             merger::run(&config)
+        }
+        Command::Sync {
+            config,
+            once,
+            dry_run,
+        } => {
+            let config = registry::resolve_config(config)?;
+            sync::run(sync::Args {
+                config,
+                once,
+                dry_run,
+            })
         }
         Command::Remote {
             host,
