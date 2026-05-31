@@ -44,15 +44,31 @@ pub fn run(args: Args) -> Result<i32> {
     let cfg = Config::load(&args.config)?;
     let host = lookup_host(&cfg, &args.host)?;
     let target = build_ssh_target(host)?;
-    let config_dir = args
+    // Use the peer's remote_config_dir override if set; otherwise fall
+    // back to the local config dir (homogeneous-path assumption). Same
+    // logic as sync uses when building rsync targets — they have to
+    // agree on where the swarm lives on the peer.
+    let local_config_dir = args
         .config
         .parent()
-        .ok_or_else(|| anyhow!("local config path `{}` has no parent dir", args.config.display()))?;
-    let remote_cmd = build_remote_command(config_dir, &args.remote_args);
+        .ok_or_else(|| anyhow!("local config path `{}` has no parent dir", args.config.display()))?
+        .to_path_buf();
+    let remote_dir = host
+        .remote_config_dir
+        .clone()
+        .unwrap_or_else(|| local_config_dir.clone());
+    let remote_cmd = build_remote_command(&remote_dir, &args.remote_args);
 
+    // Wrap in `bash -lc '...'` so the remote shell sources login config
+    // (~/.bashrc / ~/.cargo/env) — without it, cargo-installed binaries
+    // like the peer's `giga` aren't on PATH for non-interactive ssh.
+    let wrapped = format!(
+        "bash -lc {}",
+        shell_escape::escape(std::borrow::Cow::Borrowed(remote_cmd.as_str()))
+    );
     let status = Command::new("ssh")
         .arg(&target)
-        .arg(&remote_cmd)
+        .arg(&wrapped)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

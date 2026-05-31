@@ -283,11 +283,6 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         .remote_config_dir
         .clone()
         .unwrap_or_else(|| local_config_dir.clone());
-    let toml_filename = canonical_config_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "giga-harness.toml".to_string());
-    let remote_toml_path = remote_dir.join(&toml_filename);
     let user = peer
         .ssh_user
         .clone()
@@ -299,15 +294,35 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     let mkdir_cmd = format!("mkdir -p {}", shell_escape::escape(remote_dir.to_string_lossy()));
     ssh_run(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
 
-    // 2. rsync the canonical TOML.
-    let toml_target = format!("{ssh_target}:{}", remote_toml_path.display());
-    let push = SyncCommand {
-        peer_target: toml_target,
-        local_path: canonical_config_path.to_path_buf(),
-        use_append_verify: false,
-        kind: "toml",
-    };
-    execute(&push).context("rsync TOML to peer")?;
+    // 2. rsync the WHOLE swarm dir (canonical TOML + agents/ templates
+    //    + handover stubs + anything else under the config dir).
+    //    Excludes this_host.toml so each host's per-host identity isn't
+    //    trampled; excludes workdirs/ so an agent's accumulated session
+    //    state isn't clobbered. The remote `giga init` (step 3 from
+    //    the add-agent caller) re-renders workdir CLAUDE.md from the
+    //    template that this rsync just delivered.
+    let dir_rsync_status = Command::new("rsync")
+        .args([
+            "-avz",
+            "--exclude",
+            "this_host.toml",
+            "--exclude",
+            "workdirs/",
+            &format!("{}/", local_config_dir.display()),
+            &format!("{ssh_target}:{}/", remote_dir.display()),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("invoking rsync of swarm dir to {ssh_target}"))?;
+    if !dir_rsync_status.success() {
+        return Err(anyhow!(
+            "rsync swarm dir -> {ssh_target}:{} exited {}",
+            remote_dir.display(),
+            dir_rsync_status.code().unwrap_or(-1),
+        ));
+    }
 
     // 3. ensure this_host.toml exists on the peer (only set if missing
     //    — never overwrite, in case a previous bootstrap got there first).

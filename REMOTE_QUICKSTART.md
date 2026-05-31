@@ -98,25 +98,33 @@ Verify with `giga validate`:
 giga validate ~/.giga/configs/<swarm>/giga-harness.toml
 ```
 
-### 5. Add an agent on host B
+### 4b. Register the new host in the swarm
+
+```sh
+giga add-host --name wsl-b \
+              --tailnet-hostname wsl-b.tail1234.ts.net \
+              --ssh-user <user-on-wsl-b> \
+              --remote-config-dir /home/<user-on-wsl-b>/.giga/configs/<swarm>
+```
+
+Appends a `[[hosts]]` entry to the canonical TOML AND auto-bootstraps the new peer (mkdir + rsync the swarm dir + ensure peer's `this_host.toml`). `--no-bootstrap` skips the push if the peer isn't reachable yet.
+
+### 5. Add an agent on host B (single command — does everything)
 
 ```sh
 giga add-agent --host wsl-b \
                --name test-b \
                --peer test-a \
                --role "test agent on box B" \
-               --workdir /home/<you>/.giga/configs/<swarm>/workdirs/test-b
+               --workdir /home/<user-on-wsl-b>/.giga/configs/<swarm>/workdirs/test-b
 ```
 
-This appends the new `[[agents]]` row to the canonical TOML, adds a bilateral channel `test-a-test-b.md`, and (because `--host` names a non-local peer) auto-bootstraps host B:
+This single command:
+1. Appends the new `[[agents]]` row + bilateral channel `test-a-test-b.md` to the canonical TOML
+2. **Auto-bootstraps wsl-b**: rsyncs the whole swarm dir (TOML + `agents/<slug>.md` templates) to wsl-b, ensures `this_host.toml` exists
+3. **Auto-scaffolds the new agent**: runs `giga init` remotely on wsl-b (host-aware: only touches wsl-b's agents, leaves wsl-a's workdirs alone), creating `test-b`'s workdir + `CLAUDE.md`
 
-- `mkdir -p` the swarm dir on B (at the host's `remote_config_dir` if set, otherwise the local absolute path)
-- rsync the canonical `giga-harness.toml` to B
-- create B's `this_host.toml` if it doesn't already exist
-
-You'll see `auto-bootstrap: pushing canonical TOML to wsl-b...` in the output. If the network/SSH is down at the time, the local TOML edit still succeeds and the auto-bootstrap warns instead of failing; re-run `giga sync --once` later to recover.
-
-> _One thing it does NOT do yet: scaffold the per-agent CLAUDE.md + workdir on B. You'd run `giga remote --host wsl-b init` after to do that._
+When the network/SSH is down, each of 2/3 individually warns + tells you the manual recovery command (`giga sync --once` or `giga remote --host wsl-b init`); the local TOML edit always succeeds.
 
 ### 6. Launch
 
@@ -162,6 +170,7 @@ Within ~10 seconds, `test-a` on host A sees it.
 | Post on A doesn't appear on B | `giga sync` not running on A OR `giga merger` not running on B | check the sync + merger panes; restart if dead |
 | Post on A appears as a slice file on B but not in the merged file | merger isn't running on B | start it: `giga merger --config <swarm>/giga-harness.toml` |
 | `giga validate` errors `this_host = ... isn't in [[hosts]]` | typo between `this_host.toml` and `[[hosts]].name` | fix one to match the other |
+| `giga remote --host X subcmd --flag value` is misparsed as putting `--flag value` into remote args | clap's trailing-args eats flagged args | put `--config` BEFORE the trailing list, or use `--`: `giga remote --host X --config ... -- subcmd --flag value` |
 
 ---
 
