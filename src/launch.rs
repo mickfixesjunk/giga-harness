@@ -236,6 +236,7 @@ mod tests {
             workdir: PathBuf::from(format!("/h/{name}")),
             role: "test".into(),
             platform: "wsl".into(),
+            host: None,
             bench_scheduler: false,
             claudemd_template: None,
             launch_cmd: None,
