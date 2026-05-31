@@ -85,8 +85,9 @@ fn trust_target(agent: &Agent) -> Result<(PathBuf, String)> {
 
 fn dirs_home() -> Result<PathBuf> {
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME env var not set"))
+        .ok_or_else(|| anyhow::anyhow!("neither $HOME nor %USERPROFILE% is set"))
 }
 
 fn extract_windows_user(workdir: &str) -> Option<String> {

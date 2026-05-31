@@ -21,6 +21,7 @@ pub fn run() -> Result<()> {
 
     let cwd = std::env::current_dir().context("getting current working directory")?;
     let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("~"));
     let configs_default = home.join(".giga").join("configs");
