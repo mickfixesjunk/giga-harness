@@ -129,16 +129,36 @@ pub fn compute_sync_plan(
         .filter(|h| h.name != this_host)
         .collect();
 
-    // 1) Canonical TOML to every peer.
+    // Local config + inbox dirs — used as the default when a peer
+    // hasn't overridden them.
+    let local_config_dir = canonical_config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let local_inbox_dir = cfg
+        .paths
+        .wsl_inbox
+        .clone()
+        .or_else(|| cfg.paths.windows_inbox.clone())
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+
+    // 1) Canonical TOML to every peer (at peer's remote_config_dir).
+    let toml_filename = canonical_config_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "giga-harness.toml".to_string());
     for peer in &peers {
-        let target = match build_rsync_target(peer, canonical_config_path) {
+        let remote_dir = peer
+            .remote_config_dir
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| local_config_dir.clone());
+        let remote_path = remote_dir.join(&toml_filename);
+        let target = match build_rsync_target(peer, &remote_path) {
             Ok(t) => t,
             Err(_) => continue,
         };
         plan.push(SyncCommand {
             peer_target: target,
             local_path: canonical_config_path.to_path_buf(),
-            use_append_verify: false, // TOML is whole-file replace, not append-only
+            use_append_verify: false,
             kind: "toml",
         });
     }
@@ -148,7 +168,6 @@ pub fn compute_sync_plan(
         if cfg.channel_is_local(ch) {
             continue;
         }
-        // Hosts with at least one participant on this channel.
         let mut channel_hosts: Vec<&str> = ch
             .participants
             .iter()
@@ -163,21 +182,30 @@ pub fn compute_sync_plan(
         channel_hosts.dedup();
 
         if !channel_hosts.contains(&this_host) {
-            continue; // we don't have any participant; no slice to push
+            continue;
         }
 
-        // Local slice path (where this host wrote bytes via `giga post`).
         let merged_path = match cfg.channel_path(ch) {
             Ok(p) => p,
             Err(_) => continue,
         };
         let slice_path = derive_slice_path(&merged_path, this_host);
+        let slice_filename = slice_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{}.{this_host}.md", ch.file.trim_end_matches(".md")));
 
         for peer in &peers {
             if !channel_hosts.contains(&peer.name.as_str()) {
                 continue;
             }
-            let target = match build_rsync_target(peer, &slice_path) {
+            let remote_inbox = peer
+                .remote_inbox_dir
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| local_inbox_dir.clone());
+            let remote_slice_path = remote_inbox.join(&slice_filename);
+            let target = match build_rsync_target(peer, &remote_slice_path) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
@@ -194,9 +222,10 @@ pub fn compute_sync_plan(
 }
 
 /// Build the rsync target string: `user@tailnet_hostname:path`.
-/// `path` is the SAME absolute path on the peer as `local_path` here
-/// (homogeneous-path assumption).
-fn build_rsync_target(peer: &Host, local_path: &Path) -> Result<String> {
+/// `path` is the destination path on the peer (per remote_config_dir /
+/// remote_inbox_dir, with the local path as fallback for
+/// homogeneous-user setups).
+fn build_rsync_target(peer: &Host, remote_path: &Path) -> Result<String> {
     let user = peer
         .ssh_user
         .clone()
@@ -210,7 +239,7 @@ fn build_rsync_target(peer: &Host, local_path: &Path) -> Result<String> {
     Ok(format!(
         "{user}@{host}:{path}",
         host = peer.tailnet_hostname,
-        path = local_path.display()
+        path = remote_path.display()
     ))
 }
 
@@ -265,6 +294,8 @@ mod tests {
             name: name.into(),
             tailnet_hostname: tailnet.into(),
             ssh_user: ssh_user.map(|s| s.into()),
+            remote_config_dir: None,
+            remote_inbox_dir: None,
         }
     }
 
@@ -421,6 +452,130 @@ participants = ["alice", "bob"]
         let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
         assert_eq!(toml_pushes.len(), 1);
         let _ = tmp;
+    }
+
+    #[test]
+    fn plan_uses_peer_remote_config_dir_override_when_set() {
+        // When the local config lives at /home/alice/... and the peer's
+        // config lives at /home/bob/... (different user, different
+        // $HOME), the toml push must target the peer's path, not the
+        // local path. v1.1 fix for the homogeneous-path-assumption bug
+        // surfaced in the live smoke (REMOTE_DESIGN.md §6 step 10).
+        let tmp = TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let local_cfg = tmp.path().join("local").join("giga-harness.toml");
+        fs::create_dir_all(local_cfg.parent().unwrap()).unwrap();
+        fs::write(
+            &local_cfg,
+            format!(
+                r#"
+[project]
+name = "x"
+
+[paths]
+wsl_inbox = "{inbox}"
+
+[[hosts]]
+name = "self"
+tailnet_hostname = "self.tail0.ts.net"
+
+[[hosts]]
+name = "peer"
+tailnet_hostname = "peer.tail0.ts.net"
+ssh_user = "bob"
+remote_config_dir = "/home/bob/.giga/configs/x"
+remote_inbox_dir = "/home/bob/projects/inbox"
+"#,
+                inbox = inbox.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("local").join("this_host.toml"),
+            "this_host = \"self\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&local_cfg).unwrap();
+        let plan = compute_sync_plan(&cfg, "self", &local_cfg);
+        let toml = plan.iter().find(|c| c.kind == "toml").expect("toml push");
+        assert_eq!(
+            toml.peer_target,
+            "bob@peer.tail0.ts.net:/home/bob/.giga/configs/x/giga-harness.toml"
+        );
+    }
+
+    #[test]
+    fn plan_uses_peer_remote_inbox_dir_override_when_set_for_slice_push() {
+        // Same idea — slice files land in the peer's remote_inbox_dir
+        // when set, not at the local inbox path.
+        let tmp = TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let local_cfg = tmp.path().join("local").join("giga-harness.toml");
+        fs::create_dir_all(local_cfg.parent().unwrap()).unwrap();
+        fs::write(
+            &local_cfg,
+            format!(
+                r#"
+[project]
+name = "x"
+
+[paths]
+wsl_inbox = "{inbox}"
+
+[[hosts]]
+name = "self"
+tailnet_hostname = "self.tail0.ts.net"
+
+[[hosts]]
+name = "peer"
+tailnet_hostname = "peer.tail0.ts.net"
+ssh_user = "bob"
+remote_inbox_dir = "/home/bob/projects/inbox"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "self"
+
+[[agents]]
+name = "bob-agent"
+workdir = "/h/bob-agent"
+role = "."
+platform = "wsl"
+host = "peer"
+
+[[channels]]
+file = "alice-bob-agent.md"
+side = "wsl"
+participants = ["alice", "bob-agent"]
+"#,
+                inbox = inbox.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("local").join("this_host.toml"),
+            "this_host = \"self\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&local_cfg).unwrap();
+        let plan = compute_sync_plan(&cfg, "self", &local_cfg);
+        let slice = plan
+            .iter()
+            .find(|c| c.kind == "slice")
+            .expect("slice push to peer");
+        assert!(
+            slice
+                .peer_target
+                .ends_with("/home/bob/projects/inbox/alice-bob-agent.self.md"),
+            "expected peer_target to end with peer's inbox dir + slice filename, got: {}",
+            slice.peer_target
+        );
+        assert!(slice.use_append_verify);
     }
 
     #[test]

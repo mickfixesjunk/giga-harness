@@ -93,14 +93,26 @@ pub struct Paths {
 /// this host over the tailnet (e.g. `wsl-box-b.tail1234.ts.net`).
 ///
 /// `ssh_user` is the OS user account on this host. Defaults to the
-/// caller's `$USER` if omitted, which is the common case (Mick runs
-/// the same user across his boxes).
+/// caller's `$USER` if omitted — the common case when the same user
+/// runs on every box. Set explicitly when hosts have different users
+/// (e.g. `neomatrix` on box A, `neo` on box B).
+///
+/// `remote_config_dir` and `remote_inbox_dir` are absolute paths on
+/// THIS host (the one the [[hosts]] entry describes) — used by other
+/// hosts when they push to this one. Both default to the local
+/// caller's matching path, which works for homogeneous-user setups.
+/// Set explicitly when paths differ (e.g. `/home/neomatrix/...` on
+/// box A vs `/home/neo/...` on box B).
 #[derive(Debug, Deserialize, Clone)]
 pub struct Host {
     pub name: String,
     pub tailnet_hostname: String,
     #[serde(default)]
     pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub remote_config_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub remote_inbox_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

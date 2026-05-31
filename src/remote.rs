@@ -121,6 +121,8 @@ mod tests {
             name: name.into(),
             tailnet_hostname: tailnet.into(),
             ssh_user: ssh_user.map(|s| s.into()),
+            remote_config_dir: None,
+            remote_inbox_dir: None,
         }
     }
 
