@@ -13,10 +13,13 @@
 //! no peer needs to know which slices exist on the others — each side
 //! ships only what it owns.
 //!
-//! Transport is pluggable via the `Transport` enum (v1 only has the
-//! rsync-over-Tailscale-SSH plug; cloud-storage / `s3://` follows in
-//! v1.1). The `compute_sync_plan()` function is pure — testable without
-//! actually invoking rsync.
+//! v1 transport is rsync over Tailscale SSH, invoked directly via
+//! `Command::new("rsync")` — no abstraction layer. If a second transport
+//! (cloud-storage / `s3://`) lands in v1.1, extracting a `Transport`
+//! enum is the natural cut; `compute_sync_plan()` is already pure +
+//! returns `SyncCommand` values, so a future enum just feeds into the
+//! same plan structure. The planner is testable without actually
+//! invoking rsync.
 //!
 //! Assumption (v1): the canonical config dir + inbox dir paths are
 //! symmetric across hosts (same absolute path everywhere). True for
