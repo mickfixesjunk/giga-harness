@@ -21,6 +21,7 @@ mod cursor;
 mod fs_paths;
 mod init;
 mod launch;
+mod merger;
 mod post;
 mod registry;
 mod remote;
@@ -235,6 +236,16 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Long-running merger daemon — for every cross-host channel,
+    /// poll all <channel>.<host>.md slice files and append new bytes
+    /// to <channel>.md (the file the watcher tails).
+    ///
+    /// Runs alongside `giga watch` + `giga sync` per host. No-op when
+    /// the swarm has no [[hosts]] (today's local-only swarms).
+    Merger {
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
     /// Run a giga subcommand on a remote host over SSH. Looks up the
     /// host in `[[hosts]]`, shells to `ssh <user>@<tailnet_hostname>`,
     /// runs `giga <args>` from the same canonical config dir on that
@@ -384,6 +395,10 @@ fn main() -> Result<()> {
                 }
                 None => watch::run_multi(&config, &r#as),
             }
+        }
+        Command::Merger { config } => {
+            let config = registry::resolve_config(config)?;
+            merger::run(&config)
         }
         Command::Remote {
             host,
