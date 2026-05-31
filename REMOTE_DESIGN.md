@@ -142,9 +142,9 @@ Each host has the same canonical TOML except for `this_host = "..."` which is lo
 ### 3.2 Operator CLI — the 4 commands Mick asked for
 
 ```sh
-# 1) Setup on each machine (already shipped — setup-remote-peer.sh)
-bash setup-remote-peer.sh                                              # on A
-bash setup-remote-peer.sh --inbox-dir ~/projects/inbox-remote-test     # on B
+# 1) Setup on each machine
+#    Operator host: probably already set up.
+#    New remote node (bare WSL):  giga setup --remote-node
 
 # 2) From A: start a new agent on B
 giga add-agent --host wsl-box-b --name code-2 \
@@ -251,7 +251,7 @@ Ordered. Effort estimates are focused engineering days (one developer, no contex
 | 6 | Add `--host` flag to `add-agent`, `sweep`, `launch` (thin wrappers over `giga remote`). New subcommand `add-channel`. `add-agent --host B` is: update canonical TOML on A + `giga remote --host B launch --only <new>`. | 1 day | ~100 LOC total. |
 | 7 | Update `launch.rs` to spawn the `Monitor` for `giga sync` + `giga merger` alongside `giga watch`. Update CLAUDE.md templates. | 0.5 day | Templates only; per-agent CLAUDE.md authors can opt out of either Monitor. |
 | 8 | Integration tests: 2-host loopback against `localhost` over Tailscale SSH (or plain SSH for test env); post round-trip latency; sync down + recovery; concurrent post race; merger crash mid-tick replay. | 2 days | New test harness. ~300 LOC tests. |
-| 9 | Docs: `REMOTE_QUICKSTART.md` + update to README. Integrate `setup-remote-peer.sh` as `giga setup-remote` subcommand. | 1 day | Lower than the original estimate since less to set up (Tailscale SSH did most of the work). |
+| 9 | Docs: `REMOTE_QUICKSTART.md` operator runbook + `giga setup --remote-node` subcommand (installs Tailscale + runs `tailscale up` + enables Tailscale SSH + installs rsync + creates inbox dir). Supersedes the standalone setup-remote-peer.sh bash script committed earlier on this branch. | 1 day | Lower than the original estimate since less to set up (Tailscale SSH did most of the work). |
 | 10 | Live 2-host smoke on the `remote-test` swarm: one agent posting on A, one on B, bilateral channel, watcher firing both directions for a full day. | 0.5 day | Real-world validation before extending to superdeduper. |
 
 **Total: ~10 engineering days for v1.**
