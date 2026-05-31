@@ -57,7 +57,7 @@ struct SliceState {
     last_size: u64,
 }
 
-pub fn run(config_path: &Path) -> Result<()> {
+pub fn run(config_path: &Path, once: bool) -> Result<()> {
     if !config_path.exists() {
         anyhow::bail!(
             "config file not found: {} — pass --config <path>",
@@ -81,6 +81,12 @@ pub fn run(config_path: &Path) -> Result<()> {
             tracked.len(),
             tracked.keys().cloned().collect::<Vec<_>>().join(", "),
         );
+    }
+
+    if once {
+        // One sweep — useful for tests + scripted catch-up scenarios.
+        merge_tick(&mut tracked, giga_home.as_deref());
+        return Ok(());
     }
 
     loop {

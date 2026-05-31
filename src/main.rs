@@ -282,6 +282,10 @@ enum Command {
     Merger {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// Run a single merge sweep and exit (useful in tests + scripted
+        /// catch-up scenarios).
+        #[arg(long)]
+        once: bool,
     },
     /// Long-running sync daemon — every ~3s, rsync the canonical
     /// giga-harness.toml + own slice files to each peer host over
@@ -508,9 +512,9 @@ fn main() -> Result<()> {
                 None => watch::run_multi(&config, &r#as),
             }
         }
-        Command::Merger { config } => {
+        Command::Merger { config, once } => {
             let config = registry::resolve_config(config)?;
-            merger::run(&config)
+            merger::run(&config, once)
         }
         Command::Sync {
             config,
