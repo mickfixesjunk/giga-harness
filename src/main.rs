@@ -17,7 +17,9 @@ use clap::{Parser, Subcommand};
 mod add_agent;
 mod add_channel;
 mod add_host;
+mod claude_operator;
 mod config;
+mod hosts;
 mod codex_channel;
 mod cursor;
 mod fs_paths;
@@ -129,6 +131,27 @@ enum Command {
         #[arg(long, value_name = "MODE", default_value = "auto")]
         terminal: String,
     },
+    /// List the swarm's hosts + which agents live on each + whether
+    /// this_host matches. Read-only; useful for orientation after
+    /// `giga add-host` / `giga add-agent --host` to confirm topology.
+    Hosts {
+        #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Operator help for Claude. TTY-aware:
+    ///
+    ///   * At a terminal: launches `claude --append-system-prompt <doc>`
+    ///     so a fresh Claude session boots with the giga operator
+    ///     command surface in context. The drop-into-Claude one-shot.
+    ///
+    ///   * Piped / redirected (e.g. from an agent's Bash tool): just
+    ///     prints the doc to stdout. An agent invoking this captures
+    ///     the doc into their conversation context.
+    ///
+    /// Doc source: `CLAUDE_OPERATOR.md` at the repo root, baked into
+    /// the binary at compile time. No network. Same content for both
+    /// audiences.
+    ClaudeOperator,
     /// Tabulate every channel's last message + WAITING ON tag.
     Sweep {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
@@ -470,6 +493,11 @@ fn main() -> Result<()> {
             }
             launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
         }
+        Command::Hosts { config } => {
+            let config = registry::resolve_config(config)?;
+            hosts::run(&config)
+        }
+        Command::ClaudeOperator => claude_operator::run(),
         Command::Sweep {
             config,
             owed_by,

@@ -28,3 +28,7 @@ The Monitor invocation in Session Start (above) auto-discovers every channel whe
 ## Convention
 
 {{CONVENTION}}
+
+## Multi-host operations
+
+If asked to do multi-host operations or scaffold agents (`giga add-agent`, `giga add-host`, `giga add-channel`, `giga launch --host`, etc.) and you don't already know the full command surface, run **`giga claude-operator`** from a Bash tool — it prints the operator command reference, mental model, and copy-pasteable recipes into your context. Cheap to invoke; no network call.
