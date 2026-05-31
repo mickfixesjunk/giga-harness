@@ -26,7 +26,7 @@ detect_target() {
     case "$uname_s" in
         Linux*)
             case "$uname_m" in
-                x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
+                x86_64|amd64) echo "x86_64-unknown-linux-musl" ;;
                 *) err "unsupported linux arch: $uname_m (only x86_64 published)" ;;
             esac
             ;;
