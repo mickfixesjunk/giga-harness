@@ -50,6 +50,40 @@ pub fn giga_home() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".giga"))
 }
 
+// ---------------------------------------------------------------------------
+// Merge cursors (per-channel-per-slice-host) — used by `giga merger` to
+// remember how many bytes of each peer's slice file we've already appended
+// to the local merged <channel>.md. Keyed by (channel, slice_host) not by
+// (agent, channel) like the watch cursors above — different consumers.
+// ---------------------------------------------------------------------------
+
+/// Path to the merge cursor for `(channel, slice_host)`.
+/// e.g. `~/.giga/merge-cursors/design-code.md/wsl-a.pos`
+pub fn merge_cursor_path(giga_home: &Path, channel: &str, slice_host: &str) -> PathBuf {
+    giga_home
+        .join("merge-cursors")
+        .join(channel)
+        .join(format!("{slice_host}.pos"))
+}
+
+/// Read the stored merge offset. Returns `None` when the cursor file
+/// doesn't exist (caller decides whether to fall back to 0 or EOF).
+pub fn read_merge(giga_home: &Path, channel: &str, slice_host: &str) -> Option<u64> {
+    let s = fs::read_to_string(merge_cursor_path(giga_home, channel, slice_host)).ok()?;
+    s.trim().parse::<u64>().ok()
+}
+
+/// Write `offset` to the merge cursor, creating parent dirs as needed.
+/// Errors are silently swallowed (same policy as the watch cursors) — a
+/// failed cursor write must never crash the merger.
+pub fn write_merge(giga_home: &Path, channel: &str, slice_host: &str, offset: u64) {
+    let path = merge_cursor_path(giga_home, channel, slice_host);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, offset.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +115,36 @@ mod tests {
         write(tmp.path(), "test", "ch.md", 100);
         write(tmp.path(), "test", "ch.md", 999);
         assert_eq!(read(tmp.path(), "test", "ch.md"), Some(999));
+    }
+
+    #[test]
+    fn merge_cursor_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        write_merge(tmp.path(), "alice-bob.md", "wsl-a", 4242);
+        assert_eq!(read_merge(tmp.path(), "alice-bob.md", "wsl-a"), Some(4242));
+    }
+
+    #[test]
+    fn merge_cursor_missing_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(read_merge(tmp.path(), "alice-bob.md", "wsl-a"), None);
+    }
+
+    #[test]
+    fn merge_cursor_per_channel_per_slice_host_isolation() {
+        let tmp = TempDir::new().unwrap();
+        write_merge(tmp.path(), "ch-1.md", "wsl-a", 100);
+        write_merge(tmp.path(), "ch-1.md", "wsl-b", 200);
+        write_merge(tmp.path(), "ch-2.md", "wsl-a", 300);
+        assert_eq!(read_merge(tmp.path(), "ch-1.md", "wsl-a"), Some(100));
+        assert_eq!(read_merge(tmp.path(), "ch-1.md", "wsl-b"), Some(200));
+        assert_eq!(read_merge(tmp.path(), "ch-2.md", "wsl-a"), Some(300));
+    }
+
+    #[test]
+    fn merge_cursor_path_layout() {
+        let tmp = TempDir::new().unwrap();
+        let p = merge_cursor_path(tmp.path(), "design-code.md", "wsl-a");
+        assert!(p.ends_with("merge-cursors/design-code.md/wsl-a.pos"));
     }
 }

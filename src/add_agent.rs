@@ -20,6 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::Config;
+use crate::sync;
 
 pub struct Args {
     pub config: PathBuf,
@@ -33,6 +34,14 @@ pub struct Args {
     pub template: Option<PathBuf>,
     pub dry_run: bool,
     pub code_root: Option<String>,
+    /// Optional host name (must match a `[[hosts]].name`) — set when
+    /// scaffolding an agent that lives on a peer host. The TOML
+    /// `[[agents]]` entry will carry `host = "..."`; sync (step 5)
+    /// ships the canonical TOML to peers so they learn about it. The
+    /// user then runs `giga launch --host <peer> --only <new-agent>`
+    /// (or `giga remote --host <peer> launch --only <new-agent>`) to
+    /// actually bring up the terminal on the peer.
+    pub host: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -139,14 +148,67 @@ pub fn run(args: Args) -> Result<()> {
         );
     }
     println!("  + wrote {}", template_path.display());
+
+    // ---- auto-bootstrap peer when --host names a non-local host ------
+    // Replaces the runbook's manual "rsync the swarm dir to peer +
+    // create this_host.toml" step from REMOTE_QUICKSTART.md. Best-effort:
+    // on failure we warn but don't fail the local-side success (the
+    // operator can re-run `giga sync` later to recover).
+    if let Some(host) = &args.host {
+        let is_remote = revalidated.this_host.as_deref() != Some(host.as_str());
+        if is_remote {
+            println!();
+            println!("auto-bootstrap: pushing canonical TOML to `{host}`...");
+            let bootstrap_ok = match sync::bootstrap_peer(&revalidated, host, &args.config) {
+                Ok(()) => {
+                    println!(
+                        "  + canonical TOML synced to `{host}` (and this_host.toml ensured)"
+                    );
+                    true
+                }
+                Err(e) => {
+                    eprintln!("  ! auto-bootstrap failed: {e:#}");
+                    eprintln!("    The local config is correct; the peer just isn't synced yet.");
+                    eprintln!("    Run `giga sync --once` once everything is reachable to recover.");
+                    false
+                }
+            };
+            // Remote `giga init` scaffolds the new agent's workdir +
+            // CLAUDE.md on the peer. Init is host-aware (as of v1.1), so
+            // it only touches workdirs for agents whose `host` matches
+            // the peer — won't try to mkdir /home/<other-user>/... on
+            // the wrong filesystem. Best-effort: only runs if bootstrap
+            // succeeded (otherwise the peer doesn't even have the TOML
+            // to init from).
+            if bootstrap_ok {
+                println!("auto-scaffold: running `giga init` on `{host}`...");
+                match sync::run_remote_giga_init(&revalidated, host, &args.config) {
+                    Ok(()) => println!("  + remote init complete — `{}`'s workdir + CLAUDE.md ready on `{host}`", args.name),
+                    Err(e) => {
+                        eprintln!("  ! remote giga init failed: {e:#}");
+                        eprintln!("    The peer has the TOML; run `giga remote --host {host} init` manually to scaffold.");
+                    }
+                }
+            }
+        }
+    }
+
     println!();
     println!("next:");
     println!("  giga validate {}", args.config.display());
-    println!("  # if multi-host: re-localize first, then launch from your terminal:");
-    println!(
-        "  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>",
-        args.name
-    );
+    if args.host.is_some() {
+        println!(
+            "  giga launch --host {} --only {}    # bring up the agent's terminal on the peer",
+            args.host.as_deref().unwrap_or(""),
+            args.name,
+        );
+    } else {
+        println!("  # if multi-host: re-localize first, then launch from your terminal:");
+        println!(
+            "  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>",
+            args.name
+        );
+    }
     Ok(())
 }
 
@@ -211,6 +273,7 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
 
 // --------------------------------------------------------------- channel derivation
 
+#[derive(Debug)]
 pub struct DerivedChannel {
     pub file: String,
     pub side: String,
@@ -271,6 +334,9 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     block["workdir"] = value(args.workdir.as_str());
     block["role"] = value(args.role.as_str());
     block["platform"] = value(args.platform.as_str());
+    if let Some(h) = &args.host {
+        block["host"] = value(h.as_str());
+    }
     if args.bench_scheduler {
         block["bench_scheduler"] = value(true);
     }
@@ -282,7 +348,7 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn append_channel(doc: &mut DocumentMut, ch: &DerivedChannel) -> Result<()> {
+pub(crate) fn append_channel(doc: &mut DocumentMut, ch: &DerivedChannel) -> Result<()> {
     let channels = ensure_array_of_tables(doc, "channels")?;
     let mut block = Table::new();
     block["file"] = value(ch.file.as_str());
@@ -325,7 +391,7 @@ fn append_to_broadcast(doc: &mut DocumentMut, file: &str, slug: &str) -> Result<
     ))
 }
 
-fn ensure_array_of_tables<'a>(
+pub(crate) fn ensure_array_of_tables<'a>(
     doc: &'a mut DocumentMut,
     key: &str,
 ) -> Result<&'a mut ArrayOfTables> {
@@ -465,6 +531,7 @@ purpose = "All-hands."
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         }
     }
 
@@ -814,6 +881,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
 
@@ -852,6 +920,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: true,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let after = fs::read_to_string(&cfg_path).unwrap();
@@ -878,6 +947,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();
@@ -902,6 +972,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();

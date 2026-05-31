@@ -4,6 +4,8 @@ This is the hand-driven walkthrough — every step you'd type, every file you'd 
 
 For the agent-driven flow, just run `giga setup` from your project directory — Claude Code opens with a baked-in prompt that does everything below for you. See [README.md](README.md). This doc is the reference of what `giga setup` is doing under the hood.
 
+> **Single-host scope.** This walkthrough covers a swarm that runs entirely on one machine — today's default + most common case. For agents distributed across multiple machines on a tailnet, this is still the right starting doc (the multi-host swarm is a superset of single-host); once you've got a working single-host swarm, see [REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md) to add a second host, and [REMOTE_DESIGN.md](REMOTE_DESIGN.md) for the cross-host architecture.
+
 ## Background
 
 `giga` is a CLI for running N parallel Claude Code (or other agent runtime) sessions that coordinate via append-only Markdown files. One terminal tab per agent; each tab opens in the agent's workdir with `claude` already running. Agents post to shared inbox files and a single `Monitor` per agent (`giga watch --as <slug>`) tails every channel that agent participates in. New messages become notifications. No MCP server, no message bus, no service to keep up — just files.

@@ -4,6 +4,8 @@ Three flows: bootstrap a new project, add an agent to a running one, stand an ag
 
 > **Fastest path:** `giga setup` — runs Claude Code with a baked-in bootstrap prompt that does everything below interactively. See [README.md](README.md). The commands here are the manual equivalents — useful for understanding what's going on, scripting, or non-Claude users.
 
+> **Multi-host swarms** (agents across two or more machines on a tailnet): this doc covers the single-host case. For adding a remote host, see [REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md). The multi-host swarm is a strict superset: every command here still works; you also gain `add-host`, `setup --remote-node`, and `--host` flags on add-agent/sweep/launch.
+
 ## 1. Bootstrap a new project
 
 A "project" is one TOML file + a folder of agent templates. The canonical location is `~/.giga/configs/<project>/`. From zero to N agents talking:
@@ -244,5 +246,11 @@ The inbox files for the deleted channels stay on disk as historical records. `gi
 | Post a properly-formatted message | `giga post <channel> --as <agent> --subject ... --body ...` |
 | Long-running watcher | `giga watch --as <agent>` (config-aware) |
 | Legacy single-channel watcher | `giga watch <channel> --as <agent>` |
+| Add a new bilateral between existing agents | `giga add-channel --participants <a>,<b>` |
+| **Multi-host:** bootstrap a new tailnet peer | `giga setup --remote-node` (on the new host) |
+| **Multi-host:** register peer in swarm + push config | `giga add-host --name <h> --tailnet-hostname <fqdn> [--ssh-user <u>] [--remote-config-dir <p>]` |
+| **Multi-host:** add an agent on a peer (one shot) | `giga add-agent --host <h> --name <slug> --workdir <p> --peer <local>` |
+| **Multi-host:** run anything on a peer | `giga remote --host <h> [--config <p>] -- <subcommand> [args]` |
+| **Multi-host:** sweep / launch on a peer | `giga sweep --host <h>` / `giga launch --host <h> --only <slug>` |
 
 Full subcommand details: see [README.md](README.md). Convention details (channel headers, `WAITING ON` tags, bench-scheduler protocol): see the `giga-harness` skill at `.claude/skills/giga-harness/SKILL.md`.

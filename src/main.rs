@@ -15,16 +15,22 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod add_agent;
+mod add_channel;
+mod add_host;
 mod config;
 mod codex_channel;
 mod cursor;
 mod fs_paths;
 mod init;
 mod launch;
+mod merger;
 mod post;
 mod registry;
+mod remote;
 mod setup;
+mod setup_remote_node;
 mod sweep;
+mod sync;
 mod switch;
 mod templates;
 mod terminal;
@@ -49,7 +55,29 @@ enum Command {
     /// One-command bootstrap: launches a Claude Code session that walks
     /// the user through scaffolding a multi-agent swarm. No external
     /// docs or paste-prompts required — everything's baked in.
-    Setup,
+    ///
+    /// `--remote-node` instead bootstraps THIS machine as a remote peer
+    /// in an EXISTING swarm: installs rsync + Tailscale, runs
+    /// `tailscale up` (interactive), enables Tailscale SSH, creates the
+    /// inbox dir. Run on a bare WSL host you want to add as a swarm
+    /// member; then go to your operator host and
+    /// `giga add-agent --host <this-node> ...`.
+    Setup {
+        /// Bootstrap THIS machine as a remote peer in an existing swarm
+        /// (Tailscale + SSH + rsync + inbox dir). Implies that the
+        /// operator-side scaffolding (giga init, giga setup as a fresh
+        /// swarm, etc.) is NOT what you want.
+        #[arg(long)]
+        remote_node: bool,
+        /// Override the default inbox directory (~/projects/inbox).
+        /// Only used with --remote-node.
+        #[arg(long, value_name = "PATH")]
+        inbox_dir: Option<PathBuf>,
+        /// Print what would happen without making changes. Only used
+        /// with --remote-node.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate a config file without touching the filesystem.
     Validate {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
@@ -69,6 +97,11 @@ enum Command {
     Launch {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// Run launch on a remote host instead of locally. Equivalent to
+        /// `giga remote --host <HOST> launch [args]`. Tailnet identity
+        /// auths the connection.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
         /// Skip `giga init` before launching. Use if you've already
         /// scaffolded and don't want to re-render CLAUDE.md files.
         #[arg(long)]
@@ -103,6 +136,10 @@ enum Command {
         /// Show only channels where `as` is the one being waited on.
         #[arg(long)]
         owed_by: Option<String>,
+        /// Run sweep on a remote host instead of locally. Equivalent to
+        /// `giga remote --host <HOST> sweep [args]`.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
     },
     /// Append a properly-formatted message to a channel file.
     Post {
@@ -180,7 +217,74 @@ enum Command {
         /// the launch intro prompt.
         #[arg(long, value_name = "PATH")]
         code_root: Option<String>,
+        /// Host this agent lives on (must match a `[[hosts]].name`).
+        /// Sets the agent's `host` field in the TOML so cross-host
+        /// routing works. After scaffolding, run
+        /// `giga launch --host <HOST> --only <NEW-AGENT>` to bring up
+        /// the terminal on the peer.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
         /// Config file to edit.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Append a new [[hosts]] entry to the canonical TOML and
+    /// (by default) auto-bootstrap the new peer: mkdir + rsync the
+    /// canonical TOML + ensure peer has a `this_host.toml`. After
+    /// this, run `giga add-agent --host <name> ...` to put agents
+    /// on the new host.
+    ///
+    /// Typical use: after `giga setup --remote-node` on the peer +
+    /// noting its tailnet hostname, run this on the operator host
+    /// to register the peer in the swarm.
+    AddHost {
+        /// Slug for the new host (matches [[hosts]].name + agent.host).
+        #[arg(long)]
+        name: String,
+        /// Full tailnet FQDN of the peer (e.g. wsl-b.tail0000.ts.net).
+        /// `giga setup --remote-node` on the peer prints this.
+        #[arg(long, value_name = "FQDN")]
+        tailnet_hostname: String,
+        /// SSH user on the peer. Defaults to $USER (homogeneous-user
+        /// setup); set when the peer has a different OS user.
+        #[arg(long, value_name = "USER")]
+        ssh_user: Option<String>,
+        /// Absolute path on the peer where the swarm config lives.
+        /// Defaults to the local config dir (homogeneous-path setup);
+        /// set when the peer's $HOME differs from the operator's.
+        #[arg(long, value_name = "PATH")]
+        remote_config_dir: Option<PathBuf>,
+        /// Absolute path on the peer where the inbox lives. Defaults
+        /// to the local inbox path; set when the peer's filesystem
+        /// layout differs.
+        #[arg(long, value_name = "PATH")]
+        remote_inbox_dir: Option<PathBuf>,
+        /// Don't auto-push the canonical TOML to the new peer (skip
+        /// the SSH/rsync step). Use when the peer isn't reachable yet.
+        #[arg(long)]
+        no_bootstrap: bool,
+        /// Print the planned change without writing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Append a new bilateral channel between two existing agents.
+    /// Updates the canonical giga-harness.toml; the `giga sync` daemon
+    /// propagates the change to peers. The merger + watcher pick up
+    /// the new channel within ~15s (auto-discovery reload window).
+    AddChannel {
+        /// Participant agent names, comma-separated. v1 supports
+        /// bilateral channels only — exactly two participants.
+        #[arg(long, value_delimiter = ',', value_name = "AGENT")]
+        participants: Vec<String>,
+        /// Override the auto-derived filename (sorted-alphabetical
+        /// `<a>-<b>.md`). Rarely needed.
+        #[arg(long)]
+        file: Option<String>,
+        /// Print the planned change without writing.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
@@ -234,6 +338,60 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Long-running merger daemon — for every cross-host channel,
+    /// poll all <channel>.<host>.md slice files and append new bytes
+    /// to <channel>.md (the file the watcher tails).
+    ///
+    /// Runs alongside `giga watch` + `giga sync` per host. No-op when
+    /// the swarm has no [[hosts]] (today's local-only swarms).
+    Merger {
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Run a single merge sweep and exit (useful in tests + scripted
+        /// catch-up scenarios).
+        #[arg(long)]
+        once: bool,
+    },
+    /// Long-running sync daemon — every ~3s, rsync the canonical
+    /// giga-harness.toml + own slice files to each peer host over
+    /// Tailscale SSH (per REMOTE_DESIGN.md §4).
+    ///
+    /// Runs alongside `giga watch` + `giga merger` per host. No-op when
+    /// the swarm has no [[hosts]] (today's local-only swarms).
+    Sync {
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Run a single sync tick and exit (useful in scripts + tests).
+        #[arg(long)]
+        once: bool,
+        /// Print the rsync commands that would be issued; don't execute.
+        /// Combine with --once for a no-side-effects preview.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Run a giga subcommand on a remote host over SSH. Looks up the
+    /// host in `[[hosts]]`, shells to `ssh <user>@<tailnet_hostname>`,
+    /// runs `giga <args>` from the same canonical config dir on that
+    /// host, and propagates stdout/stderr/exit-code transparently.
+    ///
+    /// With Tailscale SSH enabled on the remote (per setup-remote-peer.sh),
+    /// auth is automatic via tailnet identity — no key exchange.
+    ///
+    /// Example: `giga remote --host wsl-box-b sweep`
+    Remote {
+        /// Host name (must match a `[[hosts]].name` entry).
+        #[arg(long, value_name = "HOST")]
+        host: String,
+        /// Local config file used to look up `[[hosts]]` + the canonical
+        /// config dir to cd into on the remote.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Subcommand + args to invoke on the remote host. Captured as
+        /// trailing args so flags like `--owed-by` go to the remote
+        /// subcommand, not to `giga remote` itself.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        remote_args: Vec<String>,
+    },
     /// Forward giga inbox notifications into a running Codex filesystem channel.
     CodexChannel {
         /// Agent name to watch as.
@@ -257,7 +415,20 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Setup => setup::run(),
+        Command::Setup {
+            remote_node,
+            inbox_dir,
+            dry_run,
+        } => {
+            if remote_node {
+                setup_remote_node::run(setup_remote_node::Args {
+                    inbox_dir,
+                    dry_run,
+                })
+            } else {
+                setup::run()
+            }
+        }
         Command::Validate { config } => {
             let config = registry::resolve_config(config)?;
             validate::run(&config)
@@ -265,6 +436,7 @@ fn main() -> Result<()> {
         Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
         Command::Launch {
             config,
+            host,
             skip_init,
             dry_run,
             only,
@@ -272,10 +444,51 @@ fn main() -> Result<()> {
             terminal,
         } => {
             let config = registry::resolve_config(config)?;
+            if let Some(host) = host {
+                let mut remote_args = vec!["launch".to_string()];
+                if skip_init {
+                    remote_args.push("--skip-init".to_string());
+                }
+                if dry_run {
+                    remote_args.push("--dry-run".to_string());
+                }
+                if !only.is_empty() {
+                    remote_args.push("--only".to_string());
+                    remote_args.push(only.join(","));
+                }
+                if new_window {
+                    remote_args.push("--new-window".to_string());
+                }
+                remote_args.push("--terminal".to_string());
+                remote_args.push(terminal);
+                let code = remote::run(remote::Args {
+                    host,
+                    config,
+                    remote_args,
+                })?;
+                std::process::exit(code);
+            }
             launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
         }
-        Command::Sweep { config, owed_by } => {
+        Command::Sweep {
+            config,
+            owed_by,
+            host,
+        } => {
             let config = registry::resolve_config(config)?;
+            if let Some(host) = host {
+                let mut remote_args = vec!["sweep".to_string()];
+                if let Some(o) = &owed_by {
+                    remote_args.push("--owed-by".to_string());
+                    remote_args.push(o.clone());
+                }
+                let code = remote::run(remote::Args {
+                    host,
+                    config,
+                    remote_args,
+                })?;
+                std::process::exit(code);
+            }
             sweep::run(&config, owed_by.as_deref())
         }
         Command::Post {
@@ -309,6 +522,7 @@ fn main() -> Result<()> {
             template,
             dry_run,
             code_root,
+            host,
             config,
         } => add_agent::run(add_agent::Args {
             config,
@@ -322,7 +536,44 @@ fn main() -> Result<()> {
             template,
             dry_run,
             code_root,
+            host,
         }),
+        Command::AddChannel {
+            participants,
+            file,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            add_channel::run(add_channel::Args {
+                config,
+                participants,
+                file,
+                dry_run,
+            })
+        }
+        Command::AddHost {
+            name,
+            tailnet_hostname,
+            ssh_user,
+            remote_config_dir,
+            remote_inbox_dir,
+            no_bootstrap,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            add_host::run(add_host::Args {
+                config,
+                name,
+                tailnet_hostname,
+                ssh_user,
+                remote_config_dir,
+                remote_inbox_dir,
+                no_bootstrap,
+                dry_run,
+            })
+        }
         Command::Switch {
             runtime,
             account,
@@ -360,6 +611,35 @@ fn main() -> Result<()> {
                 }
                 None => watch::run_multi(&config, &r#as),
             }
+        }
+        Command::Merger { config, once } => {
+            let config = registry::resolve_config(config)?;
+            merger::run(&config, once)
+        }
+        Command::Sync {
+            config,
+            once,
+            dry_run,
+        } => {
+            let config = registry::resolve_config(config)?;
+            sync::run(sync::Args {
+                config,
+                once,
+                dry_run,
+            })
+        }
+        Command::Remote {
+            host,
+            config,
+            remote_args,
+        } => {
+            let config = registry::resolve_config(config)?;
+            let code = remote::run(remote::Args {
+                host,
+                config,
+                remote_args,
+            })?;
+            std::process::exit(code);
         }
         Command::CodexChannel {
             r#as,

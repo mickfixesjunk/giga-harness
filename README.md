@@ -4,6 +4,8 @@
 
 A coordination harness for running N parallel AI coding agents (Claude Code, Codex, etc.) that talk to each other through file-based inboxes. One terminal tab per agent; each agent reads its own `CLAUDE.md`, watches a shared inbox, and posts back when it has something to say.
 
+Agents can run on **one machine** (default — append-only inbox files, polling watcher) or across **multiple machines on a tailnet** (per-host slice files synced via rsync over Tailscale SSH; local watcher unchanged). See [§ Multi-host swarms](#multi-host-swarms-cross-host-channels) below.
+
 ```
 ===
 [design] T2.1 spec ready — 2026-05-22T10:14:00Z
@@ -80,21 +82,36 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 
 - **[MANUAL_SETUP.md](MANUAL_SETUP.md)** — full hand-written walkthrough. Read this if you want to understand every file, write the TOML yourself, or debug an unusual setup.
 - **[QUICKSTART.md](QUICKSTART.md)** — lifecycle ops: adding, standing down, removing, reactivating agents.
+- **[REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md)** — operator runbook for adding a second host to a swarm via tailnet.
+- **[REMOTE_DESIGN.md](REMOTE_DESIGN.md)** — the design + architecture for cross-host channels (slice-and-merge, Tailscale SSH transport).
 - `giga --help`, `giga <subcommand> --help` — every subcommand has detailed help.
 
 ## Subcommands at a glance
+
+### Single-host (the default)
 
 | Command | What it does |
 |---------|--------------|
 | `giga setup` | One-command bootstrap. Launches Claude Code with a baked-in prompt that walks you through scaffolding a new swarm end-to-end. Run this from any project directory. |
 | `giga validate [config]` | TOML schema + cross-reference check. Flags on-disk inbox files not enrolled in `[[channels]]`. No side effects. |
-| `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). Registers the swarm in `~/.giga/swarms.toml`. |
-| `giga add-agent --name X --workdir Y --role "..." [--code-root Z] --peer A [--peer B]` | Scaffold a new agent — `[[agents]]` + `[[channels]]` + broadcast participation + a stub template. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--dry-run` previews. |
-| `giga launch [config]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto`, `mac-terminal` (Terminal.app), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. Resolves the config in this order: explicit `[config]` arg → `giga-harness.toml` in cwd or any ancestor → `~/.giga/swarms.toml` registry lookup by code_root. |
-| `giga sweep [config]` | Tabulate every channel's last message + open `WAITING ON` tags. |
-| `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. `<channel>` accepts the bare name or `.md`-suffixed form (`pipeline-usage` ≡ `pipeline-usage.md`). |
-| `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. Works from any cwd that's under a registered code_root or has an ancestral `giga-harness.toml` (e.g. an agent workdir under `~/.giga/configs/<swarm>/workdirs/<slug>/`). |
-| `giga switch --runtime claude [<account>]` | Multi-account credential manager. `--setup <name>` bootstraps the active account, `--add <name>` provisions an overflow slot, bare `<account>` switches. See [§ Multi-account switching](#multi-account-switching). |
+| `giga init [config]` | Creates inbox files + per-agent `CLAUDE.md` (idempotent). Registers the swarm in `~/.giga/swarms.toml`. Host-aware: in a multi-host swarm, only scaffolds agents whose `host` matches `this_host`. |
+| `giga add-agent --name X --workdir Y --role "..." [--code-root Z] [--host H] --peer A [--peer B]` | Scaffold a new agent — `[[agents]]` + `[[channels]]` + broadcast participation + a stub template. `--code-root` lets the agent edit a shared codebase from an isolated workdir. `--host` puts the agent on a peer host (auto-bootstraps the peer + scaffolds the workdir there). `--dry-run` previews. |
+| `giga add-channel --participants A,B [--file ...]` | Append a new bilateral channel to the canonical TOML. v1 supports 2 participants only; auto-derives `<a>-<b>.md` filename. |
+| `giga launch [config] [--host H]` | One terminal per agent. `--terminal <mode>` picks the launcher: `auto`, `mac-terminal` (Terminal.app), `tmux`, `wt`, or `print`. `--only <a,b>` spawns just the named agents (non-disruptive add). `--new-window` forces a fresh wt window. `--host H` runs launch on a peer over SSH. Cross-host swarms also spawn `giga sync` + `giga merger` panes per host. |
+| `giga sweep [config] [--host H]` | Tabulate every channel's last message + open `WAITING ON` tags. `--host H` runs sweep on the peer (output streams back). |
+| `giga post <channel> --as <agent> --subject ...` | Append a properly-formatted message. `<channel>` accepts the bare name or `.md`-suffixed form. Cross-host channels auto-route to per-host slice files (`<channel>.<this_host>.md`). |
+| `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. |
+| `giga switch --runtime claude [<account>]` | Multi-account credential manager. See [§ Multi-account switching](#multi-account-switching). |
+
+### Multi-host (cross-host channels)
+
+| Command | What it does |
+|---------|--------------|
+| `giga setup --remote-node` | Bootstrap a bare WSL host as a swarm peer: installs Tailscale + rsync, runs `tailscale up` (interactive auth), enables Tailscale SSH, creates the inbox dir. Run on the new host first; then `add-host` from operator side. |
+| `giga add-host --name H --tailnet-hostname FQDN [--ssh-user U] [--remote-config-dir P] [--remote-inbox-dir P]` | Append a `[[hosts]]` entry to the canonical TOML and (by default) auto-bootstrap the new peer: mkdir + rsync swarm dir + ensure peer's `this_host.toml`. `--no-bootstrap` opts out. |
+| `giga remote --host H -- <subcommand>` | SSH passthrough primitive — runs any giga subcommand on the peer over Tailscale SSH, streaming stdout/stderr back. `--host H` flags on add-agent/sweep/launch are sugar over this. Note: put trailing args after `--`. |
+| `giga sync [--once] [--dry-run]` | Long-running daemon — every 3s, rsync the canonical TOML + own slice files to each peer. `--once` runs a single tick. `--dry-run` previews. Auto-spawned by `giga launch` on cross-host swarms. |
+| `giga merger [--once]` | Long-running daemon — polls all `<channel>.<host>.md` slice files and appends new bytes to the watched `<channel>.md`. Auto-spawned by `giga launch` on cross-host swarms. |
 
 ## Multi-account switching
 
@@ -131,12 +148,96 @@ Running `claude` processes keep their old auth in memory — they need to be kil
 
 **Limitations.** Claude-only today (`--runtime claude`). Linux/macOS/WSL only — Windows-native isn't wired up yet. Whole-swarm switch, not per-agent.
 
+## Multi-host swarms (cross-host channels)
+
+A giga swarm can span multiple physical machines on a tailnet. Agents on different hosts participate in the same channels as if they were local; the existing single-host model stays the fast-path for all-local channels.
+
+### How it works (one-paragraph)
+
+Each cross-host channel has per-host slice files `<channel>.<host>.md` next to the merged `<channel>.md`. A local `giga sync` daemon rsyncs each host's own slice files over Tailscale SSH; a local `giga merger` daemon appends incoming slice bytes to the watched merged file. The watcher itself doesn't change — remote messages appear as ordinary appends to the same file it's been tailing. Channels with all participants on `this_host` skip the slice path entirely (fast-path direct write to the merged file). Auth is tailnet identity — no SSH key exchange, no `authorized_keys` files. See [REMOTE_DESIGN.md](REMOTE_DESIGN.md) for the full architecture.
+
+### Bootstrap a new tailnet peer — 2 shots (assumes `giga` binary already installed on both hosts)
+
+Install the giga binary on both hosts first (Linux/macOS/WSL):
+
+```sh
+curl -sSfL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
+```
+
+Then:
+
+**Shot 1 — on the NEW host (interactive: Tailscale auth URL):**
+
+```sh
+giga setup --remote-node
+```
+
+This installs Tailscale + rsync, runs `tailscale up` (prints an auth URL you click), enables Tailscale SSH, creates `~/projects/inbox`. ~5 min, mostly the auth click. Note the tailnet hostname it prints at the end.
+
+**Shot 2 — on your OPERATOR host (the box that already has the swarm):**
+
+```sh
+NEW=wsl-b                          # whatever slug you want for the new host
+PEER_TAILNET=wsl-b.tail0000.ts.net # what `giga setup --remote-node` printed on the new host
+PEER_USER=neo                      # OS user on the new host
+SWARM=remote-test                  # your swarm's name
+
+giga add-host --name $NEW \
+              --tailnet-hostname $PEER_TAILNET \
+              --ssh-user $PEER_USER \
+              --remote-config-dir /home/$PEER_USER/.giga/configs/$SWARM
+
+giga add-agent --host $NEW --name agent-on-new --peer existing-local-agent \
+               --role "what this agent does" \
+               --workdir /home/$PEER_USER/.giga/configs/$SWARM/workdirs/agent-on-new
+```
+
+`add-host` registers the peer in the swarm + pushes the canonical TOML to it. `add-agent --host` scaffolds the new agent on the peer end-to-end (TOML edit + rsync swarm dir + ensure `this_host.toml` + run `giga init` remotely to render the workdir + CLAUDE.md).
+
+Bring up the new agent's terminal on the peer (still from operator):
+
+```sh
+giga launch --host $NEW --only agent-on-new
+```
+
+That's it — 2 shots end-to-end. Post-to-fire latency: ~3-10 seconds.
+
+Full operator runbook with troubleshooting + the `[[hosts]]` schema deep dive: **[REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md)**.
+
+### Schema additions (recap)
+
+```toml
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "wsl-b.tail0000.ts.net"
+ssh_user = "neo"                                       # optional; defaults to $USER
+remote_config_dir = "/home/neo/.giga/configs/<swarm>"  # optional; defaults to local path
+remote_inbox_dir  = "/tmp/<swarm>-inbox"               # optional; defaults to paths.wsl_inbox
+
+[[agents]]
+host = "wsl-b"   # NEW: which host this agent runs on (defaults to this_host)
+```
+
+Plus a one-line `this_host.toml` next to the canonical config on each host:
+
+```toml
+this_host = "wsl-a"
+```
+
+### When NOT to use it (current v1 limitations)
+
+- Only WSL/Linux peers in v1; Windows-native peers need WSL.
+- Push topology is O(N²) connections per tick — fine up to ~5 hosts; hub-and-spoke for more.
+- Tailscale only (rsync over Tailscale SSH); S3/R2 cloud-storage transport is the v1.1 follow-up.
+
 ## Key concepts
 
 - **`workdir`** — the agent's isolated launch context. Their `CLAUDE.md` lives here; `claude` opens here. Default: `~/.giga/configs/<project>/workdirs/<agent>/`.
 - **`code_root`** — *optional, separate from workdir.* The directory the agent actually edits in. Lets multiple agents share a single codebase while each has their own clean workdir. Set per-agent in TOML or via `giga add-agent --code-root <path>`.
 - **Registry (`~/.giga/swarms.toml`)** — auto-maintained map of `code_root → config_path`. Lets `giga <command>` work from anywhere under your codebase, no `cd` required.
 - **Window titles + reply prefixes** — every agent's terminal window is titled with their slug; every reply they post starts with `[slug]`. Hard to lose track of who's talking.
+- **`[[hosts]]` + `this_host`** *(multi-host only)* — `[[hosts]]` enumerates the physical machines in the swarm; each agent's `host` field names which one it runs on. Each host has a one-line `this_host.toml` next to its canonical config telling its local giga which host identity it is. Absent for all-local swarms — today's behavior, untouched.
+- **Slice files** *(multi-host only)* — `<channel>.<host>.md` is the single-writer wire format. Each host appends only to its own slice; the local merger reads everyone's slices and appends to the merged `<channel>.md` that the watcher tails. Append-only invariant preserved by construction.
 
 ## License
 

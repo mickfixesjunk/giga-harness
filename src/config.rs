@@ -5,9 +5,20 @@
 //! and how the bench-coordination protocol is scoped (single host
 //! vs. multi-host).
 //!
+//! Remote-channels extension (per REMOTE_DESIGN.md):
+//! - `[[hosts]]` table enumerates every host in the swarm.
+//! - `[[agents]].host` names which host an agent runs on.
+//! - `this_host` (the host identity of THIS machine) is loaded from a
+//!   sibling `this_host.toml` next to the canonical config so rsync of
+//!   the canonical doesn't trample per-host identity.
+//!
+//! All three additions are backward-compatible: a config with no
+//! `[[hosts]]` and no `this_host.toml` behaves exactly as today
+//! (local-only mode).
+//!
 //! See `examples/minimal/giga-harness.toml` for a working example.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -17,10 +28,23 @@ pub struct Config {
     pub project: Project,
     pub paths: Paths,
     #[serde(default)]
+    pub hosts: Vec<Host>,
+    #[serde(default)]
     pub agents: Vec<Agent>,
     #[serde(default)]
     pub channels: Vec<Channel>,
     pub bench_protocol: Option<BenchProtocol>,
+    /// The host name (matching one of `[[hosts]].name`) that identifies
+    /// THIS machine within the swarm. Loaded at `Config::load` time from
+    /// a sibling `this_host.toml` next to the canonical config (so rsync
+    /// of the canonical config between hosts doesn't trample it).
+    ///
+    /// `None` means local-only mode — today's behavior. A non-empty
+    /// `[[hosts]]` with a `None` `this_host` is degenerate (no slice
+    /// suffix to write to; remote operations will refuse) and is flagged
+    /// by validation.
+    #[serde(skip)]
+    pub this_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +86,35 @@ pub struct Paths {
     pub windows_inbox: Option<PathBuf>,
 }
 
+/// A host in the swarm. Enumerated when the swarm spans more than one
+/// physical machine; absent for all-local swarms (today's default).
+///
+/// `tailnet_hostname` is what `giga remote` / `giga sync` use to reach
+/// this host over the tailnet (e.g. `wsl-box-b.tail1234.ts.net`).
+///
+/// `ssh_user` is the OS user account on this host. Defaults to the
+/// caller's `$USER` if omitted — the common case when the same user
+/// runs on every box. Set explicitly when hosts have different users
+/// (e.g. `neomatrix` on box A, `neo` on box B).
+///
+/// `remote_config_dir` and `remote_inbox_dir` are absolute paths on
+/// THIS host (the one the [[hosts]] entry describes) — used by other
+/// hosts when they push to this one. Both default to the local
+/// caller's matching path, which works for homogeneous-user setups.
+/// Set explicitly when paths differ (e.g. `/home/neomatrix/...` on
+/// box A vs `/home/neo/...` on box B).
+#[derive(Debug, Deserialize, Clone)]
+pub struct Host {
+    pub name: String,
+    pub tailnet_hostname: String,
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub remote_config_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub remote_inbox_dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Agent {
     pub name: String,
@@ -71,6 +124,13 @@ pub struct Agent {
     /// spawns this agent's terminal.
     #[serde(default = "default_platform")]
     pub platform: String,
+    /// Which host this agent runs on (must match a `[[hosts]].name`).
+    /// `None` means "this_host" by default — backward-compatible for
+    /// all-local swarms where `[[hosts]]` is empty and every agent is
+    /// implicitly here. Set explicitly when adding agents on a peer
+    /// host (`giga add-agent --host <peer>`).
+    #[serde(default)]
+    pub host: Option<String>,
     /// If `true`, this agent is the bench scheduler — every
     /// CPU/IO-heavy operation clears through them. Exactly one
     /// agent per host should be the scheduler.
@@ -131,13 +191,41 @@ fn default_slot_pool() -> String {
     "this-host".to_string()
 }
 
+/// Format of the sibling `this_host.toml` file: a single key telling
+/// us which `[[hosts]].name` represents THIS machine. Kept separate
+/// from the canonical config so rsync of the canonical between hosts
+/// doesn't trample per-host identity.
+#[derive(Debug, Deserialize)]
+struct ThisHostFile {
+    this_host: String,
+}
+
+/// Look for `this_host.toml` next to the canonical config, parse it,
+/// and return the host name. Missing file is OK (local-only mode);
+/// parse errors are surfaced.
+fn load_this_host(config_path: &Path) -> Result<Option<String>> {
+    let Some(parent) = config_path.parent() else {
+        return Ok(None);
+    };
+    let sibling = parent.join("this_host.toml");
+    if !sibling.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&sibling)
+        .with_context(|| format!("reading {}", sibling.display()))?;
+    let parsed: ThisHostFile = toml::from_str(&text)
+        .with_context(|| format!("parsing {} (expected `this_host = \"...\"`)", sibling.display()))?;
+    Ok(Some(parsed.this_host))
+}
+
 impl Config {
     /// Read a config from disk and validate it semantically.
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text)
+        let mut cfg: Config = toml::from_str(&text)
             .with_context(|| format!("parsing TOML config at {}", path.display()))?;
+        cfg.this_host = load_this_host(path)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -148,6 +236,49 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let agent_names: std::collections::HashSet<&str> =
             self.agents.iter().map(|a| a.name.as_str()).collect();
+
+        // [[hosts]] uniqueness + agent.host resolution.
+        let mut seen_host_names: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for h in &self.hosts {
+            if !seen_host_names.insert(h.name.as_str()) {
+                return Err(anyhow!(
+                    "duplicate [[hosts]] entry `{}` (host names must be unique)",
+                    h.name,
+                ));
+            }
+        }
+
+        for a in &self.agents {
+            if let Some(host) = &a.host {
+                if !seen_host_names.contains(host.as_str()) {
+                    return Err(anyhow!(
+                        "agent `{}` has host `{}` which isn't in [[hosts]]",
+                        a.name,
+                        host,
+                    ));
+                }
+            }
+        }
+
+        // this_host (if present) must resolve to a hosts entry.
+        if let Some(th) = &self.this_host {
+            if !seen_host_names.contains(th.as_str()) {
+                return Err(anyhow!(
+                    "this_host = `{}` isn't in [[hosts]] (check the sibling this_host.toml)",
+                    th,
+                ));
+            }
+        }
+
+        // Degenerate combo: [[hosts]] declared but no this_host known.
+        // The swarm has remote topology but this machine doesn't know
+        // its own identity — slice writes have no suffix to use.
+        if !self.hosts.is_empty() && self.this_host.is_none() {
+            return Err(anyhow!(
+                "[[hosts]] is declared but this_host is unknown (create a sibling this_host.toml with `this_host = \"<host-name>\"`)",
+            ));
+        }
 
         for ch in &self.channels {
             for p in &ch.participants {
@@ -210,6 +341,40 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// The effective host for an agent: explicit `agent.host` if set,
+    /// otherwise `this_host` (the local machine). Returns `None` only
+    /// when neither is known — local-only mode pre-remote-channels.
+    pub fn agent_host<'a>(&'a self, agent: &'a Agent) -> Option<&'a str> {
+        agent
+            .host
+            .as_deref()
+            .or(self.this_host.as_deref())
+    }
+
+    /// True when every participant of the channel lives on `this_host`
+    /// (or `[[hosts]]` is empty — today's local-only mode). When true,
+    /// `post` can take the fast-path direct write to `<channel>.md`
+    /// instead of writing to a per-host slice file.
+    ///
+    /// Unknown participants are treated as remote (conservative) — this
+    /// should never happen for a validated config but defensive nonetheless.
+    pub fn channel_is_local(&self, ch: &Channel) -> bool {
+        if self.hosts.is_empty() {
+            return true; // pre-remote-channels world: nothing is "remote"
+        }
+        let Some(this) = self.this_host.as_deref() else {
+            return true; // degenerate but validated config wouldn't reach here
+        };
+        ch.participants.iter().all(|p| {
+            self.agents
+                .iter()
+                .find(|a| a.name == *p)
+                .and_then(|a| self.agent_host(a))
+                .map(|h| h == this)
+                .unwrap_or(false)
+        })
     }
 
     /// Resolve a channel file to its absolute path on this host,
@@ -566,5 +731,229 @@ platform = "wsl"
             .collect();
         assert_eq!(roots.len(), 2);
         assert_eq!(roots[0], roots[1]);
+    }
+
+    // -------------------------------------------------------------------
+    // Remote-channels schema tests (per REMOTE_DESIGN.md). The new
+    // [[hosts]] / this_host / [[agents]].host fields are all optional;
+    // absence reproduces today's local-only behavior exactly.
+    // -------------------------------------------------------------------
+
+    fn minimal_two_host() -> String {
+        r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "wsl-a.tail0000.ts.net"
+
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "wsl-b.tail0000.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "wsl-a"
+
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+host = "wsl-b"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn parses_hosts_table() {
+        // load_str_for_test goes through validate(), which would reject
+        // a config with [[hosts]] non-empty and this_host=None. Bypass
+        // by going direct to toml::from_str + manual validate.
+        let mut cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        assert_eq!(cfg.hosts.len(), 2);
+        assert_eq!(cfg.hosts[0].name, "wsl-a");
+        assert_eq!(cfg.hosts[1].tailnet_hostname, "wsl-b.tail0000.ts.net");
+    }
+
+    #[test]
+    fn agent_host_resolves_to_hosts_entry() {
+        let mut cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        let alice = cfg.agent_by_name("alice").unwrap();
+        let bob = cfg.agent_by_name("bob").unwrap();
+        assert_eq!(cfg.agent_host(alice), Some("wsl-a"));
+        assert_eq!(cfg.agent_host(bob), Some("wsl-b"));
+    }
+
+    #[test]
+    fn unknown_agent_host_fails_validation() {
+        let body = minimal_two_host().replace(r#"host = "wsl-b""#, r#"host = "ghost-host""#);
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("ghost-host"));
+        assert!(err.to_string().contains("isn't in [[hosts]]"));
+    }
+
+    #[test]
+    fn duplicate_host_names_fail_validation() {
+        let body = minimal_two_host().replace(
+            r#"name = "wsl-b"
+tailnet_hostname = "wsl-b.tail0000.ts.net""#,
+            r#"name = "wsl-a"
+tailnet_hostname = "wsl-a-dup.tail0000.ts.net""#,
+        );
+        let cfg: Config = toml::from_str(&body).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+        assert!(err.to_string().contains("wsl-a"));
+    }
+
+    #[test]
+    fn this_host_must_resolve_to_hosts_entry() {
+        let mut cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        cfg.this_host = Some("nowhere".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("this_host"));
+        assert!(err.to_string().contains("nowhere"));
+    }
+
+    #[test]
+    fn hosts_declared_but_this_host_missing_is_degenerate() {
+        let cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        // this_host left as None
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("this_host"));
+        assert!(err.to_string().contains("this_host.toml"));
+    }
+
+    #[test]
+    fn empty_hosts_section_works_with_no_this_host() {
+        // Backward compat: today's local-only configs have no [[hosts]]
+        // and no this_host. Must validate cleanly.
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert!(cfg.hosts.is_empty());
+        assert!(cfg.this_host.is_none());
+        // And channel_is_local returns true (local fast-path)
+        let ch = &cfg.channels[0];
+        assert!(cfg.channel_is_local(ch));
+    }
+
+    #[test]
+    fn agent_without_host_field_falls_back_to_this_host() {
+        // When [[hosts]] exists but an agent omits `host`, it implicitly
+        // belongs to this_host. Lets a config writer skip the redundant
+        // host = "wsl-a" on every local agent.
+        let body = minimal_two_host().replace(r#"host = "wsl-a""#, "");
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        let alice = cfg.agent_by_name("alice").unwrap();
+        assert_eq!(alice.host, None);
+        assert_eq!(cfg.agent_host(alice), Some("wsl-a")); // resolved via this_host
+    }
+
+    #[test]
+    fn channel_is_local_when_all_participants_share_this_host() {
+        let body = minimal_two_host().replace(
+            r#"participants = ["alice", "bob"]"#,
+            r#"participants = ["alice"]"#,
+        );
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        let ch = &cfg.channels[0];
+        assert!(cfg.channel_is_local(ch), "alice is on wsl-a (this_host) -> local fast-path");
+    }
+
+    #[test]
+    fn channel_is_not_local_when_participants_span_hosts() {
+        let mut cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        let ch = &cfg.channels[0];
+        assert!(!cfg.channel_is_local(ch), "alice@wsl-a + bob@wsl-b spans hosts -> slice path");
+    }
+
+    #[test]
+    fn channel_is_local_when_this_host_is_the_other_side() {
+        // Same config viewed from wsl-b: alice is remote, bob is local.
+        // The channel is still cross-host (not local fast-path).
+        let mut cfg: Config = toml::from_str(&minimal_two_host()).unwrap();
+        cfg.this_host = Some("wsl-b".into());
+        cfg.validate().unwrap();
+        let ch = &cfg.channels[0];
+        assert!(!cfg.channel_is_local(ch));
+    }
+
+    #[test]
+    fn this_host_file_loaded_from_sibling() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        fs::write(&cfg_path, minimal_two_host()).unwrap();
+        fs::write(tmp.path().join("this_host.toml"), "this_host = \"wsl-a\"\n").unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        assert_eq!(cfg.this_host.as_deref(), Some("wsl-a"));
+    }
+
+    #[test]
+    fn this_host_file_absent_is_ok_for_local_only_swarm() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        fs::write(&cfg_path, minimal()).unwrap(); // no [[hosts]]
+        let cfg = Config::load(&cfg_path).unwrap();
+        assert!(cfg.this_host.is_none());
+        assert!(cfg.hosts.is_empty());
+    }
+
+    #[test]
+    fn this_host_file_malformed_surfaces_error() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        fs::write(&cfg_path, minimal_two_host()).unwrap();
+        // missing the `this_host` key
+        fs::write(tmp.path().join("this_host.toml"), "host = \"wsl-a\"\n").unwrap();
+        let err = Config::load(&cfg_path).unwrap_err();
+        assert!(err.to_string().contains("this_host.toml"));
+    }
+
+    #[test]
+    fn host_with_optional_ssh_user() {
+        let body = minimal_two_host().replace(
+            r#"[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "wsl-a.tail0000.ts.net""#,
+            r#"[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "wsl-a.tail0000.ts.net"
+ssh_user = "neomatrix""#,
+        );
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        assert_eq!(cfg.hosts[0].ssh_user.as_deref(), Some("neomatrix"));
+        assert_eq!(cfg.hosts[1].ssh_user, None); // omitted defaults to None
     }
 }

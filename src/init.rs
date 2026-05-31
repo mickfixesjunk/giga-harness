@@ -27,9 +27,58 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         .canonicalize()
         .unwrap_or_else(|_| config_path.to_path_buf());
 
+    // Host-aware filtering: when this_host is set (cross-host swarm), only
+    // scaffold local-host artifacts — agents whose host matches this_host,
+    // and channels with at least one participant on this_host. Without
+    // this we'd try to mkdir + write CLAUDE.md to agent workdirs that
+    // belong on a different physical machine (e.g. /home/neo/... when
+    // we're on a box with user `neomatrix`). For legacy local-only
+    // swarms (no [[hosts]], no this_host), include everything — today's
+    // behavior, unchanged.
+    let local_agents: Vec<&Agent> = if cfg.this_host.is_some() {
+        cfg.agents
+            .iter()
+            .filter(|a| cfg.agent_host(a) == cfg.this_host.as_deref())
+            .collect()
+    } else {
+        cfg.agents.iter().collect()
+    };
+    let local_channels: Vec<&crate::config::Channel> = if let Some(this) = cfg.this_host.as_deref() {
+        cfg.channels
+            .iter()
+            .filter(|c| {
+                c.participants.iter().any(|p| {
+                    cfg.agents
+                        .iter()
+                        .find(|a| a.name == *p)
+                        .and_then(|a| cfg.agent_host(a))
+                        .map(|h| h == this)
+                        .unwrap_or(false)
+                })
+            })
+            .collect()
+    } else {
+        cfg.channels.iter().collect()
+    };
+
     println!("project: {}", cfg.project.name);
-    println!("agents:  {}", cfg.agents.len());
-    println!("channels:{}", cfg.channels.len());
+    if cfg.this_host.is_some() {
+        println!(
+            "agents:  {} ({} local on `{}`)",
+            cfg.agents.len(),
+            local_agents.len(),
+            cfg.this_host.as_deref().unwrap_or("?"),
+        );
+        println!(
+            "channels:{} ({} local on `{}`)",
+            cfg.channels.len(),
+            local_channels.len(),
+            cfg.this_host.as_deref().unwrap_or("?"),
+        );
+    } else {
+        println!("agents:  {}", cfg.agents.len());
+        println!("channels:{}", cfg.channels.len());
+    }
 
     // Ensure inbox dirs exist
     if let Some(p) = &cfg.paths.wsl_inbox {
@@ -40,7 +89,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     }
 
     // Create channel files with convention headers if absent.
-    for ch in &cfg.channels {
+    for ch in &local_channels {
         let path = cfg.channel_path(ch)?;
         if path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
             println!("  [keep] {}", path.display());
@@ -64,7 +113,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // preserving any session appends the agent has accumulated in
     // its workdir copy. The config dir's template is the round-trip
     // checkpoint; the workdir copy is the agent's live append log.
-    for agent in &cfg.agents {
+    for agent in &local_agents {
         let host_workdir = to_host_fs(&agent.workdir);
         fs::create_dir_all(&host_workdir)
             .with_context(|| format!("mkdir -p agent workdir {}", host_workdir.display()))?;
@@ -156,8 +205,8 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 
     println!(
         "\nginit OK — {} channels + {} agent CLAUDE.md files in place",
-        cfg.channels.len(),
-        cfg.agents.len()
+        local_channels.len(),
+        local_agents.len(),
     );
     println!("next: `giga launch <config>` to open the terminals");
     Ok(())
