@@ -107,9 +107,10 @@ fn build_ssh_target(host: &Host) -> Result<String> {
         .ssh_user
         .clone()
         .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("USERNAME").ok()) // Windows operator fallback
         .ok_or_else(|| {
             anyhow!(
-                "can't determine SSH user for host `{}` (host has no ssh_user set; $USER unset)",
+                "can't determine SSH user for host `{}` (host has no ssh_user; $USER and $USERNAME both unset)",
                 host.name
             )
         })?;

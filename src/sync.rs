@@ -233,9 +233,10 @@ fn build_rsync_target(peer: &Host, remote_path: &str) -> Result<String> {
         .ssh_user
         .clone()
         .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("USERNAME").ok()) // Windows operator fallback
         .ok_or_else(|| {
             anyhow!(
-                "can't determine SSH user for host `{}` (no ssh_user; $USER unset)",
+                "can't determine SSH user for host `{}` (no ssh_user; $USER and $USERNAME both unset)",
                 peer.name
             )
         })?;
@@ -307,6 +308,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         .ssh_user
         .clone()
         .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("USERNAME").ok())
         .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
 
@@ -415,6 +417,7 @@ pub fn run_remote_giga_init(
         .ssh_user
         .clone()
         .or_else(|| std::env::var("USER").ok())
+        .or_else(|| std::env::var("USERNAME").ok())
         .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
     let remote_dir_unix = to_unix_path(&remote_dir);
