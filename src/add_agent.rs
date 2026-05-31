@@ -20,6 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::Config;
+use crate::sync;
 
 pub struct Args {
     pub config: PathBuf,
@@ -147,14 +148,48 @@ pub fn run(args: Args) -> Result<()> {
         );
     }
     println!("  + wrote {}", template_path.display());
+
+    // ---- auto-bootstrap peer when --host names a non-local host ------
+    // Replaces the runbook's manual "rsync the swarm dir to peer +
+    // create this_host.toml" step from REMOTE_QUICKSTART.md. Best-effort:
+    // on failure we warn but don't fail the local-side success (the
+    // operator can re-run `giga sync` later to recover).
+    if let Some(host) = &args.host {
+        let is_remote = revalidated.this_host.as_deref() != Some(host.as_str());
+        if is_remote {
+            println!();
+            println!("auto-bootstrap: pushing canonical TOML to `{host}`...");
+            match sync::bootstrap_peer(&revalidated, host, &args.config) {
+                Ok(()) => {
+                    println!(
+                        "  + canonical TOML synced to `{host}` (and this_host.toml ensured)"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  ! auto-bootstrap failed: {e:#}");
+                    eprintln!("    The local config is correct; the peer just isn't synced yet.");
+                    eprintln!("    Run `giga sync --once` once everything is reachable to recover.");
+                }
+            }
+        }
+    }
+
     println!();
     println!("next:");
     println!("  giga validate {}", args.config.display());
-    println!("  # if multi-host: re-localize first, then launch from your terminal:");
-    println!(
-        "  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>",
-        args.name
-    );
+    if args.host.is_some() {
+        println!(
+            "  giga launch --host {} --only {}    # bring up the agent's terminal on the peer",
+            args.host.as_deref().unwrap_or(""),
+            args.name,
+        );
+    } else {
+        println!("  # if multi-host: re-localize first, then launch from your terminal:");
+        println!(
+            "  # ./setup-<host>.sh && giga launch --only {} --new-window <localized-config>",
+            args.name
+        );
+    }
     Ok(())
 }
 

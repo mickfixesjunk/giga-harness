@@ -108,29 +108,17 @@ giga add-agent --host wsl-b \
                --workdir /home/<you>/.giga/configs/<swarm>/workdirs/test-b
 ```
 
-This appends the new `[[agents]]` row to the canonical TOML and adds a bilateral channel `test-a-test-b.md`.
+This appends the new `[[agents]]` row to the canonical TOML, adds a bilateral channel `test-a-test-b.md`, and (because `--host` names a non-local peer) auto-bootstraps host B:
 
-### 6. Push the swarm to host B for the first time
+- `mkdir -p` the swarm dir on B (at the host's `remote_config_dir` if set, otherwise the local absolute path)
+- rsync the canonical `giga-harness.toml` to B
+- create B's `this_host.toml` if it doesn't already exist
 
-Manually rsync the canonical TOML + create `this_host.toml` on host B (one-time bootstrap):
+You'll see `auto-bootstrap: pushing canonical TOML to wsl-b...` in the output. If the network/SSH is down at the time, the local TOML edit still succeeds and the auto-bootstrap warns instead of failing; re-run `giga sync --once` later to recover.
 
-```sh
-SWARM_DIR=~/.giga/configs/<swarm>
-PEER=wsl-box-b.tail1234.ts.net
+> _One thing it does NOT do yet: scaffold the per-agent CLAUDE.md + workdir on B. You'd run `giga remote --host wsl-b init` after to do that._
 
-# Mirror the swarm dir over (without the local-only this_host.toml):
-rsync -avz --exclude this_host.toml "$SWARM_DIR/" "$USER@$PEER:$SWARM_DIR/"
-
-# Set host B's own this_host.toml so its giga sync/merger know who they are:
-ssh "$USER@$PEER" "echo 'this_host = \"wsl-b\"' > $SWARM_DIR/this_host.toml"
-
-# Create the per-agent workdir + render its CLAUDE.md on B:
-ssh "$USER@$PEER" "giga init $SWARM_DIR/giga-harness.toml"
-```
-
-> _Future improvement (v1.1): `giga add-agent --host` will do all of step 6 automatically. For v1 it's manual._
-
-### 7. Launch
+### 6. Launch
 
 Full launch on operator host A — this spawns the agent tabs PLUS two extra panes for `giga sync` and `giga merger`:
 
@@ -144,9 +132,9 @@ On host B, bring up just the new agent's terminal via the operator:
 giga launch --host wsl-b --only test-b
 ```
 
-(This is equivalent to `giga remote --host wsl-b launch --only test-b`. You'll also want sync + merger running on B — for now run them manually on B in two separate panes: `giga sync` and `giga merger`. The next launch refactor will auto-spawn them per host.)
+(This is equivalent to `giga remote --host wsl-b launch --only test-b`. A full `giga launch` on a cross-host swarm also spawns `giga sync` and `giga merger` panes per host — see `src/launch.rs` step 7.)
 
-### 8. Smoke-test the round-trip
+### 7. Smoke-test the round-trip
 
 From host A's `test-a` session:
 

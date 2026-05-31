@@ -254,6 +254,94 @@ fn derive_slice_path(merged: &Path, host: &str) -> PathBuf {
     parent.join(format!("{stem}.{host}.md"))
 }
 
+/// One-shot bootstrap of a peer host after the operator-side
+/// `add-agent --host <peer>` (or any TOML change that should propagate
+/// immediately rather than waiting for the next sync tick):
+///
+///   1. mkdir -p the peer's remote_config_dir (so the rsync target
+///      exists — rsync doesn't create grandparent dirs by default)
+///   2. rsync the canonical giga-harness.toml to the peer
+///   3. if the peer has no this_host.toml yet, create one with
+///      `this_host = "<peer-name>"` (idempotent — won't overwrite an
+///      existing one a previous run set up)
+///
+/// Best-effort: errors are returned so the caller can decide whether
+/// to surface them or just warn + carry on. Used by add-agent in the
+/// cross-host case.
+pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Path) -> Result<()> {
+    let peer = cfg
+        .hosts
+        .iter()
+        .find(|h| h.name == peer_name)
+        .ok_or_else(|| anyhow!("unknown peer host `{peer_name}`"))?;
+
+    let local_config_dir = canonical_config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let remote_dir = peer
+        .remote_config_dir
+        .clone()
+        .unwrap_or_else(|| local_config_dir.clone());
+    let toml_filename = canonical_config_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "giga-harness.toml".to_string());
+    let remote_toml_path = remote_dir.join(&toml_filename);
+    let user = peer
+        .ssh_user
+        .clone()
+        .or_else(|| std::env::var("USER").ok())
+        .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
+    let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
+
+    // 1. mkdir -p the peer's config dir.
+    let mkdir_cmd = format!("mkdir -p {}", shell_escape::escape(remote_dir.to_string_lossy()));
+    ssh_run(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
+
+    // 2. rsync the canonical TOML.
+    let toml_target = format!("{ssh_target}:{}", remote_toml_path.display());
+    let push = SyncCommand {
+        peer_target: toml_target,
+        local_path: canonical_config_path.to_path_buf(),
+        use_append_verify: false,
+        kind: "toml",
+    };
+    execute(&push).context("rsync TOML to peer")?;
+
+    // 3. ensure this_host.toml exists on the peer (only set if missing
+    //    — never overwrite, in case a previous bootstrap got there first).
+    let this_host_path = remote_dir.join("this_host.toml");
+    let ensure_cmd = format!(
+        "test -f {path} || echo 'this_host = \"{name}\"' > {path}",
+        path = shell_escape::escape(this_host_path.to_string_lossy()),
+        name = peer_name,
+    );
+    ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host.toml")?;
+
+    Ok(())
+}
+
+/// Run a one-shot SSH command on the peer; inherits stderr so the user
+/// sees what's happening; captures stdout only (currently unused).
+fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
+    let status = Command::new("ssh")
+        .arg(ssh_target)
+        .arg(remote_cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("ssh {ssh_target} {remote_cmd}"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "ssh {ssh_target} <cmd> exited {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
 fn execute(cmd: &SyncCommand) -> Result<()> {
     // `rsync -avz [--append-verify] <local> <target>`. `-a` preserves
     // metadata, `-v` is verbose (printed to our stderr), `-z` compresses
