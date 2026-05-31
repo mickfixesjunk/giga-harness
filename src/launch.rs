@@ -60,7 +60,7 @@ pub fn run(
         )
     };
 
-    let panes: Vec<Pane> = agents_iter
+    let mut panes: Vec<Pane> = agents_iter
         .map(|a| {
             let cwd = a.workdir.to_string_lossy().to_string();
             // Per-agent launch_cmd override wins; otherwise pick a
@@ -81,6 +81,23 @@ pub fn run(
         .collect();
 
     let incremental = !only.is_empty();
+
+    // Cross-host swarms need two extra long-running daemons per host:
+    //   - giga sync (rsync slices + canonical TOML to peers)
+    //   - giga merger (append peer slices into local merged file)
+    // We add them as additional panes alongside the agent panes — visible
+    // in the multiplexer, so the user can see their logs and notice if
+    // they die. Skipped on --only (incremental) launches: those are for
+    // adding single agent tabs to an existing session, where the daemons
+    // should already be running from the original full launch.
+    if !incremental && !cfg.hosts.is_empty() {
+        let swarm_dir = config_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        panes.push(daemon_pane("giga-sync", "giga sync", &swarm_dir));
+        panes.push(daemon_pane("giga-merger", "giga merger", &swarm_dir));
+    }
     let mux = terminal::parse_override(terminal).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown --terminal value `{}` — valid: auto, tmux, mac-terminal, wt, print",
@@ -153,6 +170,21 @@ const DEFAULT_INTRO_PROMPT: &str =
      your context. The watcher auto-replays unread history as the first \
      batch of notifications — read those, then post a one-line intro on \
      each channel and standby.";
+
+/// Build a multiplexer pane for one of the per-host background daemons
+/// (sync / merger). Always WSL-platform in v1 (Mick's hosts are all
+/// WSL/Linux); cwd is the swarm config dir so the daemon picks up the
+/// right giga-harness.toml via the default resolution. No claude
+/// involvement — these tabs just run the daemon and show its logs.
+fn daemon_pane(title: &str, cmd: &str, swarm_dir: &str) -> Pane {
+    Pane {
+        title: title.to_string(),
+        cwd: swarm_dir.to_string(),
+        cmd: cmd.to_string(),
+        platform: "wsl".to_string(),
+        admin: false,
+    }
+}
 
 /// Platform-appropriate default shell command. Tries `claude -c`
 /// first to resume the most-recent session in this cwd; falls back
@@ -313,5 +345,15 @@ mod tests {
         let b = intro_for_agent("base.", &agent_named("code", None));
         assert!(a.contains("design agent") && !a.contains("code agent"));
         assert!(b.contains("code agent") && !b.contains("design agent"));
+    }
+
+    #[test]
+    fn daemon_pane_targets_swarm_dir_and_runs_command_verbatim() {
+        let p = daemon_pane("giga-sync", "giga sync", "/home/me/.giga/configs/test-swarm");
+        assert_eq!(p.title, "giga-sync");
+        assert_eq!(p.cwd, "/home/me/.giga/configs/test-swarm");
+        assert_eq!(p.cmd, "giga sync");
+        assert_eq!(p.platform, "wsl");
+        assert!(!p.admin);
     }
 }
