@@ -567,9 +567,16 @@ participants = ["alice", "bob"]
         let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
         let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
         assert_eq!(toml_pushes.len(), 1, "one toml push per peer; one peer here");
-        assert!(toml_pushes[0]
-            .peer_target
-            .ends_with(&config_path.display().to_string()));
+        // The peer_target uses forward slashes (Linux peer) regardless of
+        // operator OS — normalize the expected suffix the same way the
+        // production code does before comparing.
+        let expected_suffix = config_path.display().to_string().replace('\\', "/");
+        assert!(
+            toml_pushes[0].peer_target.ends_with(&expected_suffix),
+            "peer_target={:?} should end with {:?}",
+            toml_pushes[0].peer_target,
+            expected_suffix,
+        );
         assert!(toml_pushes[0].peer_target.contains("wsl-b.tail0.ts.net"));
         assert!(!toml_pushes[0].use_append_verify, "TOML is whole-file");
     }
