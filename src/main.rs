@@ -23,6 +23,7 @@ mod init;
 mod launch;
 mod post;
 mod registry;
+mod remote;
 mod setup;
 mod sweep;
 mod switch;
@@ -234,6 +235,29 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Run a giga subcommand on a remote host over SSH. Looks up the
+    /// host in `[[hosts]]`, shells to `ssh <user>@<tailnet_hostname>`,
+    /// runs `giga <args>` from the same canonical config dir on that
+    /// host, and propagates stdout/stderr/exit-code transparently.
+    ///
+    /// With Tailscale SSH enabled on the remote (per setup-remote-peer.sh),
+    /// auth is automatic via tailnet identity — no key exchange.
+    ///
+    /// Example: `giga remote --host wsl-box-b sweep`
+    Remote {
+        /// Host name (must match a `[[hosts]].name` entry).
+        #[arg(long, value_name = "HOST")]
+        host: String,
+        /// Local config file used to look up `[[hosts]]` + the canonical
+        /// config dir to cd into on the remote.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Subcommand + args to invoke on the remote host. Captured as
+        /// trailing args so flags like `--owed-by` go to the remote
+        /// subcommand, not to `giga remote` itself.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        remote_args: Vec<String>,
+    },
     /// Forward giga inbox notifications into a running Codex filesystem channel.
     CodexChannel {
         /// Agent name to watch as.
@@ -360,6 +384,19 @@ fn main() -> Result<()> {
                 }
                 None => watch::run_multi(&config, &r#as),
             }
+        }
+        Command::Remote {
+            host,
+            config,
+            remote_args,
+        } => {
+            let config = registry::resolve_config(config)?;
+            let code = remote::run(remote::Args {
+                host,
+                config,
+                remote_args,
+            })?;
+            std::process::exit(code);
         }
         Command::CodexChannel {
             r#as,
