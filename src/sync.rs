@@ -322,12 +322,19 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     Ok(())
 }
 
-/// Run a one-shot SSH command on the peer; inherits stderr so the user
-/// sees what's happening; captures stdout only (currently unused).
+/// Run a one-shot SSH command on the peer, wrapped in `bash -lc` so
+/// the remote shell sources login config — necessary for cargo-installed
+/// binaries (`~/.cargo/bin/giga` etc.) that aren't on PATH for plain
+/// non-interactive ssh. Inherits stderr so the user sees what happens;
+/// captures stdout only (currently unused).
 fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
+    let wrapped = format!(
+        "bash -lc {}",
+        shell_escape::escape(std::borrow::Cow::Borrowed(remote_cmd))
+    );
     let status = Command::new("ssh")
         .arg(ssh_target)
-        .arg(remote_cmd)
+        .arg(&wrapped)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -340,6 +347,41 @@ fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Run `giga init` on the peer to scaffold workdirs + CLAUDE.md for
+/// agents whose host matches the peer (init is host-aware as of v1.1).
+/// Best-effort: callers warn on failure rather than blocking local
+/// success.
+pub fn run_remote_giga_init(
+    cfg: &Config,
+    peer_name: &str,
+    canonical_config_path: &Path,
+) -> Result<()> {
+    let peer = cfg
+        .hosts
+        .iter()
+        .find(|h| h.name == peer_name)
+        .ok_or_else(|| anyhow!("unknown peer host `{peer_name}`"))?;
+    let local_config_dir = canonical_config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let remote_dir = peer
+        .remote_config_dir
+        .clone()
+        .unwrap_or_else(|| local_config_dir.clone());
+    let user = peer
+        .ssh_user
+        .clone()
+        .or_else(|| std::env::var("USER").ok())
+        .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
+    let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
+    let remote_cmd = format!(
+        "cd {} && giga init",
+        shell_escape::escape(remote_dir.to_string_lossy())
+    );
+    ssh_run(&ssh_target, &remote_cmd).context("remote `giga init`")
 }
 
 fn execute(cmd: &SyncCommand) -> Result<()> {

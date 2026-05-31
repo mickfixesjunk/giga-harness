@@ -159,16 +159,35 @@ pub fn run(args: Args) -> Result<()> {
         if is_remote {
             println!();
             println!("auto-bootstrap: pushing canonical TOML to `{host}`...");
-            match sync::bootstrap_peer(&revalidated, host, &args.config) {
+            let bootstrap_ok = match sync::bootstrap_peer(&revalidated, host, &args.config) {
                 Ok(()) => {
                     println!(
                         "  + canonical TOML synced to `{host}` (and this_host.toml ensured)"
                     );
+                    true
                 }
                 Err(e) => {
                     eprintln!("  ! auto-bootstrap failed: {e:#}");
                     eprintln!("    The local config is correct; the peer just isn't synced yet.");
                     eprintln!("    Run `giga sync --once` once everything is reachable to recover.");
+                    false
+                }
+            };
+            // Remote `giga init` scaffolds the new agent's workdir +
+            // CLAUDE.md on the peer. Init is host-aware (as of v1.1), so
+            // it only touches workdirs for agents whose `host` matches
+            // the peer — won't try to mkdir /home/<other-user>/... on
+            // the wrong filesystem. Best-effort: only runs if bootstrap
+            // succeeded (otherwise the peer doesn't even have the TOML
+            // to init from).
+            if bootstrap_ok {
+                println!("auto-scaffold: running `giga init` on `{host}`...");
+                match sync::run_remote_giga_init(&revalidated, host, &args.config) {
+                    Ok(()) => println!("  + remote init complete — `{}`'s workdir + CLAUDE.md ready on `{host}`", args.name),
+                    Err(e) => {
+                        eprintln!("  ! remote giga init failed: {e:#}");
+                        eprintln!("    The peer has the TOML; run `giga remote --host {host} init` manually to scaffold.");
+                    }
                 }
             }
         }

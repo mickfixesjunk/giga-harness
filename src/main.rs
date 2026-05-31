@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 
 mod add_agent;
 mod add_channel;
+mod add_host;
 mod config;
 mod codex_channel;
 mod cursor;
@@ -224,6 +225,47 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         host: Option<String>,
         /// Config file to edit.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Append a new [[hosts]] entry to the canonical TOML and
+    /// (by default) auto-bootstrap the new peer: mkdir + rsync the
+    /// canonical TOML + ensure peer has a `this_host.toml`. After
+    /// this, run `giga add-agent --host <name> ...` to put agents
+    /// on the new host.
+    ///
+    /// Typical use: after `giga setup --remote-node` on the peer +
+    /// noting its tailnet hostname, run this on the operator host
+    /// to register the peer in the swarm.
+    AddHost {
+        /// Slug for the new host (matches [[hosts]].name + agent.host).
+        #[arg(long)]
+        name: String,
+        /// Full tailnet FQDN of the peer (e.g. wsl-b.tail0000.ts.net).
+        /// `giga setup --remote-node` on the peer prints this.
+        #[arg(long, value_name = "FQDN")]
+        tailnet_hostname: String,
+        /// SSH user on the peer. Defaults to $USER (homogeneous-user
+        /// setup); set when the peer has a different OS user.
+        #[arg(long, value_name = "USER")]
+        ssh_user: Option<String>,
+        /// Absolute path on the peer where the swarm config lives.
+        /// Defaults to the local config dir (homogeneous-path setup);
+        /// set when the peer's $HOME differs from the operator's.
+        #[arg(long, value_name = "PATH")]
+        remote_config_dir: Option<PathBuf>,
+        /// Absolute path on the peer where the inbox lives. Defaults
+        /// to the local inbox path; set when the peer's filesystem
+        /// layout differs.
+        #[arg(long, value_name = "PATH")]
+        remote_inbox_dir: Option<PathBuf>,
+        /// Don't auto-push the canonical TOML to the new peer (skip
+        /// the SSH/rsync step). Use when the peer isn't reachable yet.
+        #[arg(long)]
+        no_bootstrap: bool,
+        /// Print the planned change without writing.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
@@ -507,6 +549,28 @@ fn main() -> Result<()> {
                 config,
                 participants,
                 file,
+                dry_run,
+            })
+        }
+        Command::AddHost {
+            name,
+            tailnet_hostname,
+            ssh_user,
+            remote_config_dir,
+            remote_inbox_dir,
+            no_bootstrap,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            add_host::run(add_host::Args {
+                config,
+                name,
+                tailnet_hostname,
+                ssh_user,
+                remote_config_dir,
+                remote_inbox_dir,
+                no_bootstrap,
                 dry_run,
             })
         }
