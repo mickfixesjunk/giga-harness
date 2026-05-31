@@ -27,6 +27,7 @@ mod post;
 mod registry;
 mod remote;
 mod setup;
+mod setup_remote_node;
 mod sweep;
 mod sync;
 mod switch;
@@ -53,7 +54,29 @@ enum Command {
     /// One-command bootstrap: launches a Claude Code session that walks
     /// the user through scaffolding a multi-agent swarm. No external
     /// docs or paste-prompts required — everything's baked in.
-    Setup,
+    ///
+    /// `--remote-node` instead bootstraps THIS machine as a remote peer
+    /// in an EXISTING swarm: installs rsync + Tailscale, runs
+    /// `tailscale up` (interactive), enables Tailscale SSH, creates the
+    /// inbox dir. Run on a bare WSL host you want to add as a swarm
+    /// member; then go to your operator host and
+    /// `giga add-agent --host <this-node> ...`.
+    Setup {
+        /// Bootstrap THIS machine as a remote peer in an existing swarm
+        /// (Tailscale + SSH + rsync + inbox dir). Implies that the
+        /// operator-side scaffolding (giga init, giga setup as a fresh
+        /// swarm, etc.) is NOT what you want.
+        #[arg(long)]
+        remote_node: bool,
+        /// Override the default inbox directory (~/projects/inbox).
+        /// Only used with --remote-node.
+        #[arg(long, value_name = "PATH")]
+        inbox_dir: Option<PathBuf>,
+        /// Print what would happen without making changes. Only used
+        /// with --remote-node.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate a config file without touching the filesystem.
     Validate {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
@@ -350,7 +373,20 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Setup => setup::run(),
+        Command::Setup {
+            remote_node,
+            inbox_dir,
+            dry_run,
+        } => {
+            if remote_node {
+                setup_remote_node::run(setup_remote_node::Args {
+                    inbox_dir,
+                    dry_run,
+                })
+            } else {
+                setup::run()
+            }
+        }
         Command::Validate { config } => {
             let config = registry::resolve_config(config)?;
             validate::run(&config)
