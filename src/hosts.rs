@@ -13,6 +13,53 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::config::Config;
+use crate::registry;
+
+/// `giga hosts` with no specific config to drill into — list all
+/// registered swarms (one line each) instead of cryptically failing
+/// with "no swarm registered for this directory." Operator can then
+/// pass `--config <path>` (or the swarm name's config path) to get
+/// detail.
+pub fn run_list_all() -> Result<()> {
+    let reg = registry::load()?;
+    if reg.entries.is_empty() {
+        println!("(no swarms registered yet — run `giga setup` to create one)");
+        return Ok(());
+    }
+    println!("registered swarms ({}):", reg.entries.len());
+    for entry in &reg.entries {
+        println!();
+        println!("  {}", entry.name);
+        println!("    config:     {}", entry.config.display());
+        if entry.code_roots.is_empty() {
+            println!("    code_roots: (none)");
+        } else {
+            println!("    code_roots:");
+            for r in &entry.code_roots {
+                println!("      - {}", r.display());
+            }
+        }
+        // Try to load + count agents/hosts/channels — best-effort, skip on parse fail.
+        if let Ok(cfg) = Config::load(&entry.config) {
+            let host_count = cfg.hosts.len();
+            let agent_count = cfg.agents.len();
+            let channel_count = cfg.channels.len();
+            print!(
+                "    summary:    {} agent(s), {} channel(s)",
+                agent_count, channel_count
+            );
+            if host_count > 0 {
+                print!(", {} host(s) (multi-host)", host_count);
+            } else {
+                print!(" (local-only)");
+            }
+            println!();
+        }
+    }
+    println!();
+    println!("for detail on one swarm: `giga hosts <config-path>`");
+    Ok(())
+}
 
 pub fn run(config_path: &Path) -> Result<()> {
     let cfg = Config::load(config_path)?;

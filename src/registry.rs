@@ -35,10 +35,13 @@ pub struct Entry {
 }
 
 /// `~/.giga/swarms.toml` — absolute path. Created on first upsert.
+/// Falls back to `%USERPROFILE%` for native Windows shells (PowerShell,
+/// cmd.exe) which don't set `$HOME` — mirrors `cursor::giga_home()`.
 pub fn path() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?;
+        .ok_or_else(|| anyhow::anyhow!("neither $HOME nor %USERPROFILE% is set"))?;
     Ok(home.join(".giga").join("swarms.toml"))
 }
 

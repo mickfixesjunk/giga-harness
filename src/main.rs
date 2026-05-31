@@ -494,8 +494,17 @@ fn main() -> Result<()> {
             launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
         }
         Command::Hosts { config } => {
-            let config = registry::resolve_config(config)?;
-            hosts::run(&config)
+            // When the user didn't override --config and we can't resolve
+            // a default `giga-harness.toml` (not in a swarm dir, no
+            // registry hit), fall back to listing every registered swarm
+            // instead of erroring with the cryptic "no swarm registered"
+            // message. Explicit-but-bad --config still errors loud.
+            let was_default = config == PathBuf::from("giga-harness.toml");
+            match registry::resolve_config(config) {
+                Ok(c) => hosts::run(&c),
+                Err(_) if was_default => hosts::run_list_all(),
+                Err(e) => Err(e),
+            }
         }
         Command::ClaudeOperator => claude_operator::run(),
         Command::Sweep {
