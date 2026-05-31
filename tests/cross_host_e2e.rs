@@ -84,7 +84,7 @@ fn build_fixture() -> Fixture {
 name = "remote-test"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "wsl-a"
@@ -415,7 +415,7 @@ fn local_only_swarm_falls_back_to_direct_write() {
 name = "legacy"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[agents]]
 name = "alice"

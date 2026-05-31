@@ -291,7 +291,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
 
     // 1. mkdir -p the peer's config dir.
-    let mkdir_cmd = format!("mkdir -p {}", shell_escape::escape(remote_dir.to_string_lossy()));
+    let mkdir_cmd = format!("mkdir -p {}", shell_escape::unix::escape(remote_dir.to_string_lossy()));
     ssh_run(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
 
     // 2. rsync the WHOLE swarm dir (canonical TOML + agents/ templates
@@ -329,7 +329,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     let this_host_path = remote_dir.join("this_host.toml");
     let ensure_cmd = format!(
         "test -f {path} || echo 'this_host = \"{name}\"' > {path}",
-        path = shell_escape::escape(this_host_path.to_string_lossy()),
+        path = shell_escape::unix::escape(this_host_path.to_string_lossy()),
         name = peer_name,
     );
     ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host.toml")?;
@@ -345,7 +345,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
 fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
     let wrapped = format!(
         "bash -lc {}",
-        shell_escape::escape(std::borrow::Cow::Borrowed(remote_cmd))
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd))
     );
     let status = Command::new("ssh")
         .arg(ssh_target)
@@ -394,7 +394,7 @@ pub fn run_remote_giga_init(
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
     let remote_cmd = format!(
         "cd {} && giga init",
-        shell_escape::escape(remote_dir.to_string_lossy())
+        shell_escape::unix::escape(remote_dir.to_string_lossy())
     );
     ssh_run(&ssh_target, &remote_cmd).context("remote `giga init`")
 }
@@ -477,7 +477,7 @@ mod tests {
 name = "remote-test"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "wsl-a"
@@ -619,7 +619,7 @@ participants = ["alice", "bob"]
 name = "x"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "self"
@@ -667,7 +667,7 @@ remote_inbox_dir = "/home/bob/projects/inbox"
 name = "x"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "self"
@@ -736,7 +736,7 @@ participants = ["alice", "bob-agent"]
 name = "solo"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "wsl-only"

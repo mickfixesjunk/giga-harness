@@ -308,7 +308,7 @@ mod tests {
 name = "remote-test"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "wsl-a"
@@ -373,7 +373,7 @@ participants = ["alice", "bob"]
 name = "x"
 
 [paths]
-wsl_inbox = "{inbox}"
+wsl_inbox = '{inbox}'
 
 [[hosts]]
 name = "wsl-a"

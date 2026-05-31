@@ -64,7 +64,7 @@ pub fn run(args: Args) -> Result<i32> {
     // like the peer's `giga` aren't on PATH for non-interactive ssh.
     let wrapped = format!(
         "bash -lc {}",
-        shell_escape::escape(std::borrow::Cow::Borrowed(remote_cmd.as_str()))
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd.as_str()))
     );
     let status = Command::new("ssh")
         .arg(&target)
@@ -122,9 +122,9 @@ fn build_ssh_target(host: &Host) -> Result<String> {
 fn build_remote_command(config_dir: &Path, remote_args: &[String]) -> String {
     let escaped_args: Vec<String> = remote_args
         .iter()
-        .map(|a| shell_escape::escape(a.into()).into_owned())
+        .map(|a| shell_escape::unix::escape(a.into()).into_owned())
         .collect();
-    let escaped_dir = shell_escape::escape(config_dir.to_string_lossy()).into_owned();
+    let escaped_dir = shell_escape::unix::escape(config_dir.to_string_lossy()).into_owned();
     format!("cd {escaped_dir} && giga {}", escaped_args.join(" "))
 }
 
