@@ -150,7 +150,7 @@ pub fn compute_sync_plan(
             .as_ref()
             .cloned()
             .unwrap_or_else(|| local_config_dir.clone());
-        let remote_path = remote_dir.join(&toml_filename);
+        let remote_path = remote_join(&remote_dir, &toml_filename);
         let target = match build_rsync_target(peer, &remote_path) {
             Ok(t) => t,
             Err(_) => continue,
@@ -204,7 +204,7 @@ pub fn compute_sync_plan(
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| local_inbox_dir.clone());
-            let remote_slice_path = remote_inbox.join(&slice_filename);
+            let remote_slice_path = remote_join(&remote_inbox, &slice_filename);
             let target = match build_rsync_target(peer, &remote_slice_path) {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -222,10 +222,10 @@ pub fn compute_sync_plan(
 }
 
 /// Build the rsync target string: `user@tailnet_hostname:path`.
-/// `path` is the destination path on the peer (per remote_config_dir /
-/// remote_inbox_dir, with the local path as fallback for
-/// homogeneous-user setups).
-fn build_rsync_target(peer: &Host, remote_path: &Path) -> Result<String> {
+/// `path` must already be a forward-slash string — the peer is always
+/// Linux/WSL. Callers compute it via `remote_join()` which normalizes
+/// backslashes that a Windows operator's `PathBuf::display()` would emit.
+fn build_rsync_target(peer: &Host, remote_path: &str) -> Result<String> {
     let user = peer
         .ssh_user
         .clone()
@@ -237,10 +237,27 @@ fn build_rsync_target(peer: &Host, remote_path: &Path) -> Result<String> {
             )
         })?;
     Ok(format!(
-        "{user}@{host}:{path}",
+        "{user}@{host}:{remote_path}",
         host = peer.tailnet_hostname,
-        path = remote_path.display()
     ))
+}
+
+/// Join a directory path + filename for use on the REMOTE peer (always
+/// Linux/WSL → forward slashes). `PathBuf::join` uses the host's native
+/// separator (`\` on a Windows operator), which produces invalid paths
+/// on the Linux peer. Normalize `\` → `/` and trim trailing separators
+/// before joining.
+fn remote_join(dir: &Path, name: &str) -> String {
+    let dir_str = dir.display().to_string().replace('\\', "/");
+    let trimmed = dir_str.trim_end_matches('/');
+    format!("{trimmed}/{name}")
+}
+
+/// Convert a local Path to a forward-slash string for use in commands
+/// the peer will run (mkdir, rsync target dir). Same rationale as
+/// `remote_join`: peer is always Linux.
+fn to_unix_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
 }
 
 /// `/dir/<channel>.md` + host -> `/dir/<channel>.<host>.md`. Mirrors
@@ -290,8 +307,14 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
 
-    // 1. mkdir -p the peer's config dir.
-    let mkdir_cmd = format!("mkdir -p {}", shell_escape::unix::escape(remote_dir.to_string_lossy()));
+    // 1. mkdir -p the peer's config dir. Normalize separators so a
+    //    Windows operator's `\`-laden PathBuf doesn't end up in the
+    //    remote shell command.
+    let remote_dir_unix = to_unix_path(&remote_dir);
+    let mkdir_cmd = format!(
+        "mkdir -p {}",
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_dir_unix.as_str()))
+    );
     ssh_run(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
 
     // 2. rsync the WHOLE swarm dir (canonical TOML + agents/ templates
@@ -309,7 +332,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
             "--exclude",
             "workdirs/",
             &format!("{}/", local_config_dir.display()),
-            &format!("{ssh_target}:{}/", remote_dir.display()),
+            &format!("{ssh_target}:{remote_dir_unix}/"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -318,19 +341,18 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         .with_context(|| format!("invoking rsync of swarm dir to {ssh_target}"))?;
     if !dir_rsync_status.success() {
         return Err(anyhow!(
-            "rsync swarm dir -> {ssh_target}:{} exited {}",
-            remote_dir.display(),
+            "rsync swarm dir -> {ssh_target}:{remote_dir_unix} exited {}",
             dir_rsync_status.code().unwrap_or(-1),
         ));
     }
 
     // 3. ensure this_host.toml exists on the peer (only set if missing
     //    — never overwrite, in case a previous bootstrap got there first).
-    let this_host_path = remote_dir.join("this_host.toml");
+    let this_host_path = remote_join(&remote_dir, "this_host.toml");
+    let escaped_path =
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(this_host_path.as_str()));
     let ensure_cmd = format!(
-        "test -f {path} || echo 'this_host = \"{name}\"' > {path}",
-        path = shell_escape::unix::escape(this_host_path.to_string_lossy()),
-        name = peer_name,
+        "test -f {escaped_path} || echo 'this_host = \"{peer_name}\"' > {escaped_path}",
     );
     ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host.toml")?;
 
@@ -392,9 +414,10 @@ pub fn run_remote_giga_init(
         .or_else(|| std::env::var("USER").ok())
         .ok_or_else(|| anyhow!("can't determine SSH user for host `{peer_name}`"))?;
     let ssh_target = format!("{user}@{}", peer.tailnet_hostname);
+    let remote_dir_unix = to_unix_path(&remote_dir);
     let remote_cmd = format!(
         "cd {} && giga init",
-        shell_escape::unix::escape(remote_dir.to_string_lossy())
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_dir_unix.as_str()))
     );
     ssh_run(&ssh_target, &remote_cmd).context("remote `giga init`")
 }
@@ -447,7 +470,7 @@ mod tests {
     #[test]
     fn build_rsync_target_uses_explicit_ssh_user() {
         let h = host("wsl-b", "wsl-b.tail0.ts.net", Some("alice"));
-        let target = build_rsync_target(&h, Path::new("/some/file.md")).unwrap();
+        let target = build_rsync_target(&h, "/some/file.md").unwrap();
         assert_eq!(target, "alice@wsl-b.tail0.ts.net:/some/file.md");
     }
 
@@ -456,12 +479,27 @@ mod tests {
         let orig = std::env::var("USER").ok();
         unsafe { std::env::set_var("USER", "env-user") };
         let h = host("wsl-b", "wsl-b.tail0.ts.net", None);
-        let target = build_rsync_target(&h, Path::new("/x")).unwrap();
+        let target = build_rsync_target(&h, "/x").unwrap();
         match orig {
             Some(v) => unsafe { std::env::set_var("USER", v) },
             None => unsafe { std::env::remove_var("USER") },
         }
         assert_eq!(target, "env-user@wsl-b.tail0.ts.net:/x");
+    }
+
+    #[test]
+    fn remote_join_uses_forward_slashes_on_any_host() {
+        // Even if PathBuf::join would use \ on Windows, our remote_join
+        // emits /. This is what prevents the Windows-operator-builds-
+        // Linux-peer-target bug from the step 10 + CI followups.
+        let result = remote_join(Path::new("/home/bob/.giga/configs/x"), "giga-harness.toml");
+        assert_eq!(result, "/home/bob/.giga/configs/x/giga-harness.toml");
+        // Trailing-slash handling:
+        let result = remote_join(Path::new("/home/bob/.giga/configs/x/"), "f.md");
+        assert_eq!(result, "/home/bob/.giga/configs/x/f.md");
+        // Backslashes in the dir (simulating a Windows-built PathBuf):
+        let result = remote_join(Path::new(r"C:\Users\bob\inbox"), "ch.md");
+        assert_eq!(result, "C:/Users/bob/inbox/ch.md");
     }
 
     /// Build a 2-host cross-host swarm fixture: alice@wsl-a + bob@wsl-b

@@ -118,13 +118,18 @@ fn build_ssh_target(host: &Host) -> Result<String> {
 
 /// Build the shell command to send over ssh: `cd <config-dir> && giga <args>`.
 /// All values are shell-escaped to be safe against spaces or special chars
-/// in paths or subcommand arguments. Pure — testable without ssh.
+/// in paths or subcommand arguments. The config dir is normalized to
+/// forward slashes (the peer is always Linux/WSL — `PathBuf::display()`
+/// on a Windows operator would emit `\` which the remote shell rejects).
+/// Pure — testable without ssh.
 fn build_remote_command(config_dir: &Path, remote_args: &[String]) -> String {
     let escaped_args: Vec<String> = remote_args
         .iter()
         .map(|a| shell_escape::unix::escape(a.into()).into_owned())
         .collect();
-    let escaped_dir = shell_escape::unix::escape(config_dir.to_string_lossy()).into_owned();
+    let dir_unix = config_dir.display().to_string().replace('\\', "/");
+    let escaped_dir = shell_escape::unix::escape(std::borrow::Cow::Borrowed(dir_unix.as_str()))
+        .into_owned();
     format!("cd {escaped_dir} && giga {}", escaped_args.join(" "))
 }
 
