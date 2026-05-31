@@ -15,6 +15,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod add_agent;
+mod add_channel;
 mod config;
 mod codex_channel;
 mod cursor;
@@ -72,6 +73,11 @@ enum Command {
     Launch {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// Run launch on a remote host instead of locally. Equivalent to
+        /// `giga remote --host <HOST> launch [args]`. Tailnet identity
+        /// auths the connection.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
         /// Skip `giga init` before launching. Use if you've already
         /// scaffolded and don't want to re-render CLAUDE.md files.
         #[arg(long)]
@@ -106,6 +112,10 @@ enum Command {
         /// Show only channels where `as` is the one being waited on.
         #[arg(long)]
         owed_by: Option<String>,
+        /// Run sweep on a remote host instead of locally. Equivalent to
+        /// `giga remote --host <HOST> sweep [args]`.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
     },
     /// Append a properly-formatted message to a channel file.
     Post {
@@ -183,7 +193,33 @@ enum Command {
         /// the launch intro prompt.
         #[arg(long, value_name = "PATH")]
         code_root: Option<String>,
+        /// Host this agent lives on (must match a `[[hosts]].name`).
+        /// Sets the agent's `host` field in the TOML so cross-host
+        /// routing works. After scaffolding, run
+        /// `giga launch --host <HOST> --only <NEW-AGENT>` to bring up
+        /// the terminal on the peer.
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
         /// Config file to edit.
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Append a new bilateral channel between two existing agents.
+    /// Updates the canonical giga-harness.toml; the `giga sync` daemon
+    /// propagates the change to peers. The merger + watcher pick up
+    /// the new channel within ~15s (auto-discovery reload window).
+    AddChannel {
+        /// Participant agent names, comma-separated. v1 supports
+        /// bilateral channels only — exactly two participants.
+        #[arg(long, value_delimiter = ',', value_name = "AGENT")]
+        participants: Vec<String>,
+        /// Override the auto-derived filename (sorted-alphabetical
+        /// `<a>-<b>.md`). Rarely needed.
+        #[arg(long)]
+        file: Option<String>,
+        /// Print the planned change without writing.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
@@ -318,6 +354,7 @@ fn main() -> Result<()> {
         Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
         Command::Launch {
             config,
+            host,
             skip_init,
             dry_run,
             only,
@@ -325,10 +362,51 @@ fn main() -> Result<()> {
             terminal,
         } => {
             let config = registry::resolve_config(config)?;
+            if let Some(host) = host {
+                let mut remote_args = vec!["launch".to_string()];
+                if skip_init {
+                    remote_args.push("--skip-init".to_string());
+                }
+                if dry_run {
+                    remote_args.push("--dry-run".to_string());
+                }
+                if !only.is_empty() {
+                    remote_args.push("--only".to_string());
+                    remote_args.push(only.join(","));
+                }
+                if new_window {
+                    remote_args.push("--new-window".to_string());
+                }
+                remote_args.push("--terminal".to_string());
+                remote_args.push(terminal);
+                let code = remote::run(remote::Args {
+                    host,
+                    config,
+                    remote_args,
+                })?;
+                std::process::exit(code);
+            }
             launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
         }
-        Command::Sweep { config, owed_by } => {
+        Command::Sweep {
+            config,
+            owed_by,
+            host,
+        } => {
             let config = registry::resolve_config(config)?;
+            if let Some(host) = host {
+                let mut remote_args = vec!["sweep".to_string()];
+                if let Some(o) = &owed_by {
+                    remote_args.push("--owed-by".to_string());
+                    remote_args.push(o.clone());
+                }
+                let code = remote::run(remote::Args {
+                    host,
+                    config,
+                    remote_args,
+                })?;
+                std::process::exit(code);
+            }
             sweep::run(&config, owed_by.as_deref())
         }
         Command::Post {
@@ -362,6 +440,7 @@ fn main() -> Result<()> {
             template,
             dry_run,
             code_root,
+            host,
             config,
         } => add_agent::run(add_agent::Args {
             config,
@@ -375,7 +454,22 @@ fn main() -> Result<()> {
             template,
             dry_run,
             code_root,
+            host,
         }),
+        Command::AddChannel {
+            participants,
+            file,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            add_channel::run(add_channel::Args {
+                config,
+                participants,
+                file,
+                dry_run,
+            })
+        }
         Command::Switch {
             runtime,
             account,

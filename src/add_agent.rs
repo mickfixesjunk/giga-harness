@@ -33,6 +33,14 @@ pub struct Args {
     pub template: Option<PathBuf>,
     pub dry_run: bool,
     pub code_root: Option<String>,
+    /// Optional host name (must match a `[[hosts]].name`) — set when
+    /// scaffolding an agent that lives on a peer host. The TOML
+    /// `[[agents]]` entry will carry `host = "..."`; sync (step 5)
+    /// ships the canonical TOML to peers so they learn about it. The
+    /// user then runs `giga launch --host <peer> --only <new-agent>`
+    /// (or `giga remote --host <peer> launch --only <new-agent>`) to
+    /// actually bring up the terminal on the peer.
+    pub host: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -211,6 +219,7 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
 
 // --------------------------------------------------------------- channel derivation
 
+#[derive(Debug)]
 pub struct DerivedChannel {
     pub file: String,
     pub side: String,
@@ -271,6 +280,9 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     block["workdir"] = value(args.workdir.as_str());
     block["role"] = value(args.role.as_str());
     block["platform"] = value(args.platform.as_str());
+    if let Some(h) = &args.host {
+        block["host"] = value(h.as_str());
+    }
     if args.bench_scheduler {
         block["bench_scheduler"] = value(true);
     }
@@ -282,7 +294,7 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn append_channel(doc: &mut DocumentMut, ch: &DerivedChannel) -> Result<()> {
+pub(crate) fn append_channel(doc: &mut DocumentMut, ch: &DerivedChannel) -> Result<()> {
     let channels = ensure_array_of_tables(doc, "channels")?;
     let mut block = Table::new();
     block["file"] = value(ch.file.as_str());
@@ -325,7 +337,7 @@ fn append_to_broadcast(doc: &mut DocumentMut, file: &str, slug: &str) -> Result<
     ))
 }
 
-fn ensure_array_of_tables<'a>(
+pub(crate) fn ensure_array_of_tables<'a>(
     doc: &'a mut DocumentMut,
     key: &str,
 ) -> Result<&'a mut ArrayOfTables> {
@@ -465,6 +477,7 @@ purpose = "All-hands."
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         }
     }
 
@@ -814,6 +827,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
 
@@ -852,6 +866,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: true,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let after = fs::read_to_string(&cfg_path).unwrap();
@@ -878,6 +893,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();
@@ -902,6 +918,7 @@ windows_inbox = "/tmp/inbox_win""#,
             template: None,
             dry_run: false,
             code_root: None,
+            host: None,
         };
         run(args).unwrap();
         let updated = fs::read_to_string(&cfg_path).unwrap();
