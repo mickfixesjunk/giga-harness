@@ -314,6 +314,12 @@ enum Command {
         /// Print the planned change without writing.
         #[arg(long)]
         dry_run: bool,
+        /// v0.3.8 Bug 2: name to register THIS host as in [[hosts]]
+        /// during a first-host migration (local-only → multi-host).
+        /// Auto-detected from $HOSTNAME or /etc/hostname when omitted.
+        /// Ignored when the swarm already has [[hosts]] entries.
+        #[arg(long, value_name = "NAME")]
+        this_host_name: Option<String>,
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
@@ -653,6 +659,7 @@ fn main() -> Result<()> {
             remote_inbox_dir,
             no_bootstrap,
             dry_run,
+            this_host_name,
             config,
         } => {
             let config = registry::resolve_config(config)?;
@@ -665,6 +672,7 @@ fn main() -> Result<()> {
                 remote_inbox_dir,
                 no_bootstrap,
                 dry_run,
+                this_host_name,
             })
         }
         Command::Switch {

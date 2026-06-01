@@ -408,6 +408,36 @@ impl Config {
             }
         }
 
+        // v0.3.8 Bug 4 fix: when [[hosts]] is non-empty, every agent
+        // MUST have an explicit `host = "..."` field. Pre-fix:
+        // `agent_host()` falls back to this_host for host-less agents,
+        // which means the SAME canonical TOML reads differently on each
+        // host — agents collapse to "wherever I am running", silently
+        // misrouting channels. The user's bootstrap report (Bug 4)
+        // showed `giga hosts` reporting all 5 agents as local on each
+        // of 2 hosts. Require explicit-host now; remediation is to
+        // add `host = "<host-name>"` to each agent block.
+        if !self.hosts.is_empty() {
+            let host_names: std::collections::HashSet<&str> =
+                self.hosts.iter().map(|h| h.name.as_str()).collect();
+            let unhosted: Vec<&str> = self
+                .agents
+                .iter()
+                .filter(|a| a.host.is_none())
+                .map(|a| a.name.as_str())
+                .collect();
+            if !unhosted.is_empty() {
+                return Err(anyhow!(
+                    "agents missing `host = \"...\"` in a multi-host swarm: {:?}. \
+                     When [[hosts]] is non-empty, every [[agents]] block must declare \
+                     which host it runs on (one of: {:?}). The pre-v0.3.8 fallback to \
+                     this_host silently misrouted channels on the peer.",
+                    unhosted,
+                    host_names.iter().copied().collect::<Vec<_>>(),
+                ));
+            }
+        }
+
         // v0.3.6: at most one swarm_boss per host. Bucketed by the
         // resolved host (agent.host or this_host fallback). See
         // SWARM_BOSS_DESIGN.md §3.2.
@@ -1141,18 +1171,22 @@ tailnet_hostname = "wsl-a-dup.tail0000.ts.net""#,
         assert!(cfg.channel_is_local(ch));
     }
 
+    /// v0.3.8 Bug 4 fix (inverted from the v0.2 fallback test): when
+    /// [[hosts]] is non-empty, agents MUST have an explicit `host =`
+    /// field. The old fallback to this_host silently misrouted
+    /// channels because the SAME canonical TOML resolved differently
+    /// on each host. Validation now rejects the missing-host case.
     #[test]
-    fn agent_without_host_field_falls_back_to_this_host() {
-        // When [[hosts]] exists but an agent omits `host`, it implicitly
-        // belongs to this_host. Lets a config writer skip the redundant
-        // host = "wsl-a" on every local agent.
+    fn agent_without_host_field_in_multi_host_swarm_is_rejected() {
         let body = minimal_two_host().replace(r#"host = "wsl-a""#, "");
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
-        cfg.validate().unwrap();
-        let alice = cfg.agent_by_name("alice").unwrap();
-        assert_eq!(alice.host, None);
-        assert_eq!(cfg.agent_host(alice), Some("wsl-a")); // resolved via this_host
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing `host") && msg.contains("alice"),
+            "expected multi-host explicit-host error; got: {msg}"
+        );
     }
 
     #[test]
@@ -1250,6 +1284,7 @@ ssh_user = "neomatrix""#,
 
     #[test]
     fn inbox_for_host_side_uses_per_host_paths_override() {
+        // v0.3.8: agents need explicit host= in multi-host swarms.
         let body = format!(
             r#"{}
 [[hosts]]
@@ -1261,7 +1296,13 @@ name = "wsl-b"
 tailnet_hostname = "wsl-b.tail0.ts.net"
 paths.wsl_inbox = "/home/neo/projects/inbox"
 "#,
-            minimal()
+            minimal().replace(
+                "platform = \"wsl\"\n\n[[agents]]",
+                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
+            ).replace(
+                "platform = \"wsl\"\n\n[[channels]]",
+                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
+            )
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
@@ -1282,6 +1323,7 @@ paths.wsl_inbox = "/home/neo/projects/inbox"
     fn inbox_for_host_side_falls_back_to_remote_inbox_dir_v02_compat() {
         // v0.2 swarms used [[hosts]].remote_inbox_dir before the
         // explicit per-host [paths] field existed. Keep working.
+        // v0.3.8: agents need explicit host=.
         let body = format!(
             r#"{}
 [[hosts]]
@@ -1293,7 +1335,13 @@ name = "wsl-b"
 tailnet_hostname = "b.tail0.ts.net"
 remote_inbox_dir = "/legacy/path"
 "#,
-            minimal()
+            minimal().replace(
+                "platform = \"wsl\"\n\n[[agents]]",
+                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
+            ).replace(
+                "platform = \"wsl\"\n\n[[channels]]",
+                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
+            )
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
@@ -1323,6 +1371,7 @@ remote_inbox_dir = "/legacy/path"
     fn channel_path_uses_per_host_override_when_this_host_set() {
         // The killer test: a peer with asymmetric paths must NOT try to
         // resolve channels against the operator's local-only inbox.
+        // v0.3.8: add explicit host= to the agents from minimal().
         let body = format!(
             r#"{}
 [[hosts]]
@@ -1339,12 +1388,16 @@ file = "alice-bob.md"
 side = "wsl"
 participants = ["a", "b"]
 "#,
-            minimal().trim_end_matches(|c: char| c == '\n')
-        );
-        // Add a "b" agent on wsl-b for the channel participants validation.
-        let body = body.replace(
-            "[[channels]]",
-            "[[agents]]\nname = \"b\"\nworkdir = \"/h/b\"\nrole = \".\"\nplatform = \"wsl\"\nhost = \"wsl-b\"\n\n[[channels]]",
+            minimal()
+                .trim_end_matches(|c: char| c == '\n')
+                .replace(
+                    "platform = \"wsl\"\n\n[[agents]]",
+                    "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
+                )
+                .replace(
+                    "platform = \"wsl\"\n\n[[channels]]",
+                    "platform = \"wsl\"\nhost = \"wsl-b\"\n\n[[channels]]",
+                )
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-b".into());

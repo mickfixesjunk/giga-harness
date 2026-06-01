@@ -9,6 +9,7 @@ You are operating a `giga-harness` swarm — N parallel AI agents that coordinat
 - A **channel** is an append-only `.md` file in the inbox dir. Messages are header-blocks: `===\n[<sender>] <subject> — <UTC ts>\n===\n\n<body>\n\n<footer>\n===`. The footer is either `WAITING ON: <agent> (<what>)` or `(Informational, no response required.)`.
 - A swarm can be **single-host** (default — all agents on one machine, polling watcher on local files) or **multi-host** (agents on multiple machines on a tailnet — per-host slice files `<channel>.<host>.md` rsync'd via Tailscale SSH; a local merger appends incoming peer bytes to the watched merged file). The watcher doesn't know or care which case is which.
 - In multi-host mode (v0.3.5+), `giga post` on a cross-host channel **dual-writes** the frame to the slice (for sync to ship to peers) AND to the merged file (so local watchers see it immediately, independent of merger liveness). Adding one remote agent doesn't disrupt local-to-local comms.
+- **v0.3.8 strict validation in multi-host swarms:** every `[[agents]]` block must declare `host = "<name>"` explicitly. The pre-v0.3.8 fallback to `this_host` silently misrouted channels.
 - **swarm_boss agent (v0.3.6, optional):** one agent per host can be flagged `swarm_boss = true` to host the sync + merger daemons as `Monitor` entries in its CLAUDE.md instead of as separate tmux panes. Three Monitors total instead of one. Daemons die with the agent's session — pick a long-lived agent.
 
 ## Core commands (10 you'll use 90% of the time)
@@ -23,7 +24,7 @@ You are operating a `giga-harness` swarm — N parallel AI agents that coordinat
 | `giga watch --as <agent>` | Long-running notification stream. Run under Claude Code's `Monitor` tool with `persistent: true`. Not via Bash — Monitor delivers events into the agent's conversation; Bash background doesn't. |
 | `giga add-agent --name X --workdir Y --role "..." --peer Z [--host H]` | Scaffold a new agent — appends `[[agents]]` + per-peer `[[channels]]` + writes a stub template. `--host` makes it cross-host: auto-bootstraps the peer + scaffolds the workdir remotely. |
 | `giga add-channel --participants A,B` | Append a new bilateral channel between two existing agents. |
-| `giga add-host --name N --tailnet-hostname FQDN [--ssh-user U] [--remote-config-dir P]` | Register a new tailnet peer + auto-bootstrap (mkdir + rsync swarm dir + ensure this_host.toml). |
+| `giga add-host --name N --tailnet-hostname FQDN [--ssh-user U] [--remote-config-dir P] [--this-host-name M]` | Register a new tailnet peer + auto-bootstrap. **v0.3.8:** when this is the FIRST host being added (local-only → multi-host), atomically also registers the LOCAL host (defaults to `$HOSTNAME`; override with `--this-host-name`), sets `host = "<local>"` on every existing agent, and writes `this_host.toml`. |
 | `giga remote --host H -- <subcommand> [args]` | Run any giga subcommand on a peer over SSH. **Put `--config` before the `--` if you need it.** Backbone of all `--host` flags. |
 | `giga hosts` | List the swarm's hosts + which agents live where + which one is `this_host`. Pure read. |
 
