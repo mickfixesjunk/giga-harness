@@ -113,12 +113,16 @@ pub fn run(args: Args) -> Result<()> {
 /// `RsyncTailscaleTransport::tick` adapter can call it without
 /// reimplementing the planner + executor. Idempotent.
 pub fn tick_once(cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
-    let plan = compute_sync_plan(cfg, this_host, cfg_canonical_path(cfg)?);
+    let canonical = cfg_canonical_path(cfg)?;
+    let plan = compute_sync_plan(cfg, this_host, &canonical);
     if plan.is_empty() {
         eprintln!(
             "sync: no cross-host slices for this_host=`{this_host}` and no peers to ship to."
         );
+        return Ok(());
     }
+    let mut ok = 0usize;
+    let mut failed = 0usize;
     for cmd in &plan {
         if dry_run {
             eprintln!(
@@ -129,37 +133,55 @@ pub fn tick_once(cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
             );
             continue;
         }
-        if let Err(e) = execute(cmd) {
-            eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
+        match execute(cmd) {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
+                failed += 1;
+            }
         }
+    }
+    // v0.3.4 fix for quality finding 10: print a summary line after every
+    // sync tick that actually had work to do. Pre-fix: `giga sync --once`
+    // produced no output on success (rsync's -v output went to inherited
+    // stderr but was often easy to miss in a CI/scripted invocation), so
+    // the operator couldn't tell "pushed cleanly" from "silently no-op'd
+    // because of an mtime gap". Suppressed in dry-run (the dry-run lines
+    // already enumerate the would-be work).
+    if !dry_run {
+        let attempted = plan.len();
+        eprintln!(
+            "sync: tick complete — {attempted} attempted ({ok} ok, {failed} failed) for this_host=`{this_host}`"
+        );
     }
     Ok(())
 }
 
-/// Best-effort canonical-config path lookup for the running swarm.
-/// Used by `tick_once` since it doesn't carry an Args struct.
-/// Walks the swarms registry by project name; falls back to a synthetic
-/// `<this-cwd>/giga-harness.toml` (which compute_sync_plan tolerates).
-fn cfg_canonical_path(cfg: &Config) -> Result<&Path> {
-    // For now, look the swarm up in the cross-swarm registry.
-    // tick_once's compute_sync_plan only uses this to derive the TOML
-    // filename + parent dir for the rsync target — both stable across
-    // invocations. We cache it in a OnceCell to avoid repeating the
-    // registry lookup every tick.
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<PathBuf> = OnceLock::new();
-    let path = CACHED.get_or_init(|| {
-        crate::registry::load()
-            .ok()
-            .and_then(|r| {
-                r.entries
-                    .into_iter()
-                    .find(|e| e.name == cfg.project.name)
-                    .map(|e| e.config)
-            })
-            .unwrap_or_else(|| PathBuf::from("giga-harness.toml"))
-    });
-    Ok(path.as_path())
+/// Canonical-config path for the running swarm. Primary source is
+/// `cfg.source_path` (set by `Config::load` to the absolute path it
+/// loaded from). Falls back to the cross-swarm registry by project
+/// name for the rare case where this isn't populated (e.g., a future
+/// caller that constructs a Config without using `load`). Finally, as
+/// a last resort, a bare `giga-harness.toml` — but quality F13 showed
+/// this resolves against CWD and breaks `giga sync --once` invoked
+/// from outside the config dir, so the cfg.source_path path should
+/// almost always win in practice.
+fn cfg_canonical_path(cfg: &Config) -> Result<PathBuf> {
+    if let Some(p) = &cfg.source_path {
+        return Ok(p.clone());
+    }
+    if let Some(p) = crate::registry::load()
+        .ok()
+        .and_then(|r| {
+            r.entries
+                .into_iter()
+                .find(|e| e.name == cfg.project.name)
+                .map(|e| e.config)
+        })
+    {
+        return Ok(p);
+    }
+    Ok(PathBuf::from("giga-harness.toml"))
 }
 
 /// Pure planner: compute the rsync commands this tick should issue.
@@ -946,5 +968,31 @@ host = "wsl-only"
         let cfg = Config::load(&config_path).unwrap();
         let plan = compute_sync_plan(&cfg, "wsl-only", &config_path);
         assert!(plan.is_empty());
+    }
+
+    /// v0.3.4 fix for quality finding 13: when sync runs via `tick_once`
+    /// (the entry point for the rsync_tailscale transport's tick), the
+    /// canonical config path must come from `cfg.source_path` (the
+    /// absolute path Config::load read from) — NOT a CWD-relative bare
+    /// filename. Quality's repro: `giga sync --once` from $HOME failed
+    /// with rsync source `link_stat "$HOME/giga-harness.toml" failed`
+    /// because the fallback was CWD-relative.
+    #[test]
+    fn cfg_canonical_path_uses_config_source_path_not_cwd() {
+        let (_tmp, config_path) = fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        assert!(
+            cfg.source_path.is_some(),
+            "Config::load must populate source_path"
+        );
+        let resolved = cfg_canonical_path(&cfg).unwrap();
+        assert!(
+            resolved.is_absolute(),
+            "canonical path must be absolute, got {resolved:?}"
+        );
+        // canonicalize() may resolve symlinks (e.g. /var -> /private/var on macOS),
+        // so compare against the canonicalized fixture path too.
+        let expected = std::fs::canonicalize(&config_path).unwrap_or(config_path.clone());
+        assert_eq!(resolved, expected);
     }
 }

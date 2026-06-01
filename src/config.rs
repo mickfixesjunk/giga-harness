@@ -50,6 +50,13 @@ pub struct Config {
     /// by validation.
     #[serde(skip)]
     pub this_host: Option<String>,
+    /// Absolute path of the canonical TOML file this Config was loaded
+    /// from. Populated by `Config::load`. Used by sync to derive the
+    /// rsync source path so it doesn't fall back to CWD-relative
+    /// `giga-harness.toml`. `None` only when the config was parsed from
+    /// an inline string (tests).
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +279,9 @@ impl Config {
         let mut cfg: Config = toml::from_str(&text)
             .with_context(|| format!("parsing TOML config at {}", path.display()))?;
         cfg.this_host = load_this_host(path)?;
+        cfg.source_path = Some(
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        );
         cfg.validate()?;
         Ok(cfg)
     }

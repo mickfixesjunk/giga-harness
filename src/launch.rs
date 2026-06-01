@@ -87,10 +87,25 @@ pub fn run(
     //   - giga merger (append peer slices into local merged file)
     // We add them as additional panes alongside the agent panes — visible
     // in the multiplexer, so the user can see their logs and notice if
-    // they die. Skipped on --only (incremental) launches: those are for
-    // adding single agent tabs to an existing session, where the daemons
-    // should already be running from the original full launch.
-    if !incremental && !cfg.hosts.is_empty() {
+    // they die.
+    //
+    // v0.3.4 (quality F11): spawn the daemons even on --only launches.
+    // Previously --only set incremental=true and skipped them on the
+    // theory "the original full launch already started them". But the
+    // common --only path is `giga launch --only <new-agent>` to add a
+    // single agent to an existing session — and if this is the FIRST
+    // agent on this host (no prior full launch happened here), the
+    // daemons never start and the named agent is isolated. Quality's
+    // repro: morpheus-wsl had no prior `giga launch` (init was broken
+    // by a different finding), they ran `--only performance`, and
+    // sync/merger were silently missing.
+    //
+    // Trade-off: re-running --only when daemons ARE already alive
+    // produces a duplicate giga-sync + giga-merger pane. Both are
+    // idempotent (sync is rsync no-ops; merger is append-with-mtime),
+    // so the cost is "extra pane to clean up" rather than data damage.
+    // Acceptable until we add per-host daemon presence detection.
+    if should_spawn_daemons(&cfg, incremental) {
         let swarm_dir = config_path
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -170,6 +185,20 @@ const DEFAULT_INTRO_PROMPT: &str =
      your context. The watcher auto-replays unread history as the first \
      batch of notifications — read those, then post a one-line intro on \
      each channel and standby.";
+
+/// True when the launcher should add `giga-sync` + `giga-merger` panes
+/// for this run. Multi-host swarms need them; local-only swarms don't.
+///
+/// v0.3.4 (quality F11): always spawn on multi-host even when
+/// `--only` is set. The previous "incremental skips daemons" logic
+/// assumed a prior full launch had already started them, but the
+/// common --only flow is also the FIRST launch on a freshly bootstrapped
+/// peer, where no daemons exist yet. False-skipping silently isolated
+/// the agent. `incremental` is kept as a parameter so future tuning
+/// (e.g., adding presence-detection to skip duplicates) has the signal.
+fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool {
+    !cfg.hosts.is_empty()
+}
 
 /// Build a multiplexer pane for one of the per-host background daemons
 /// (sync / merger). Always WSL-platform in v1 (Mick's hosts are all
@@ -345,6 +374,72 @@ mod tests {
         let b = intro_for_agent("base.", &agent_named("code", None));
         assert!(a.contains("design agent") && !a.contains("code agent"));
         assert!(b.contains("code agent") && !b.contains("design agent"));
+    }
+
+    /// v0.3.4 fix for quality finding 11: --only on a multi-host swarm
+    /// must STILL spawn sync + merger daemons. Pre-fix: `incremental`
+    /// (set by --only) suppressed them, leaving the named agent
+    /// isolated when --only was the first launch on the host.
+    #[test]
+    fn daemons_spawn_on_multi_host_even_when_incremental() {
+        // Need a temp dir + this_host.toml so multi-host validation passes.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "host-a"
+"#;
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        assert!(
+            should_spawn_daemons(&cfg, true),
+            "incremental + multi-host must still spawn daemons"
+        );
+        assert!(
+            should_spawn_daemons(&cfg, false),
+            "full launch on multi-host spawns daemons (baseline)"
+        );
+    }
+
+    #[test]
+    fn daemons_not_spawned_on_local_only_swarm() {
+        // Pre-existing invariant: local-only swarm (no [[hosts]]) doesn't
+        // need sync/merger. The F11 fix must not regress this.
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+"#;
+        let cfg = crate::config::Config::load_str_for_test(body).unwrap();
+        assert!(!should_spawn_daemons(&cfg, false));
+        assert!(!should_spawn_daemons(&cfg, true));
     }
 
     #[test]

@@ -83,14 +83,28 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // Ensure inbox dirs exist. v0.3.2+: respects the per-host [paths]
     // override on [[hosts]] entries so a peer with asymmetric paths
     // (different $HOME, different Windows user) doesn't try to mkdir
-    // the operator's literal path. Falls back to global [paths] when
-    // no per-host override is set (legacy behavior preserved).
+    // the operator's literal path.
+    //
+    // v0.3.4+ (quality F9): only scaffold paths whose channels are
+    // actually local to this host. Before this, a wsl-only peer would
+    // try to mkdir `windows_inbox` (e.g. /mnt/c/Users/.../something)
+    // even though no local agents have side=windows channels. On
+    // morpheus-wsl this manifested as init failing on a Windows path
+    // belonging to a different user on the operator's box. For the
+    // legacy local-only case (no this_host, no [[hosts]]) all sides
+    // are still in scope — preserves today's behavior.
     let this_host = cfg.this_host.as_deref();
-    if let Some(p) = cfg.inbox_for_host_side(this_host, "wsl") {
-        fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
+    let need_wsl = local_channels.iter().any(|c| c.side == "wsl");
+    let need_windows = local_channels.iter().any(|c| c.side == "windows");
+    if need_wsl {
+        if let Some(p) = cfg.inbox_for_host_side(this_host, "wsl") {
+            fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
+        }
     }
-    if let Some(p) = cfg.inbox_for_host_side(this_host, "windows") {
-        fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
+    if need_windows {
+        if let Some(p) = cfg.inbox_for_host_side(this_host, "windows") {
+            fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
+        }
     }
 
     // Create channel files with convention headers if absent.
@@ -453,6 +467,73 @@ claudemd_template = "agents/design.md"
         assert!(
             body.contains("You are the `design` agent"),
             "identity callout still injected for custom templates",
+        );
+    }
+
+    /// v0.3.4 fix for quality finding 9: a wsl-only peer must NOT try
+    /// to mkdir the global `paths.windows_inbox` when no local channel
+    /// has `side = "windows"`. Pre-fix: init scaffolded BOTH wsl and
+    /// windows inbox dirs unconditionally if either was set in [paths].
+    /// Repro: morpheus-wsl had a windows_inbox path pointing at the
+    /// operator's box (different Windows user); init failed mkdir.
+    #[test]
+    fn init_skips_windows_inbox_when_no_local_windows_channel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wsl_inbox = tmp.path().join("wsl-inbox");
+        // Path inside tmp that does NOT exist yet; init will mkdir if
+        // it visits it. Test passes when it's still missing afterward.
+        let windows_inbox = tmp.path().join("nonexistent-windows-inbox");
+        let cfg_text = format!(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = '{wsl}'
+windows_inbox = '{win}'
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = '{workdir_alice}'
+role = "."
+platform = "wsl"
+host = "host-a"
+
+[[agents]]
+name = "bob"
+workdir = '{workdir_bob}'
+role = "."
+platform = "wsl"
+host = "host-b"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#,
+            wsl = wsl_inbox.display(),
+            win = windows_inbox.display(),
+            workdir_alice = tmp.path().join("alice-wd").display(),
+            workdir_bob = tmp.path().join("bob-wd").display(),
+        );
+        let config_path = tmp.path().join("giga-harness.toml");
+        fs::write(&config_path, cfg_text).unwrap();
+        fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+
+        run_with(&config_path, false).unwrap();
+
+        assert!(wsl_inbox.exists(), "wsl_inbox should be created (local wsl channel)");
+        assert!(
+            !windows_inbox.exists(),
+            "windows_inbox should NOT be created on a wsl-only peer; quality F9"
         );
     }
 
