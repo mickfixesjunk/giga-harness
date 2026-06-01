@@ -196,8 +196,25 @@ const DEFAULT_INTRO_PROMPT: &str =
 /// peer, where no daemons exist yet. False-skipping silently isolated
 /// the agent. `incremental` is kept as a parameter so future tuning
 /// (e.g., adding presence-detection to skip duplicates) has the signal.
+///
+/// v0.3.6 (SWARM_BOSS_DESIGN.md): when an agent on THIS host is flagged
+/// `swarm_boss = true`, that agent's session will arm sync + merger
+/// Monitors at startup — so suppress the tmux daemon panes here to
+/// avoid duplicate daemons. Per-host scoped: a peer host's swarm_boss
+/// doesn't affect this host's launch decision.
 fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool {
-    !cfg.hosts.is_empty()
+    if cfg.hosts.is_empty() {
+        return false;
+    }
+    if let Some(this) = cfg.this_host.as_deref() {
+        let has_local_boss = cfg.agents.iter().any(|a| {
+            a.swarm_boss && cfg.agent_host(a).map(|h| h == this).unwrap_or(false)
+        });
+        if has_local_boss {
+            return false;
+        }
+    }
+    true
 }
 
 /// Build a multiplexer pane for one of the per-host background daemons
@@ -303,6 +320,7 @@ mod tests {
             launch_cmd: None,
             code_root: code_root.map(PathBuf::from),
             admin: false,
+            swarm_boss: false,
         }
     }
 
@@ -440,6 +458,101 @@ platform = "wsl"
         let cfg = crate::config::Config::load_str_for_test(body).unwrap();
         assert!(!should_spawn_daemons(&cfg, false));
         assert!(!should_spawn_daemons(&cfg, true));
+    }
+
+    /// v0.3.6 S5 (SWARM_BOSS_DESIGN.md): when an agent on this host
+    /// is flagged swarm_boss, tmux daemons are suppressed (the boss
+    /// agent will arm them as Monitors instead).
+    #[test]
+    fn daemons_suppressed_when_swarm_boss_present_on_this_host() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "boss-a"
+workdir = "/h/boss-a"
+role = "."
+platform = "wsl"
+host = "host-a"
+swarm_boss = true
+
+[[agents]]
+name = "agent-a"
+workdir = "/h/agent-a"
+role = "."
+platform = "wsl"
+host = "host-a"
+"#;
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        assert!(
+            !should_spawn_daemons(&cfg, false),
+            "swarm_boss on this_host -> tmux daemons suppressed"
+        );
+        assert!(
+            !should_spawn_daemons(&cfg, true),
+            "swarm_boss suppression applies in --only mode too"
+        );
+    }
+
+    /// v0.3.6 S6: swarm_boss on a PEER host doesn't affect this host's
+    /// daemon-spawn decision. Each host scoped independently.
+    #[test]
+    fn daemons_still_spawn_when_swarm_boss_is_only_on_peer_host() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "agent-a"
+workdir = "/h/agent-a"
+role = "."
+platform = "wsl"
+host = "host-a"
+
+[[agents]]
+name = "boss-b"
+workdir = "/h/boss-b"
+role = "."
+platform = "wsl"
+host = "host-b"
+swarm_boss = true
+"#;
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        assert!(
+            should_spawn_daemons(&cfg, false),
+            "boss only on peer host -> we still need our own tmux daemons"
+        );
     }
 
     #[test]

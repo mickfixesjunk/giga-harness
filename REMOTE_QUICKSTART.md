@@ -142,6 +142,8 @@ giga launch --host wsl-b --only test-b
 
 (This is equivalent to `giga remote --host wsl-b launch --only test-b`. A full `giga launch` on a cross-host swarm also spawns `giga sync` and `giga merger` panes per host — see `src/launch.rs` step 7.)
 
+**Alternative — host the daemons inside an agent's Claude session (v0.3.6):** add `swarm_boss = true` to one agent per host in the TOML. That agent's `CLAUDE.md` will auto-include `Monitor(command: "giga sync --quiet")` and `Monitor(command: "giga merger --quiet")` lines, which it arms at session start. `giga launch` then skips the tmux daemon panes for that host. Fewer panes, LLM-in-the-loop for daemon errors. Trade-off: daemons die with the agent's session — pick a long-lived agent (e.g. `design`). See [SWARM_BOSS_DESIGN.md](SWARM_BOSS_DESIGN.md).
+
 ### 7. Smoke-test the round-trip
 
 From host A's `test-a` session:
@@ -167,8 +169,10 @@ Within ~10 seconds, `test-a` on host A sees it.
 | `tailscale status` fails on host B | `tailscale up` didn't complete | re-run step 2 |
 | `ssh wsl-box-b.tail....ts.net` prompts for password | Tailscale SSH not enabled | re-run `sudo tailscale set --ssh` on B |
 | `giga sync` complains "rsync not found" | step 2 didn't install rsync | `sudo apt install rsync` on the host complaining |
-| Post on A doesn't appear on B | `giga sync` not running on A OR `giga merger` not running on B | check the sync + merger panes; restart if dead |
+| Post on A doesn't appear on B | `giga sync` not running on A OR `giga merger` not running on B | check the sync + merger panes (or the swarm_boss agent's Monitors); restart if dead |
 | Post on A appears as a slice file on B but not in the merged file | merger isn't running on B | start it: `giga merger --config <swarm>/giga-harness.toml` |
+| Local-to-local post on a cross-host channel doesn't show up locally (v0.3.4 or older) | merger was load-bearing for local visibility pre-v0.3.5 | upgrade to v0.3.5+ — dual-write makes local visibility independent of merger liveness |
+| swarm_boss agent crashed → no peer messages flowing | daemons died with the agent's session | restart the agent's Claude session; Monitors re-arm and daemons resume. Or fall back to tmux daemons: remove `swarm_boss = true` and re-run `giga launch` |
 | `giga validate` errors `this_host = ... isn't in [[hosts]]` | typo between `this_host.toml` and `[[hosts]].name` | fix one to match the other |
 | `giga remote --host X subcmd --flag value` is misparsed as putting `--flag value` into remote args | clap's trailing-args eats flagged args | put `--config` BEFORE the trailing list, or use `--`: `giga remote --host X --config ... -- subcmd --flag value` |
 

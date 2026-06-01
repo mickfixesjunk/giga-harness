@@ -7,7 +7,9 @@ You are operating a `giga-harness` swarm — N parallel AI agents that coordinat
 - A **swarm** is one TOML file (`giga-harness.toml`) describing **agents** + **channels**. Lives at `~/.giga/configs/<name>/`.
 - An **agent** is a Claude (or other) session with its own workdir + `CLAUDE.md`. Each agent runs a `giga watch --as <slug>` Monitor that tails every channel they participate in.
 - A **channel** is an append-only `.md` file in the inbox dir. Messages are header-blocks: `===\n[<sender>] <subject> — <UTC ts>\n===\n\n<body>\n\n<footer>\n===`. The footer is either `WAITING ON: <agent> (<what>)` or `(Informational, no response required.)`.
-- A swarm can be **single-host** (default — all agents on one machine, polling watcher on local files) or **multi-host** (agents on multiple machines on a tailnet — per-host slice files `<channel>.<host>.md` rsync'd via Tailscale SSH; a local merger appends incoming bytes to the watched merged file). The watcher doesn't know or care which case is which.
+- A swarm can be **single-host** (default — all agents on one machine, polling watcher on local files) or **multi-host** (agents on multiple machines on a tailnet — per-host slice files `<channel>.<host>.md` rsync'd via Tailscale SSH; a local merger appends incoming peer bytes to the watched merged file). The watcher doesn't know or care which case is which.
+- In multi-host mode (v0.3.5+), `giga post` on a cross-host channel **dual-writes** the frame to the slice (for sync to ship to peers) AND to the merged file (so local watchers see it immediately, independent of merger liveness). Adding one remote agent doesn't disrupt local-to-local comms.
+- **swarm_boss agent (v0.3.6, optional):** one agent per host can be flagged `swarm_boss = true` to host the sync + merger daemons as `Monitor` entries in its CLAUDE.md instead of as separate tmux panes. Three Monitors total instead of one. Daemons die with the agent's session — pick a long-lived agent.
 
 ## Core commands (10 you'll use 90% of the time)
 
@@ -92,7 +94,7 @@ giga hosts                        # who lives where
 
 1. **`giga remote --host H -- <sub> --flag X`** — flags AFTER the `--` go to the remote subcommand; flags before `--` go to giga remote. Without the `--`, clap captures `--config` as giga remote's own arg and the remote sub sees the wrong (or no) config.
 2. **Channel files are append-only by convention.** Never edit or delete a slice file (`<channel>.<host>.md`) directly. The merger reads byte deltas; a shrink corrupts cursor state.
-3. **Multi-host swarms need `giga sync` + `giga merger` running per host.** `giga launch` auto-spawns these panes on cross-host swarms; for ad-hoc runs, start them yourself: `nohup giga sync > /tmp/sync.log 2>&1 &` + similar for merger.
+3. **Multi-host swarms need `giga sync` + `giga merger` running per host.** `giga launch` auto-spawns these panes on cross-host swarms. Alternative (v0.3.6): flag one agent per host with `swarm_boss = true` and the daemons live as `Monitor` lines in that agent's CLAUDE.md (Monitor-hosted, three Monitors total including the inbox watcher). For ad-hoc runs, start them yourself: `nohup giga sync > /tmp/sync.log 2>&1 &` + similar for merger.
 4. **ASCII only in subject + body.** Multibyte chars (em-dash, smart quotes) can crash older `giga watch` versions. Stick to ASCII in posts.
 5. **Post subject prefix:** convention is to start the subject with `[<agent> YYYY-MM-DD HH:MM PST]` so the inbox watcher's notification line (which truncates the body) shows enough context.
 
@@ -101,6 +103,8 @@ giga hosts                        # who lives where
 - `README.md` — overview, full subcommand table, multi-host section
 - `REMOTE_QUICKSTART.md` — operator runbook for the 2-shot bootstrap + troubleshooting
 - `REMOTE_DESIGN.md` — architecture (slice-and-merge, transport, config schema)
+- `REMOTE_DUAL_WRITE_DESIGN.md` — v0.3.5 dual-write architecture; why local visibility no longer depends on merger liveness
+- `SWARM_BOSS_DESIGN.md` — v0.3.6 swarm_boss agent role; daemons as Monitors instead of tmux panes
 - `giga --help`, `giga <subcommand> --help` — per-subcommand flag reference
 
 ## If you're an agent (not the human operator)

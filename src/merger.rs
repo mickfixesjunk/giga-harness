@@ -57,7 +57,7 @@ struct SliceState {
     last_size: u64,
 }
 
-pub fn run(config_path: &Path, once: bool) -> Result<()> {
+pub fn run(config_path: &Path, once: bool, quiet: bool) -> Result<()> {
     if !config_path.exists() {
         anyhow::bail!(
             "config file not found: {} — pass --config <path>",
@@ -69,15 +69,22 @@ pub fn run(config_path: &Path, once: bool) -> Result<()> {
     let mut tick: u64 = 0;
 
     refresh_tracked(config_path, &mut tracked, giga_home.as_deref());
+    // v0.3.6: --quiet primarily exists for symmetry with `giga sync
+    // --quiet` and to allow swarm_boss Monitors to opt into "errors
+    // only" semantics. The startup status lines below DO emit even
+    // under --quiet — they're one-shot, and the operator/agent benefits
+    // from knowing the daemon woke up cleanly. Per-tick chatter is
+    // already absent from merger (it only emits on errors).
+    let qsuffix = if quiet { " (--quiet)" } else { "" };
     if tracked.is_empty() {
         eprintln!(
-            "merger: no cross-host channels in {} — sitting idle, will reload config every ~{}s",
+            "merger: no cross-host channels in {} — sitting idle, will reload config every ~{}s{qsuffix}",
             config_path.display(),
             POLL_INTERVAL.as_secs() * RELOAD_EVERY_N_TICKS,
         );
     } else {
         eprintln!(
-            "merger: tracking {} cross-host channel(s): {}",
+            "merger: tracking {} cross-host channel(s): {}{qsuffix}",
             tracked.len(),
             tracked.keys().cloned().collect::<Vec<_>>().join(", "),
         );

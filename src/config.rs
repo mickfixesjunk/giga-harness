@@ -210,6 +210,13 @@ pub struct Agent {
     /// CLAUDE.md and the launch intro prompt.
     #[serde(default)]
     pub code_root: Option<PathBuf>,
+    /// v0.3.6: when true, this agent hosts the per-host coordination
+    /// daemons (sync + merger) via Monitor entries in its CLAUDE.md
+    /// instead of as separate tmux panes. At most one per host.
+    /// `giga launch` skips the tmux daemon panes for hosts where a
+    /// swarm_boss agent exists. See SWARM_BOSS_DESIGN.md.
+    #[serde(default)]
+    pub swarm_boss: bool,
 }
 
 fn default_platform() -> String {
@@ -392,6 +399,42 @@ impl Config {
                     "agent `{}` has unknown platform `{}` (want \"wsl\" or \"windows\")",
                     a.name,
                     a.platform,
+                ));
+            }
+        }
+
+        // v0.3.6: at most one swarm_boss per host. Bucketed by the
+        // resolved host (agent.host or this_host fallback). See
+        // SWARM_BOSS_DESIGN.md §3.2.
+        let mut bosses_per_host: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        for a in &self.agents {
+            if !a.swarm_boss {
+                continue;
+            }
+            if a.platform != "wsl" {
+                return Err(anyhow!(
+                    "agent `{}` is flagged swarm_boss but has platform `{}` — \
+                     sync + merger are POSIX-only; swarm_boss must be platform=\"wsl\"",
+                    a.name,
+                    a.platform,
+                ));
+            }
+            // Resolve host: explicit `agent.host`, else this_host, else
+            // "<local>" sentinel (legacy local-only swarm).
+            let host_key = a
+                .host
+                .as_deref()
+                .or(self.this_host.as_deref())
+                .unwrap_or("<local>");
+            bosses_per_host.entry(host_key).or_default().push(a.name.as_str());
+        }
+        for (host, names) in &bosses_per_host {
+            if names.len() > 1 {
+                return Err(anyhow!(
+                    "multiple agents flagged as swarm_boss on host `{}`: {:?}. At most one per host.",
+                    host,
+                    names,
                 ));
             }
         }
@@ -640,6 +683,101 @@ bench_scheduler = true"#,
         );
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.agents.iter().filter(|a| a.bench_scheduler).count(), 1);
+    }
+
+    /// v0.3.6 S1 (SWARM_BOSS_DESIGN.md): two agents both flagged
+    /// swarm_boss on the same host is a validation error. Mirrors
+    /// the bench_scheduler-uniqueness rule.
+    #[test]
+    fn rejects_multiple_swarm_bosses_on_same_host() {
+        let body = minimal()
+            .replace(
+                r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl""#,
+                r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+swarm_boss = true"#,
+            )
+            .replace(
+                r#"name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl""#,
+                r#"name = "b"
+workdir = "/h/b"
+role = "."
+platform = "wsl"
+swarm_boss = true"#,
+            );
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(err.to_string().contains("multiple agents flagged as swarm_boss"));
+    }
+
+    /// v0.3.6 S2: one boss per host across a multi-host swarm is OK.
+    #[test]
+    fn accepts_one_swarm_boss_per_host_on_multi_host_swarm() {
+        let body = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "boss-a"
+workdir = "/h/boss-a"
+role = "."
+platform = "wsl"
+host = "host-a"
+swarm_boss = true
+
+[[agents]]
+name = "boss-b"
+workdir = "/h/boss-b"
+role = "."
+platform = "wsl"
+host = "host-b"
+swarm_boss = true
+"#;
+        // Need a this_host or validation rejects [[hosts]] without it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, body).unwrap();
+        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        assert_eq!(cfg.agents.iter().filter(|a| a.swarm_boss).count(), 2);
+    }
+
+    #[test]
+    fn rejects_swarm_boss_on_windows_platform() {
+        let body = minimal().replace(
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl""#,
+            r#"name = "a"
+workdir = "/h/a"
+role = "."
+platform = "windows"
+swarm_boss = true"#,
+        );
+        let err = Config::load_str_for_test(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("swarm_boss") && err.to_string().contains("POSIX-only"),
+            "got: {err}",
+        );
     }
 
     #[test]

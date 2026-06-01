@@ -392,6 +392,11 @@ enum Command {
         /// catch-up scenarios).
         #[arg(long)]
         once: bool,
+        /// Suppress per-tick startup chatter; only emit on errors. Set
+        /// by the swarm_boss CLAUDE.md Monitor lines so the agent's
+        /// notification stream doesn't flood. (v0.3.6)
+        #[arg(long)]
+        quiet: bool,
     },
     /// Long-running sync daemon — every ~3s, rsync the canonical
     /// giga-harness.toml + own slice files to each peer host over
@@ -409,6 +414,12 @@ enum Command {
         /// Combine with --once for a no-side-effects preview.
         #[arg(long)]
         dry_run: bool,
+        /// Suppress per-tick summary lines (v0.3.4 F10); only emit on
+        /// errors and startup. Set by the swarm_boss CLAUDE.md Monitor
+        /// lines so the agent's notification stream doesn't flood with
+        /// "tick complete: N attempted" every 3 seconds. (v0.3.6)
+        #[arg(long)]
+        quiet: bool,
     },
     /// Run a giga subcommand on a remote host over SSH. Looks up the
     /// host in `[[hosts]]`, shells to `ssh <user>@<tailnet_hostname>`,
@@ -672,20 +683,26 @@ fn main() -> Result<()> {
                 None => watch::run_multi(&config, &r#as),
             }
         }
-        Command::Merger { config, once } => {
+        Command::Merger {
+            config,
+            once,
+            quiet,
+        } => {
             let config = registry::resolve_config(config)?;
-            merger::run(&config, once)
+            merger::run(&config, once, quiet)
         }
         Command::Sync {
             config,
             once,
             dry_run,
+            quiet,
         } => {
             let config = registry::resolve_config(config)?;
             sync::run(sync::Args {
                 config,
                 once,
                 dry_run,
+                quiet,
             })
         }
         Command::Remote {
