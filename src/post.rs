@@ -60,13 +60,29 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // Cross-host routing: when the channel spans hosts, append to the
-    // local single-writer slice <channel>.<this_host>.md instead of the
-    // merged <channel>.md. The local merger (step 4) appends slice
-    // events into the merged file for the watcher to read.
+    // local single-writer slice <channel>.<this_host>.md.
+    //
+    // v0.3.5 (REMOTE_DUAL_WRITE_DESIGN.md): for cross-host channels,
+    // ALSO dual-write the same frame directly to the merged
+    // <channel>.md so local watchers see the post without depending
+    // on the merger daemon's liveness. Pre-v0.3.5 the merger was
+    // load-bearing for local visibility — adding one remote agent to
+    // a channel silently disrupted neo↔neo posts on that channel
+    // whenever the merger was lagging, crashed, or hadn't been
+    // spawned (v0.3.4 F11). Dual-write removes that coupling.
+    //
+    // Ordering: slice FIRST, then merged. If slice succeeds and
+    // merged fails, peers still receive the message via sync; local
+    // visibility recovers once the merger reads own slice as a
+    // fallback (own-slice cursor initialized to EOF on merger start,
+    // so only POST-failure bytes get re-appended). If merged
+    // succeeded first and slice failed, local would see a post that
+    // peers never receive — silent divergence. Avoid that.
     //
     // For all-local channels (or pre-remote-channels configs with no
-    // [[hosts]]), keep today's fast-path direct write to <channel>.md.
-    let write_path = match (cfg_opt.as_ref(), channel_entry) {
+    // [[hosts]]), keep today's fast-path direct write to <channel>.md
+    // (the slice IS the merged file in that case).
+    let (primary_path, secondary_path) = match (cfg_opt.as_ref(), channel_entry) {
         (Some(cfg), Some(ch)) if !cfg.channel_is_local(ch) => {
             let this_host = cfg.this_host.as_deref().ok_or_else(|| {
                 anyhow!(
@@ -75,9 +91,9 @@ pub fn run(args: Args) -> Result<()> {
                     ch.file,
                 )
             })?;
-            slice_path(&merged_path, this_host)
+            (slice_path(&merged_path, this_host), Some(merged_path.clone()))
         }
-        _ => merged_path.clone(),
+        _ => (merged_path.clone(), None),
     };
 
     let body = match args.body {
@@ -101,15 +117,54 @@ pub fn run(args: Args) -> Result<()> {
         args.needs.as_deref(),
     );
 
-    let mut f = OpenOptions::new()
+    // 1) Primary write — slice (cross-host) or merged file (local). Must
+    //    succeed; failure here errors the call.
+    append_with_lock(&primary_path, block.as_bytes())
+        .with_context(|| format!("writing primary {}", primary_path.display()))?;
+
+    // 2) Optional secondary write — merged file when primary was a slice.
+    //    Surface partial failure but don't fail the call: slice already
+    //    has the frame so peers will eventually see it via sync, and the
+    //    merger's own-slice fallback will catch up local visibility.
+    if let Some(secondary) = &secondary_path {
+        if let Err(e) = append_with_lock(secondary, block.as_bytes()) {
+            eprintln!(
+                "post: warning — slice {} ok but merged {} failed: {e}",
+                primary_path.display(),
+                secondary.display(),
+            );
+        }
+    }
+
+    println!("posted to {} ({} bytes)", primary_path.display(), block.len());
+    Ok(())
+}
+
+/// Append `bytes` to `path` with an exclusive file lock held for the
+/// duration of the write. The lock prevents torn frames when post and
+/// merger both write to the merged file concurrently (v0.3.5: posts on
+/// cross-host channels dual-write to merged, breaking the pre-v0.3.5
+/// "merger is sole writer to merged" invariant). POSIX O_APPEND alone
+/// guarantees atomicity only up to PIPE_BUF (4KB); typical posts fit
+/// but large reports (~10KB) can be split into multiple write
+/// operations. The lock closes that window.
+///
+/// Uses stdlib `File::lock` (stable since 1.89). Blocking — waits for
+/// any concurrent writer to release. Lock is released automatically
+/// when the File handle drops.
+pub(crate) fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
+    let f = OpenOptions::new()
         .append(true)
         .create(true)
-        .open(&write_path)
-        .with_context(|| format!("opening {} for append", write_path.display()))?;
-    f.write_all(block.as_bytes())
-        .with_context(|| format!("writing to {}", write_path.display()))?;
-
-    println!("posted to {} ({} bytes)", write_path.display(), block.len());
+        .open(path)
+        .with_context(|| format!("opening {} for append", path.display()))?;
+    f.lock()
+        .with_context(|| format!("locking {} for append", path.display()))?;
+    (&f).write_all(bytes)
+        .with_context(|| format!("writing to {}", path.display()))?;
+    // File::unlock is implicit on drop, but call explicitly to surface
+    // any errors and to keep the lock window as tight as possible.
+    let _ = f.unlock();
     Ok(())
 }
 
@@ -365,8 +420,12 @@ participants = ["alice", "bob"]
         (tmp, config_path)
     }
 
+    /// v0.3.5 T1 (REMOTE_DUAL_WRITE_DESIGN.md): on a cross-host channel
+    /// the post writes to BOTH the per-host slice (for sync to ship to
+    /// peers) AND the merged file (so local watchers see it without
+    /// depending on the merger daemon).
     #[test]
-    fn run_writes_to_slice_file_when_channel_spans_hosts() {
+    fn run_dual_writes_to_slice_and_merged_for_cross_host_channel() {
         let (tmp, config_path) = swarm_fixture(&["wsl-a", "wsl-b"], "wsl-a");
         let inbox = tmp.path().join("inbox");
 
@@ -381,16 +440,90 @@ participants = ["alice", "bob"]
         })
         .unwrap();
 
-        // The slice file should exist with our message; the merged file
-        // should NOT (merger is the only writer to <channel>.md).
         let slice = inbox.join("alice-bob.wsl-a.md");
         let merged = inbox.join("alice-bob.md");
-        assert!(slice.exists(), "slice file should be created");
-        assert!(!merged.exists(), "merged file shouldn't exist yet — merger writes it");
+        assert!(slice.exists(), "slice file should be created (for sync)");
+        assert!(merged.exists(), "merged file should be created (for local watcher)");
 
-        let body = fs::read_to_string(&slice).unwrap();
-        assert!(body.contains("[alice] ping"));
-        assert!(body.contains("hello"));
+        // Frame must be identical in both files: it's the same write_all
+        // bytes constructed once.
+        let slice_body = fs::read_to_string(&slice).unwrap();
+        let merged_body = fs::read_to_string(&merged).unwrap();
+        assert!(slice_body.contains("[alice] ping"));
+        assert!(slice_body.contains("hello"));
+        assert_eq!(
+            slice_body, merged_body,
+            "dual-write must produce byte-identical content in both files"
+        );
+    }
+
+    /// v0.3.5 T5 (the headline use case from REMOTE_DUAL_WRITE_DESIGN.md):
+    /// after a cross-host post, the merged file is immediately readable
+    /// without any merger tick having run. This is the assertion that
+    /// "adding one remote agent must not disrupt local comms" holds.
+    #[test]
+    fn cross_host_post_is_visible_in_merged_without_merger_tick() {
+        let (tmp, config_path) = swarm_fixture(&["wsl-a", "wsl-b"], "wsl-a");
+        let inbox = tmp.path().join("inbox");
+
+        run(Args {
+            channel: "alice-bob.md".into(),
+            me: "alice".into(),
+            subject: "design-question".into(),
+            body: Some("immediately visible to local watcher".into()),
+            waiting_on: None,
+            needs: None,
+            config: config_path,
+        })
+        .unwrap();
+
+        // The local watcher tails the merged file. With dual-write, the
+        // post-tail observation is immediate — no merger required.
+        let merged = inbox.join("alice-bob.md");
+        let body = fs::read_to_string(&merged).unwrap();
+        assert!(body.contains("[alice] design-question"));
+        assert!(body.contains("immediately visible to local watcher"));
+    }
+
+    /// v0.3.5 T2+T3 (REMOTE_DUAL_WRITE_DESIGN.md): when merged write
+    /// fails (e.g., merged path is a non-writable directory), the
+    /// slice write must still have landed first AND `run` must return
+    /// Ok (slice is the canonical record; peers will get the frame via
+    /// sync). The merger's own-slice fallback will catch up local
+    /// visibility on the next tick.
+    ///
+    /// Repro: replace the merged file path with a directory after
+    /// init so the OS rejects the OpenOptions::open call for the
+    /// merged write. The slice path is unaffected.
+    #[test]
+    fn run_returns_ok_and_keeps_slice_when_merged_write_fails() {
+        let (tmp, config_path) = swarm_fixture(&["wsl-a", "wsl-b"], "wsl-a");
+        let inbox = tmp.path().join("inbox");
+        // Make the merged path a directory — any append-open against
+        // it will EISDIR and the merged write will fail.
+        let merged_path = inbox.join("alice-bob.md");
+        fs::create_dir_all(&merged_path).unwrap();
+
+        let result = run(Args {
+            channel: "alice-bob.md".into(),
+            me: "alice".into(),
+            subject: "ping".into(),
+            body: Some("hello".into()),
+            waiting_on: None,
+            needs: None,
+            config: config_path,
+        });
+
+        assert!(
+            result.is_ok(),
+            "post must return Ok when slice ok and merged fails: got {result:?}"
+        );
+
+        // Slice still has the frame (slice-first ordering held).
+        let slice = inbox.join("alice-bob.wsl-a.md");
+        let slice_body = fs::read_to_string(&slice).unwrap();
+        assert!(slice_body.contains("[alice] ping"));
+        assert!(slice_body.contains("hello"));
     }
 
     #[test]

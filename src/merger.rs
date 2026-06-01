@@ -25,12 +25,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::config::Config;
 use crate::cursor;
@@ -170,7 +170,7 @@ fn refresh_tracked(
         }
     };
 
-    let active = compute_active_channels(&cfg);
+    let active = compute_active_channels(&cfg, cfg.this_host.as_deref());
     let active_names: HashSet<&str> = active.iter().map(|(n, _, _)| n.as_str()).collect();
 
     for (name, merged_path, slice_hosts) in &active {
@@ -214,8 +214,17 @@ fn refresh_tracked(
 }
 
 /// For every cross-host channel in the config, return:
-///   (channel_filename, absolute_merged_path, sorted_distinct_slice_hosts)
-fn compute_active_channels(cfg: &Config) -> Vec<(String, PathBuf, Vec<String>)> {
+///   (channel_filename, absolute_merged_path, sorted_distinct_PEER_slice_hosts)
+///
+/// v0.3.5 (REMOTE_DUAL_WRITE_DESIGN.md): excludes this_host from the
+/// returned slice_hosts. Post dual-writes to the merged file directly
+/// for cross-host channels, so the merger doesn't need to (and must
+/// not, to avoid double-append) re-merge own slice into merged. Only
+/// PEER slices need merging in.
+fn compute_active_channels(
+    cfg: &Config,
+    this_host: Option<&str>,
+) -> Vec<(String, PathBuf, Vec<String>)> {
     cfg.channels
         .iter()
         .filter(|ch| !cfg.channel_is_local(ch)) // skip fast-path-local channels
@@ -234,6 +243,10 @@ fn compute_active_channels(cfg: &Config) -> Vec<(String, PathBuf, Vec<String>)> 
                         .map(|s| s.to_string())
                 })
                 .collect();
+            // v0.3.5: drop own host from the peer-slice list.
+            if let Some(me) = this_host {
+                hosts.retain(|h| h != me);
+            }
             hosts.sort();
             hosts.dedup();
             Some((ch.file.clone(), merged_path, hosts))
@@ -261,20 +274,19 @@ fn read_delta(path: &Path, from: u64, to: u64) -> Result<Vec<u8>> {
 }
 
 fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut f = fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-        .with_context(|| format!("opening {} for append", path.display()))?;
-    f.write_all(bytes)
-        .with_context(|| format!("writing to {}", path.display()))?;
-    Ok(())
+    // v0.3.5: lock during append so concurrent post dual-writes to
+    // this same merged file can't interleave bytes within a single
+    // frame. See REMOTE_DUAL_WRITE_DESIGN.md §5 — POSIX O_APPEND is
+    // atomic only up to PIPE_BUF (4KB), and merger ticks can carry
+    // multi-frame deltas larger than that.
+    crate::post::append_with_lock(path, bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
@@ -349,14 +361,30 @@ participants = ["alice", "bob"]
     }
 
     #[test]
-    fn compute_active_channels_finds_cross_host() {
+    fn compute_active_channels_finds_cross_host_with_no_this_host_includes_all() {
+        // No this_host context (legacy / pre-validation callsite) — return
+        // every participating host. Useful as a sanity check on the filter
+        // logic; production always passes this_host.
         let (_tmp, config_path, _inbox) = cross_host_fixture("wsl-a");
         let cfg = Config::load(&config_path).unwrap();
-        let active = compute_active_channels(&cfg);
+        let active = compute_active_channels(&cfg, None);
         assert_eq!(active.len(), 1);
         let (name, _, hosts) = &active[0];
         assert_eq!(name, "alice-bob.md");
         assert_eq!(hosts, &vec!["wsl-a".to_string(), "wsl-b".to_string()]);
+    }
+
+    /// v0.3.5 T4 from REMOTE_DUAL_WRITE_DESIGN.md: when this_host is
+    /// known, merger tracks PEER slices only. Own slice is owned by
+    /// post (dual-write to merged) and re-merging it would double-append.
+    #[test]
+    fn compute_active_channels_excludes_this_host_from_slice_list() {
+        let (_tmp, config_path, _inbox) = cross_host_fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        let active = compute_active_channels(&cfg, Some("wsl-a"));
+        assert_eq!(active.len(), 1);
+        let (_name, _, hosts) = &active[0];
+        assert_eq!(hosts, &vec!["wsl-b".to_string()], "own host excluded");
     }
 
     #[test]
@@ -403,17 +431,21 @@ participants = ["alice", "bob"]
         fs::write(&config_path, toml).unwrap();
         fs::write(tmp.path().join("this_host.toml"), "this_host = \"wsl-a\"\n").unwrap();
         let cfg = Config::load(&config_path).unwrap();
-        assert_eq!(compute_active_channels(&cfg).len(), 0);
+        assert_eq!(compute_active_channels(&cfg, Some("wsl-a")).len(), 0);
     }
 
     #[test]
     fn merge_tick_appends_slice_growth_to_merged() {
-        let (tmp, config_path, inbox) = cross_host_fixture("wsl-a");
+        // v0.3.5: viewing as wsl-b so the wsl-a slice is the PEER slice
+        // (merger's responsibility). Pre-v0.3.5 the test viewed as wsl-a
+        // and merger absorbed its own slice; now own-slice is post's
+        // dual-write responsibility.
+        let (tmp, config_path, inbox) = cross_host_fixture("wsl-b");
         let mut tracked = HashMap::new();
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
         assert_eq!(tracked.len(), 1);
 
-        // Write some content to the wsl-a slice (as if alice posted).
+        // Write some content to the wsl-a (peer) slice as if alice posted.
         let slice_a = inbox.join("alice-bob.wsl-a.md");
         fs::write(&slice_a, b"\n\n===\n[alice] hi - 2026-01-01T00:00:00Z\n===\n").unwrap();
 
@@ -429,26 +461,42 @@ participants = ["alice", "bob"]
     }
 
     #[test]
-    fn merge_tick_handles_multiple_slices_in_one_pass() {
+    fn merge_tick_merges_peer_slices_but_skips_own_slice() {
+        // v0.3.5 invariant: merger merges PEER slices into merged. Own
+        // slice is post's dual-write responsibility — merger touching
+        // it would double-append. Viewing as wsl-a here; wsl-b is peer.
         let (tmp, config_path, inbox) = cross_host_fixture("wsl-a");
         let mut tracked = HashMap::new();
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 
-        let slice_a = inbox.join("alice-bob.wsl-a.md");
-        let slice_b = inbox.join("alice-bob.wsl-b.md");
-        fs::write(&slice_a, b"\n\n===\n[alice] from-a - 2026-01-01T00:00:00Z\n===\n").unwrap();
-        fs::write(&slice_b, b"\n\n===\n[bob] from-b - 2026-01-01T00:00:01Z\n===\n").unwrap();
+        let slice_a = inbox.join("alice-bob.wsl-a.md"); // OWN
+        let slice_b = inbox.join("alice-bob.wsl-b.md"); // PEER
+        // Simulate: post on host wsl-a dual-wrote alice's frame already
+        // to merged (skip writing the merged file here so we can verify
+        // merger does NOT add the own-slice content a second time).
+        fs::write(&slice_a, b"\n\n===\n[alice] own-via-post - 2026-01-01T00:00:00Z\n===\n").unwrap();
+        // Peer slice arrives via sync.
+        fs::write(&slice_b, b"\n\n===\n[bob] peer-via-sync - 2026-01-01T00:00:01Z\n===\n").unwrap();
 
         merge_tick(&mut tracked, Some(tmp.path()));
 
         let merged = fs::read_to_string(inbox.join("alice-bob.md")).unwrap();
-        assert!(merged.contains("[alice] from-a"));
-        assert!(merged.contains("[bob] from-b"));
+        // Peer slice content lands in merged (merger's job).
+        assert!(merged.contains("[bob] peer-via-sync"));
+        // Own slice content does NOT land in merged via merger — it
+        // would have been written directly by the post step (not exercised
+        // here; the test seeded the slice file directly to isolate the
+        // merger code path).
+        assert!(
+            !merged.contains("[alice] own-via-post"),
+            "merger must skip own slice; post is responsible for the merged write"
+        );
     }
 
     #[test]
     fn merge_tick_is_idempotent_when_no_growth() {
-        let (tmp, config_path, inbox) = cross_host_fixture("wsl-a");
+        // v0.3.5: view as wsl-b so wsl-a is the tracked peer slice.
+        let (tmp, config_path, inbox) = cross_host_fixture("wsl-b");
         let mut tracked = HashMap::new();
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 
@@ -466,7 +514,8 @@ participants = ["alice", "bob"]
 
     #[test]
     fn merge_tick_appends_incremental_growth() {
-        let (tmp, config_path, inbox) = cross_host_fixture("wsl-a");
+        // v0.3.5: view as wsl-b so wsl-a is the tracked peer slice.
+        let (tmp, config_path, inbox) = cross_host_fixture("wsl-b");
         let mut tracked = HashMap::new();
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 
@@ -496,7 +545,8 @@ participants = ["alice", "bob"]
         // Pathological: someone manually truncated a slice file. Merger
         // should reset its cursor and not panic; subsequent appends to
         // the slice get delivered fresh.
-        let (tmp, config_path, inbox) = cross_host_fixture("wsl-a");
+        // v0.3.5: view as wsl-b so wsl-a is the tracked peer slice.
+        let (tmp, config_path, inbox) = cross_host_fixture("wsl-b");
         let mut tracked = HashMap::new();
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 

@@ -172,11 +172,16 @@ fn fake_sync_slice(src_inbox: &Path, dst_inbox: &Path, slice_filename: &str) {
 // ===========================================================================
 
 #[test]
-fn post_writes_to_slice_then_merger_appends_to_merged() {
+fn post_dual_writes_to_slice_and_merged_no_merger_needed() {
+    // v0.3.5 (REMOTE_DUAL_WRITE_DESIGN.md): on a cross-host channel
+    // post dual-writes (slice + merged). Local watcher visibility
+    // does NOT depend on the merger daemon liveness any more.
+    // Pre-v0.3.5 this test asserted "post NOT touching merged"
+    // because merger was the sole writer to merged; v0.3.5 inverts
+    // that invariant: post owns the merged write for OWN posts;
+    // merger only merges PEER slices.
     let fx = build_fixture();
 
-    // alice (on wsl-a) posts via `giga post` — should write to the
-    // wsl-a slice, NOT the merged file (which the merger owns).
     giga(&fx.home_a, &[
         "post",
         "alice-bob",
@@ -193,23 +198,36 @@ fn post_writes_to_slice_then_merger_appends_to_merged() {
     let slice = fx.host_a_inbox.join("alice-bob.wsl-a.md");
     let merged_a = fx.host_a_inbox.join("alice-bob.md");
     assert!(slice.exists(), "post should create the slice file");
-    assert!(!merged_a.exists(), "post should NOT touch the merged file");
-    let slice_content = fs::read_to_string(&slice).unwrap();
-    assert!(slice_content.contains("[alice] hello-from-alice"));
+    assert!(
+        merged_a.exists(),
+        "v0.3.5: post should ALSO write the merged file (dual-write)"
+    );
 
-    // Run merger once — it should pick up alice's slice and append to
-    // alice-bob.md on host-a (the local merged view).
+    let slice_content = fs::read_to_string(&slice).unwrap();
+    let merged_content = fs::read_to_string(&merged_a).unwrap();
+    assert!(slice_content.contains("[alice] hello-from-alice"));
+    assert!(merged_content.contains("[alice] hello-from-alice"));
+    assert!(merged_content.contains("first message"));
+    assert_eq!(
+        slice_content, merged_content,
+        "dual-write must produce byte-identical content"
+    );
+
+    // Run merger once. It should NOT modify the merged file — own slice
+    // is excluded from tracked slices (post's responsibility), and no
+    // peer slice exists yet.
+    let merged_len_before = fs::metadata(&merged_a).unwrap().len();
     giga(&fx.home_a, &[
         "merger",
         "--once",
         "--config",
         fx.host_a_config().to_str().unwrap(),
     ]);
-
-    assert!(merged_a.exists(), "merger should create the merged file");
-    let merged_content = fs::read_to_string(&merged_a).unwrap();
-    assert!(merged_content.contains("[alice] hello-from-alice"));
-    assert!(merged_content.contains("first message"));
+    let merged_len_after = fs::metadata(&merged_a).unwrap().len();
+    assert_eq!(
+        merged_len_before, merged_len_after,
+        "merger must not touch own-slice content already in merged via dual-write"
+    );
 }
 
 #[test]
