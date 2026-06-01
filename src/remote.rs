@@ -161,6 +161,7 @@ mod tests {
             ssh_user: ssh_user.map(|s| s.into()),
             remote_config_dir: None,
             remote_inbox_dir: None,
+            paths: None,
         }
     }
 

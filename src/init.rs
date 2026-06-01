@@ -80,12 +80,17 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         println!("channels:{}", cfg.channels.len());
     }
 
-    // Ensure inbox dirs exist
-    if let Some(p) = &cfg.paths.wsl_inbox {
-        fs::create_dir_all(p).with_context(|| format!("mkdir -p {}", p.display()))?;
+    // Ensure inbox dirs exist. v0.3.2+: respects the per-host [paths]
+    // override on [[hosts]] entries so a peer with asymmetric paths
+    // (different $HOME, different Windows user) doesn't try to mkdir
+    // the operator's literal path. Falls back to global [paths] when
+    // no per-host override is set (legacy behavior preserved).
+    let this_host = cfg.this_host.as_deref();
+    if let Some(p) = cfg.inbox_for_host_side(this_host, "wsl") {
+        fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
     }
-    if let Some(p) = &cfg.paths.windows_inbox {
-        fs::create_dir_all(p).with_context(|| format!("mkdir -p {}", p.display()))?;
+    if let Some(p) = cfg.inbox_for_host_side(this_host, "windows") {
+        fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
     }
 
     // Create channel files with convention headers if absent.

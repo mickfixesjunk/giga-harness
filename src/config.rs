@@ -78,7 +78,7 @@ fn default_launch_model() -> String {
     "claude-opus-4-7".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Paths {
     /// Where WSL-side inbox files live (e.g. `/home/neo/projects/inbox`).
     /// Optional — only required if any channel has `side = "wsl"`.
@@ -146,6 +146,19 @@ pub struct Host {
     pub remote_config_dir: Option<PathBuf>,
     #[serde(default)]
     pub remote_inbox_dir: Option<PathBuf>,
+    /// Per-host override for `[paths]`. Supersedes the global `[paths]`
+    /// for THIS host's local operations (init, channel_path) AND for
+    /// sync targets pushing to it. Use when peers have asymmetric paths
+    /// (different `$HOME`, different Windows user, etc.) — added in
+    /// v0.3.2 after morpheus-wsl exposed the homogeneous-path assumption.
+    ///
+    /// TOML form:
+    ///   [[hosts]]
+    ///   name = "morpheus-wsl"
+    ///   paths.wsl_inbox = "/home/neo/projects/inbox"
+    ///   paths.windows_inbox = "/mnt/c/Users/audio/projects/inbox"
+    #[serde(default)]
+    pub paths: Option<Paths>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -415,21 +428,52 @@ impl Config {
     /// the other side's path form (e.g., windows_inbox = "/mnt/c/..."
     /// for WSL convenience); `to_host_fs` translates it to whatever
     /// the current host's filesystem expects.
+    ///
+    /// Uses the per-host [paths] override under `[[hosts]]` when this_host
+    /// is known and the override is set (v0.3.2+ asymmetric-path
+    /// support); falls back to the global `[paths]` otherwise.
     pub fn channel_path(&self, ch: &Channel) -> Result<PathBuf> {
-        let dir = match ch.side.as_str() {
-            "wsl" => self
-                .paths
-                .wsl_inbox
-                .as_ref()
-                .ok_or_else(|| anyhow!("paths.wsl_inbox not set"))?,
-            "windows" => self
-                .paths
-                .windows_inbox
-                .as_ref()
-                .ok_or_else(|| anyhow!("paths.windows_inbox not set"))?,
-            other => return Err(anyhow!("unknown channel side `{}`", other)),
-        };
-        Ok(crate::fs_paths::to_host_fs(dir).join(&ch.file))
+        let dir = self
+            .inbox_for_host_side(self.this_host.as_deref(), &ch.side)
+            .ok_or_else(|| anyhow!("no inbox path for channel `{}` (side={})", ch.file, ch.side))?;
+        Ok(crate::fs_paths::to_host_fs(&dir).join(&ch.file))
+    }
+
+    /// Returns the inbox dir to use for a given host + side. Priority:
+    ///   1. `[[hosts]].paths.<side>_inbox` (per-host explicit override; v0.3.2+)
+    ///   2. `[[hosts]].remote_inbox_dir` (v0.2 back-compat — applies to
+    ///      the wsl side only since that's what it was designed for)
+    ///   3. global `[paths].<side>_inbox` (homogeneous-path fallback)
+    ///
+    /// `host_name = None` means "no host context" (legacy local-only
+    /// swarm or pre-host-resolution); always uses the global path.
+    pub fn inbox_for_host_side(&self, host_name: Option<&str>, side: &str) -> Option<PathBuf> {
+        if let Some(name) = host_name {
+            if let Some(host) = self.hosts.iter().find(|h| h.name == name) {
+                if let Some(host_paths) = &host.paths {
+                    let p = match side {
+                        "wsl" => host_paths.wsl_inbox.as_ref(),
+                        "windows" => host_paths.windows_inbox.as_ref(),
+                        _ => None,
+                    };
+                    if let Some(p) = p {
+                        return Some(p.clone());
+                    }
+                }
+                // v0.2 back-compat shim — remote_inbox_dir is a single
+                // path with no side distinction; treat it as wsl-side.
+                if side == "wsl" {
+                    if let Some(p) = &host.remote_inbox_dir {
+                        return Some(p.clone());
+                    }
+                }
+            }
+        }
+        match side {
+            "wsl" => self.paths.wsl_inbox.clone(),
+            "windows" => self.paths.windows_inbox.clone(),
+            _ => None,
+        }
     }
 
     pub fn agent_by_name(&self, name: &str) -> Option<&Agent> {
@@ -988,5 +1032,120 @@ ssh_user = "neomatrix""#,
         cfg.validate().unwrap();
         assert_eq!(cfg.hosts[0].ssh_user.as_deref(), Some("neomatrix"));
         assert_eq!(cfg.hosts[1].ssh_user, None); // omitted defaults to None
+    }
+
+    // -------------------------------------------------------------------
+    // v0.3.2: per-host [paths] override (quality finding 1 — morpheus-wsl
+    // had different $HOME than operator, init failed on literal path).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn inbox_for_host_side_uses_per_host_paths_override() {
+        let body = format!(
+            r#"{}
+[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "wsl-a.tail0.ts.net"
+
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "wsl-b.tail0.ts.net"
+paths.wsl_inbox = "/home/neo/projects/inbox"
+"#,
+            minimal()
+        );
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        // wsl-a has no override → falls through to global /tmp/i
+        assert_eq!(
+            cfg.inbox_for_host_side(Some("wsl-a"), "wsl"),
+            Some(PathBuf::from("/tmp/i"))
+        );
+        // wsl-b has per-host override → uses that
+        assert_eq!(
+            cfg.inbox_for_host_side(Some("wsl-b"), "wsl"),
+            Some(PathBuf::from("/home/neo/projects/inbox"))
+        );
+    }
+
+    #[test]
+    fn inbox_for_host_side_falls_back_to_remote_inbox_dir_v02_compat() {
+        // v0.2 swarms used [[hosts]].remote_inbox_dir before the
+        // explicit per-host [paths] field existed. Keep working.
+        let body = format!(
+            r#"{}
+[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "a.tail0.ts.net"
+
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "b.tail0.ts.net"
+remote_inbox_dir = "/legacy/path"
+"#,
+            minimal()
+        );
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-a".into());
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.inbox_for_host_side(Some("wsl-b"), "wsl"),
+            Some(PathBuf::from("/legacy/path"))
+        );
+    }
+
+    #[test]
+    fn inbox_for_host_side_unknown_host_uses_global() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert_eq!(
+            cfg.inbox_for_host_side(Some("ghost"), "wsl"),
+            Some(PathBuf::from("/tmp/i"))
+        );
+    }
+
+    #[test]
+    fn inbox_for_host_side_no_host_context_uses_global() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert_eq!(cfg.inbox_for_host_side(None, "wsl"), Some(PathBuf::from("/tmp/i")));
+    }
+
+    #[test]
+    fn channel_path_uses_per_host_override_when_this_host_set() {
+        // The killer test: a peer with asymmetric paths must NOT try to
+        // resolve channels against the operator's local-only inbox.
+        let body = format!(
+            r#"{}
+[[hosts]]
+name = "wsl-a"
+tailnet_hostname = "a.tail0.ts.net"
+
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "b.tail0.ts.net"
+paths.wsl_inbox = "/home/neo/projects/inbox"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["a", "b"]
+"#,
+            minimal().trim_end_matches(|c: char| c == '\n')
+        );
+        // Add a "b" agent on wsl-b for the channel participants validation.
+        let body = body.replace(
+            "[[channels]]",
+            "[[agents]]\nname = \"b\"\nworkdir = \"/h/b\"\nrole = \".\"\nplatform = \"wsl\"\nhost = \"wsl-b\"\n\n[[channels]]",
+        );
+        let mut cfg: Config = toml::from_str(&body).unwrap();
+        cfg.this_host = Some("wsl-b".into());
+        cfg.validate().unwrap();
+        let ch = cfg.channels.iter().find(|c| c.file == "alice-bob.md").unwrap();
+        let path = cfg.channel_path(ch).unwrap();
+        assert!(
+            path.starts_with("/home/neo/projects/inbox"),
+            "channel_path on wsl-b should use wsl-b's override, got {}",
+            path.display()
+        );
     }
 }

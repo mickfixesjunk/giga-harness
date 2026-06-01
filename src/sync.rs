@@ -222,6 +222,42 @@ pub fn compute_sync_plan(
         });
     }
 
+    // 1b) agents/<slug>.md templates to every peer. v0.3.2: per-tick
+    //     mirror so templates stay in lockstep when add-agent (without
+    //     --host) creates a new template after the initial bootstrap
+    //     push, OR when CLAUDE.md template content is hand-edited.
+    //     Cheap (KB scale per agent) and idempotent (rsync no-op when
+    //     content matches).
+    let templates_subdir = "agents";
+    for peer in &peers {
+        let remote_dir = peer
+            .remote_config_dir
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| local_config_dir.clone());
+        for agent in &cfg.agents {
+            let template_name = format!("{}.md", agent.name);
+            let local_template = local_config_dir
+                .join(templates_subdir)
+                .join(&template_name);
+            if !local_template.exists() {
+                continue;
+            }
+            let remote_template_dir = remote_join(&remote_dir, templates_subdir);
+            let remote_template_path = format!("{remote_template_dir}/{template_name}");
+            let target = match build_rsync_target(peer, &remote_template_path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            plan.push(SyncCommand {
+                peer_target: target,
+                local_path: local_template,
+                use_append_verify: false, // template content can change wholesale
+                kind: "template",
+            });
+        }
+    }
+
     // 2) Own slice files to every peer that participates on each channel.
     for ch in &cfg.channels {
         if cfg.channel_is_local(ch) {
@@ -258,10 +294,12 @@ pub fn compute_sync_plan(
             if !channel_hosts.contains(&peer.name.as_str()) {
                 continue;
             }
-            let remote_inbox = peer
-                .remote_inbox_dir
-                .as_ref()
-                .cloned()
+            // Resolve peer's inbox dir via the central helper. It
+            // checks per-host [paths] override, then remote_inbox_dir
+            // (v0.2 compat), then global [paths]. Same lookup the peer's
+            // own init/channel_path uses, so operator + peer agree.
+            let remote_inbox = cfg
+                .inbox_for_host_side(Some(&peer.name), &ch.side)
                 .unwrap_or_else(|| local_inbox_dir.clone());
             let remote_slice_path = remote_join(&remote_inbox, &slice_filename);
             let target = match build_rsync_target(peer, &remote_slice_path) {
@@ -526,6 +564,7 @@ mod tests {
             ssh_user: ssh_user.map(|s| s.into()),
             remote_config_dir: None,
             remote_inbox_dir: None,
+            paths: None,
         }
     }
 
@@ -638,6 +677,50 @@ participants = ["alice", "bob"]
         );
         assert!(toml_pushes[0].peer_target.contains("wsl-b.tail0.ts.net"));
         assert!(!toml_pushes[0].use_append_verify, "TOML is whole-file");
+    }
+
+    #[test]
+    fn plan_pushes_agent_templates_to_every_peer() {
+        // v0.3.2 fix for quality finding 2: agents/<slug>.md templates
+        // must be in the per-tick push set, so add-agent (without --host)
+        // creating a new template after the initial bootstrap stays
+        // reflected on peers without requiring a separate manual rsync.
+        let (tmp, config_path) = fixture("wsl-a");
+        let agents_dir = config_path.parent().unwrap().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("alice.md"), b"alice template").unwrap();
+        fs::write(agents_dir.join("bob.md"), b"bob template").unwrap();
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+
+        let template_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "template").collect();
+        // Fixture has 2 agents (alice, bob), 1 peer (wsl-b) → 2 template pushes.
+        assert_eq!(
+            template_pushes.len(),
+            2,
+            "one template per agent per peer"
+        );
+        let targets: Vec<&str> = template_pushes.iter().map(|c| c.peer_target.as_str()).collect();
+        assert!(targets.iter().any(|t| t.ends_with("/agents/alice.md")));
+        assert!(targets.iter().any(|t| t.ends_with("/agents/bob.md")));
+        for cmd in &template_pushes {
+            assert!(!cmd.use_append_verify, "templates are whole-file");
+            assert!(cmd.peer_target.contains("wsl-b.tail0.ts.net"));
+        }
+        let _ = tmp; // keep tempdir alive
+    }
+
+    #[test]
+    fn plan_skips_agent_templates_that_dont_exist_locally() {
+        // No agents/ subdir at all → no template entries in plan.
+        let (_tmp, config_path) = fixture("wsl-a");
+        let cfg = Config::load(&config_path).unwrap();
+        let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
+        let template_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "template").collect();
+        assert!(
+            template_pushes.is_empty(),
+            "no templates on disk → no template pushes"
+        );
     }
 
     #[test]
