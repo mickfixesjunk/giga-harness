@@ -77,33 +77,67 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     loop {
-        let plan = compute_sync_plan(&cfg, &this_host, &args.config);
-        if plan.is_empty() {
-            eprintln!("sync: no cross-host slices for this_host=`{this_host}` and no peers to ship to.");
-        }
-        for cmd in &plan {
-            if args.dry_run {
-                eprintln!("[dry-run] {} {} -> {}", cmd.kind, cmd.local_path.display(), cmd.peer_target);
-                continue;
-            }
-            if let Err(e) = execute(cmd) {
-                eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
-            }
+        if let Err(e) = tick_once(&cfg, &this_host, args.dry_run) {
+            eprintln!("sync: tick failed ({e}) — will retry next tick");
         }
         if args.once {
             return Ok(());
         }
         thread::sleep(POLL_INTERVAL);
-        // Hot-reload the config so newly-added [[hosts]] / channels are
-        // picked up without restart (~3s latency, same as merger/watch).
-        // A failed reload is logged but we keep the previous in-memory cfg.
-        // For v1 simplicity we just continue the loop with the prior cfg;
-        // a fresh load happens at the top of the next iteration only if
-        // we re-enter — actually the loop above always re-reads at the
-        // top, so the next tick gets the fresh config automatically.
-        // Wait — Config::load was called once before the loop. Move it
-        // inside.
     }
+}
+
+/// Single sync sweep — extracted from the daemon loop so the
+/// `RsyncTailscaleTransport::tick` adapter can call it without
+/// reimplementing the planner + executor. Idempotent.
+pub fn tick_once(cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
+    let plan = compute_sync_plan(cfg, this_host, cfg_canonical_path(cfg)?);
+    if plan.is_empty() {
+        eprintln!(
+            "sync: no cross-host slices for this_host=`{this_host}` and no peers to ship to."
+        );
+    }
+    for cmd in &plan {
+        if dry_run {
+            eprintln!(
+                "[dry-run] {} {} -> {}",
+                cmd.kind,
+                cmd.local_path.display(),
+                cmd.peer_target
+            );
+            continue;
+        }
+        if let Err(e) = execute(cmd) {
+            eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort canonical-config path lookup for the running swarm.
+/// Used by `tick_once` since it doesn't carry an Args struct.
+/// Walks the swarms registry by project name; falls back to a synthetic
+/// `<this-cwd>/giga-harness.toml` (which compute_sync_plan tolerates).
+fn cfg_canonical_path(cfg: &Config) -> Result<&Path> {
+    // For now, look the swarm up in the cross-swarm registry.
+    // tick_once's compute_sync_plan only uses this to derive the TOML
+    // filename + parent dir for the rsync target — both stable across
+    // invocations. We cache it in a OnceCell to avoid repeating the
+    // registry lookup every tick.
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<PathBuf> = OnceLock::new();
+    let path = CACHED.get_or_init(|| {
+        crate::registry::load()
+            .ok()
+            .and_then(|r| {
+                r.entries
+                    .into_iter()
+                    .find(|e| e.name == cfg.project.name)
+                    .map(|e| e.config)
+            })
+            .unwrap_or_else(|| PathBuf::from("giga-harness.toml"))
+    });
+    Ok(path.as_path())
 }
 
 /// Pure planner: compute the rsync commands this tick should issue.

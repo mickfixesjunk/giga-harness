@@ -29,6 +29,11 @@ pub struct Config {
     pub paths: Paths,
     #[serde(default)]
     pub hosts: Vec<Host>,
+    /// Pluggable transport selection (v0.3+). When absent, `transport::for_config`
+    /// infers: `local` if no `[[hosts]]`, `rsync+tailscale` if hosts present —
+    /// preserving v0.2 behavior for un-tagged swarms.
+    #[serde(default)]
+    pub transport: Option<TransportConfig>,
     #[serde(default)]
     pub agents: Vec<Agent>,
     #[serde(default)]
@@ -84,6 +89,34 @@ pub struct Paths {
     /// only required if any channel has `side = "windows"`.
     #[serde(default)]
     pub windows_inbox: Option<PathBuf>,
+}
+
+/// Transport selection for the swarm (v0.3+). `kind` is the active plug
+/// name (matches `transport::for_config` dispatch). Per-kind config
+/// lives in the matching `[transport.<kind>]` sub-table; only the active
+/// kind's section is read.
+///
+/// See TRANSPORT_DESIGN.md for the full schema.
+#[derive(Debug, Deserialize, Clone)]
+pub struct TransportConfig {
+    pub kind: String,
+    #[serde(default)]
+    pub git: Option<GitTransportConfig>,
+    // Future per-kind sections:
+    //   #[serde(default)] pub s3: Option<S3TransportConfig>,
+    //   #[serde(default)] pub azure: Option<AzureTransportConfig>,
+    //   etc.
+}
+
+/// `[transport.git]` config: the shared git repo + optional local clone path.
+#[derive(Debug, Deserialize, Clone)]
+pub struct GitTransportConfig {
+    /// Git remote URL (SSH or HTTPS) of the swarm state repo.
+    pub state_repo: String,
+    /// Optional override for the local clone location. Defaults to
+    /// `~/.giga/swarm-state/<project>/`.
+    #[serde(default)]
+    pub local_clone_dir: Option<PathBuf>,
 }
 
 /// A host in the swarm. Enumerated when the swarm spans more than one

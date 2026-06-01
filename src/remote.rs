@@ -42,26 +42,36 @@ pub fn run(args: Args) -> Result<i32> {
         ));
     }
     let cfg = Config::load(&args.config)?;
-    let host = lookup_host(&cfg, &args.host)?;
+    let transport = crate::transport::for_config(&cfg)?;
+    if !transport.supports_remote_exec() {
+        return Err(anyhow!(
+            "transport `{}` doesn't support --host commands. \
+             Run the giga command directly on the peer, or switch to a transport \
+             that supports remote exec (e.g. rsync+tailscale).",
+            transport.name()
+        ));
+    }
+    transport.run_remote(&cfg, &args.host, &args.remote_args)
+}
+
+/// Shared SSH-passthrough implementation used by the
+/// `RsyncTailscaleTransport::run_remote` plug adapter. Extracted so
+/// the plug doesn't need to know about `Args` / clap shapes.
+pub fn run_passthrough(cfg: &Config, peer: &str, args: &[String]) -> Result<i32> {
+    let host = lookup_host(cfg, peer)?;
     let target = build_ssh_target(host)?;
     // Use the peer's remote_config_dir override if set; otherwise fall
-    // back to the local config dir (homogeneous-path assumption). Same
-    // logic as sync uses when building rsync targets — they have to
-    // agree on where the swarm lives on the peer.
-    let local_config_dir = args
-        .config
-        .parent()
-        .ok_or_else(|| anyhow!("local config path `{}` has no parent dir", args.config.display()))?
-        .to_path_buf();
+    // back to whatever the local config's parent dir would be by
+    // convention. The transport layer doesn't carry the operator's
+    // current --config arg, so we look the swarm up in the registry to
+    // find where the canonical config lives locally.
+    let local_config_dir = registry_config_dir(&cfg.project.name)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
     let remote_dir = host
         .remote_config_dir
         .clone()
-        .unwrap_or_else(|| local_config_dir.clone());
-    let remote_cmd = build_remote_command(&remote_dir, &args.remote_args);
-
-    // Wrap in `bash -lc '...'` so the remote shell sources login config
-    // (~/.bashrc / ~/.cargo/env) — without it, cargo-installed binaries
-    // like the peer's `giga` aren't on PATH for non-interactive ssh.
+        .unwrap_or(local_config_dir);
+    let remote_cmd = build_remote_command(&remote_dir, args);
     let wrapped = format!(
         "bash -lc {}",
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd.as_str()))
@@ -74,10 +84,16 @@ pub fn run(args: Args) -> Result<i32> {
         .stderr(Stdio::inherit())
         .status()
         .with_context(|| format!("invoking ssh to {target}"))?;
-
-    // status.code() is None if the process was killed by a signal; fall
-    // back to 255 (the conventional ssh "something went wrong" code).
     Ok(status.code().unwrap_or(255))
+}
+
+fn registry_config_dir(project: &str) -> Option<std::path::PathBuf> {
+    crate::registry::load()
+        .ok()?
+        .entries
+        .into_iter()
+        .find(|e| e.name == project)
+        .and_then(|e| e.config.parent().map(|p| p.to_path_buf()))
 }
 
 /// Look up a host by name, returning a clear error listing the valid
