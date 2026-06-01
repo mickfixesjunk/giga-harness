@@ -34,7 +34,12 @@ pub trait Transport: Send + Sync {
     /// Long-running daemon's per-tick work. Push own slices + canonical
     /// TOML to wherever peers can pick them up; pull peer slices into
     /// local inbox. Idempotent. Daemon retries on next tick if Err.
-    fn tick(&self, cfg: &Config, this_host: &str) -> Result<()>;
+    ///
+    /// `dry_run = true` should print the plan to stderr without making
+    /// any persistent changes (used by `giga sync --once --dry-run` for
+    /// operator debugging). Plugs MAY ignore the flag if their work is
+    /// hard to enumerate without doing it.
+    fn tick(&self, cfg: &Config, this_host: &str, dry_run: bool) -> Result<()>;
 
     /// One-shot peer bootstrap. Called by `giga add-host` and
     /// `giga add-agent --host` after the local TOML edit. Should leave

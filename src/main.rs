@@ -67,16 +67,25 @@ enum Command {
     /// member; then go to your operator host and
     /// `giga add-agent --host <this-node> ...`.
     Setup {
-        /// Bootstrap THIS machine as a remote peer in an existing swarm
-        /// (Tailscale + SSH + rsync + inbox dir). Implies that the
-        /// operator-side scaffolding (giga init, giga setup as a fresh
-        /// swarm, etc.) is NOT what you want.
+        /// Bootstrap THIS machine as a remote peer in an existing swarm.
+        /// Default `--transport rsync+tailscale` installs Tailscale +
+        /// rsync + enables Tailscale SSH. `--transport git` installs
+        /// git + rsync + smoke-tests the state repo URL.
         #[arg(long)]
         remote_node: bool,
         /// Override the default inbox directory (~/projects/inbox).
         /// Only used with --remote-node.
         #[arg(long, value_name = "PATH")]
         inbox_dir: Option<PathBuf>,
+        /// Which transport plug this peer will use. Default
+        /// `rsync+tailscale` preserves v0.2 behavior. `git` activates
+        /// the v0.3 git-based state-repo transport.
+        #[arg(long, value_name = "KIND", default_value = "rsync+tailscale")]
+        transport: String,
+        /// State-repo URL for `--transport git`. Required when transport
+        /// is git; ignored otherwise.
+        #[arg(long, value_name = "URL")]
+        repo: Option<String>,
         /// Print what would happen without making changes. Only used
         /// with --remote-node.
         #[arg(long)]
@@ -443,12 +452,16 @@ fn main() -> Result<()> {
         Command::Setup {
             remote_node,
             inbox_dir,
+            transport,
+            repo,
             dry_run,
         } => {
             if remote_node {
                 setup_remote_node::run(setup_remote_node::Args {
                     inbox_dir,
                     dry_run,
+                    transport,
+                    repo,
                 })
             } else {
                 setup::run()

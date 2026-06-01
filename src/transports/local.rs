@@ -22,7 +22,7 @@ impl Transport for LocalTransport {
         "local"
     }
 
-    fn tick(&self, _cfg: &Config, _this_host: &str) -> Result<()> {
+    fn tick(&self, _cfg: &Config, _this_host: &str, _dry_run: bool) -> Result<()> {
         Ok(())
     }
 
@@ -59,7 +59,8 @@ wsl_inbox = "/tmp/i"
     #[test]
     fn tick_is_noop() {
         let t = LocalTransport;
-        assert!(t.tick(&empty_cfg(), "this").is_ok());
+        assert!(t.tick(&empty_cfg(), "this", false).is_ok());
+        assert!(t.tick(&empty_cfg(), "this", true).is_ok()); // dry-run also no-op
     }
 
     #[test]

@@ -22,8 +22,8 @@ impl Transport for RsyncTailscaleTransport {
         "rsync+tailscale"
     }
 
-    fn tick(&self, cfg: &Config, this_host: &str) -> Result<()> {
-        crate::sync::tick_once(cfg, this_host, /* dry_run */ false)
+    fn tick(&self, cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
+        crate::sync::tick_once(cfg, this_host, dry_run)
     }
 
     fn bootstrap_peer(&self, cfg: &Config, peer: &str, config_path: &Path) -> Result<()> {

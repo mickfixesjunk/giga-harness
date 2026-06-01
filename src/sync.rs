@@ -68,17 +68,39 @@ pub fn run(args: Args) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow!("this_host is unknown — set sibling this_host.toml"))?;
 
-    // Verify rsync is installed before the loop so we fail fast with a
-    // clean error instead of N rsync-not-found messages per tick.
-    if !args.dry_run && which::which("rsync").is_err() {
-        return Err(anyhow!(
-            "rsync not found on PATH. Install it with: sudo apt install rsync"
-        ));
+    let transport = crate::transport::for_config(&cfg)?;
+    eprintln!(
+        "sync: transport=`{}`, this_host=`{this_host}`",
+        transport.name()
+    );
+
+    // Transport-specific fail-fast prereq check. rsync+tailscale needs
+    // `rsync` on PATH; git needs `git`. We could push this into a trait
+    // method (Transport::self_check) — for now the two cases are simple
+    // enough to handle inline.
+    if !args.dry_run {
+        match transport.name() {
+            "rsync+tailscale" => {
+                if which::which("rsync").is_err() {
+                    return Err(anyhow!(
+                        "rsync not found on PATH. Install it with: sudo apt install rsync"
+                    ));
+                }
+            }
+            "git" => {
+                if which::which("git").is_err() {
+                    return Err(anyhow!(
+                        "git not found on PATH. Install it with: sudo apt install git"
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
 
     loop {
-        if let Err(e) = tick_once(&cfg, &this_host, args.dry_run) {
-            eprintln!("sync: tick failed ({e}) — will retry next tick");
+        if let Err(e) = transport.tick(&cfg, &this_host, args.dry_run) {
+            eprintln!("sync: {} tick failed ({e}) — will retry next tick", transport.name());
         }
         if args.once {
             return Ok(());

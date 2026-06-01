@@ -28,7 +28,7 @@
 //! Idempotent — safe to re-run. Each step checks current state and
 //! only acts if needed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
@@ -38,6 +38,14 @@ pub struct Args {
     pub inbox_dir: Option<PathBuf>,
     /// Print what would happen without making changes.
     pub dry_run: bool,
+    /// Which transport plug this peer will use. Default "rsync+tailscale"
+    /// preserves v0.2 behavior (installs Tailscale + rsync + enables
+    /// Tailscale SSH). "git" installs git + rsync + clones the state
+    /// repo. See TRANSPORT_DESIGN.md.
+    pub transport: String,
+    /// For `--transport git`: the state repo URL to clone. Required
+    /// when transport = "git", ignored otherwise.
+    pub repo: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -46,34 +54,44 @@ pub fn run(args: Args) -> Result<()> {
         None => default_inbox_dir()?,
     };
     let dry = args.dry_run;
+    let transport = args.transport.as_str();
 
-    println!("giga setup --remote-node — bootstrapping this host as a remote peer");
+    println!(
+        "giga setup --remote-node --transport {transport} — bootstrapping this host as a remote peer"
+    );
     println!();
 
+    match transport {
+        "rsync+tailscale" => run_tailscale(&inbox_dir, dry),
+        "git" => {
+            let repo = args.repo.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "--transport git requires --repo <URL>. \
+                     The state repo is where this swarm's TOML + slice files live; \
+                     create one (e.g. `gh repo create <name> --private`) and pass the clone URL."
+                )
+            })?;
+            run_git(&inbox_dir, repo, dry)
+        }
+        other => Err(anyhow!(
+            "unknown --transport `{other}` — supported: rsync+tailscale (default), git"
+        )),
+    }
+}
+
+// =============================================================================
+// rsync+tailscale path — v0.2's default
+// =============================================================================
+
+fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
     // -------- 1. WSL check --------
     step(1, 6, "WSL detection", dry, || {
-        let ver = std::fs::read_to_string("/proc/version")
-            .context("reading /proc/version")?;
-        if !ver.to_lowercase().contains("microsoft") && !ver.to_lowercase().contains("wsl") {
-            return Err(anyhow!(
-                "not running under WSL. This subcommand currently targets WSL/Linux; \
-                 on macOS the same manual steps apply (brew install tailscale + rsync)."
-            ));
-        }
-        println!("    WSL detected");
-        Ok(())
+        wsl_check()
     })?;
 
     // -------- 2. rsync --------
     step(2, 6, "rsync (for slice file transport)", dry, || {
-        if which::which("rsync").is_ok() {
-            println!("    already installed");
-            return Ok(());
-        }
-        println!("    installing rsync via apt...");
-        run_sudo(&["apt-get", "update", "-qq"])?;
-        run_sudo(&["apt-get", "install", "-y", "rsync"])?;
-        Ok(())
+        ensure_rsync()
     })?;
 
     // -------- 3. Tailscale install --------
@@ -132,13 +150,109 @@ pub fn run(args: Args) -> Result<()> {
     })?;
 
     // -------- 6. Inbox dir --------
-    step(6, 6, &format!("Inbox dir at {}", inbox_dir.display()), dry, || {
+    inbox_dir_step(6, 6, inbox_dir, dry)?;
+
+    print_tailscale_summary(inbox_dir, dry);
+    Ok(())
+}
+
+// =============================================================================
+// git path — v0.3's new
+// =============================================================================
+
+fn run_git(inbox_dir: &Path, repo: &str, dry: bool) -> Result<()> {
+    // -------- 1. WSL check --------
+    step(1, 5, "WSL detection", dry, || wsl_check())?;
+
+    // -------- 2. git --------
+    step(2, 5, "git (for state-repo transport)", dry, || {
+        if which::which("git").is_ok() {
+            println!("    already installed");
+            return Ok(());
+        }
+        println!("    installing git via apt...");
+        run_sudo(&["apt-get", "update", "-qq"])?;
+        run_sudo(&["apt-get", "install", "-y", "git"])?;
+        Ok(())
+    })?;
+
+    // -------- 3. clone the state repo --------
+    step(3, 5, &format!("clone state repo {repo}"), dry, || {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("HOME not set"))?;
+        let clone_dir = home.join(".giga").join("swarm-state");
+        std::fs::create_dir_all(&clone_dir)
+            .with_context(|| format!("mkdir -p {}", clone_dir.display()))?;
+        println!("    `git ls-remote {repo}` (smoke-test auth)...");
+        let status = Command::new("git")
+            .args(["ls-remote", repo])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()
+            .with_context(|| format!("git ls-remote {repo}"))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "`git ls-remote {repo}` failed (auth not configured? wrong URL?). \
+                 Set up SSH keys or HTTPS credentials for git, then re-run."
+            ));
+        }
+        println!("    auth ok. The swarm's giga config will choose the actual clone path");
+        println!("    (defaults to ~/.giga/swarm-state/<project>/ unless overridden in TOML).");
+        Ok(())
+    })?;
+
+    // -------- 4. rsync (optional but useful — for fallback / cohabitation) --------
+    step(4, 5, "rsync (optional — fallback transport)", dry, || {
+        if which::which("rsync").is_ok() {
+            println!("    already installed");
+            return Ok(());
+        }
+        println!("    installing rsync via apt (cheap insurance for fallback)...");
+        run_sudo(&["apt-get", "install", "-y", "rsync"])?;
+        Ok(())
+    })?;
+
+    // -------- 5. Inbox dir --------
+    inbox_dir_step(5, 5, inbox_dir, dry)?;
+
+    print_git_summary(inbox_dir, repo, dry);
+    Ok(())
+}
+
+// =============================================================================
+// shared helpers
+// =============================================================================
+
+fn wsl_check() -> Result<()> {
+    let ver = std::fs::read_to_string("/proc/version").context("reading /proc/version")?;
+    if !ver.to_lowercase().contains("microsoft") && !ver.to_lowercase().contains("wsl") {
+        return Err(anyhow!(
+            "not running under WSL. This subcommand currently targets WSL/Linux; \
+             on macOS the same manual steps apply (brew install ...)."
+        ));
+    }
+    println!("    WSL detected");
+    Ok(())
+}
+
+fn ensure_rsync() -> Result<()> {
+    if which::which("rsync").is_ok() {
+        println!("    already installed");
+        return Ok(());
+    }
+    println!("    installing rsync via apt...");
+    run_sudo(&["apt-get", "update", "-qq"])?;
+    run_sudo(&["apt-get", "install", "-y", "rsync"])?;
+    Ok(())
+}
+
+fn inbox_dir_step(n: u32, total: u32, inbox_dir: &Path, dry: bool) -> Result<()> {
+    step(n, total, &format!("Inbox dir at {}", inbox_dir.display()), dry, || {
         if inbox_dir.exists() {
-            // Warn-not-fail: this might be an existing local swarm's
-            // inbox. The remote-channels feature won't collide because
-            // slice files have distinct suffixes, but flag it so the
-            // user knows.
-            let has_md = std::fs::read_dir(&inbox_dir)
+            let has_md = std::fs::read_dir(inbox_dir)
                 .ok()
                 .map(|rd| {
                     rd.flatten()
@@ -156,13 +270,14 @@ pub fn run(args: Args) -> Result<()> {
             }
             return Ok(());
         }
-        std::fs::create_dir_all(&inbox_dir)
+        std::fs::create_dir_all(inbox_dir)
             .with_context(|| format!("creating {}", inbox_dir.display()))?;
         println!("    created");
         Ok(())
-    })?;
+    })
+}
 
-    // -------- summary --------
+fn print_tailscale_summary(inbox_dir: &Path, dry: bool) {
     println!();
     println!("================================================================================");
     println!("Remote node bootstrap complete on {}.", hostname());
@@ -173,28 +288,41 @@ pub fn run(args: Args) -> Result<()> {
     println!();
     println!("NEXT (from your OPERATOR host — the box where you run giga add-agent):");
     println!();
-    println!("  giga add-agent --host <NAME-FOR-THIS-HOST> \\");
-    println!("                 --name <AGENT-SLUG> \\");
-    println!("                 --peer <EXISTING-LOCAL-AGENT> \\");
-    println!("                 --role \"...\"");
+    println!("  giga add-host --name <NAME-FOR-THIS-HOST> \\");
+    println!("                --tailnet-hostname {ts_name} \\");
+    println!("                --ssh-user <YOUR-USER-ON-THIS-HOST>");
     println!();
-    println!("Where <NAME-FOR-THIS-HOST> is the slug you'll give this host in [[hosts]].");
-    println!("Make sure your operator's giga-harness.toml has a [[hosts]] entry like:");
-    println!();
-    println!("  [[hosts]]");
-    println!("  name = \"<NAME-FOR-THIS-HOST>\"");
-    println!("  tailnet_hostname = \"{ts_name}\"");
-    println!();
-    println!("After that, giga sync (on operator) pushes the canonical TOML here,");
-    println!("and giga launch --host <NAME-FOR-THIS-HOST> --only <AGENT-SLUG>");
-    println!("brings up the new agent's terminal here.");
+    println!("  giga add-agent --host <NAME-FOR-THIS-HOST> --name <SLUG> --peer <EXISTING>");
     println!("================================================================================");
 
     if dry {
         println!();
         println!("(dry-run — no changes made)");
     }
-    Ok(())
+}
+
+fn print_git_summary(inbox_dir: &Path, repo: &str, dry: bool) {
+    println!();
+    println!("================================================================================");
+    println!("Remote node bootstrap complete on {} (git transport).", hostname());
+    println!();
+    println!("State repo:                   {repo}");
+    println!("Inbox directory:              {}", inbox_dir.display());
+    println!();
+    println!("NEXT (from your OPERATOR host):");
+    println!();
+    println!("  giga add-host --transport git --repo {repo} --name <NAME-FOR-THIS-HOST>");
+    println!();
+    println!("  giga add-agent --host <NAME-FOR-THIS-HOST> --name <SLUG> --peer <EXISTING>");
+    println!();
+    println!("After that, this host's `giga sync` will pull the swarm config from the");
+    println!("repo on its next tick (~3s) and start participating.");
+    println!("================================================================================");
+
+    if dry {
+        println!();
+        println!("(dry-run — no changes made)");
+    }
 }
 
 /// Helper that prints `[N/M] <label>` and runs the inner action.
