@@ -148,6 +148,13 @@ enum Command {
     Hosts {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// Show tailnet members that aren't yet registered in this
+        /// swarm. Queries `tailscale status` for the roster + diffs
+        /// against [[hosts]] entries; surfaces candidates for
+        /// `giga add-host`. Falls back to Windows-side Tailscale
+        /// from a WSL distro when WSL doesn't have its own tailscale.
+        #[arg(long)]
+        available: bool,
     },
     /// Operator help for Claude. TTY-aware:
     ///
@@ -508,7 +515,7 @@ fn main() -> Result<()> {
             }
             launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
         }
-        Command::Hosts { config } => {
+        Command::Hosts { config, available } => {
             // When the user didn't override --config and we can't resolve
             // a default `giga-harness.toml` (not in a swarm dir, no
             // registry hit), fall back to listing every registered swarm
@@ -516,8 +523,9 @@ fn main() -> Result<()> {
             // message. Explicit-but-bad --config still errors loud.
             let was_default = config == PathBuf::from("giga-harness.toml");
             match registry::resolve_config(config) {
+                Ok(c) if available => hosts::run_available(&c),
                 Ok(c) => hosts::run(&c),
-                Err(_) if was_default => hosts::run_list_all(),
+                Err(_) if was_default && !available => hosts::run_list_all(),
                 Err(e) => Err(e),
             }
         }
