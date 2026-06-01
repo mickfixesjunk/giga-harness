@@ -4,7 +4,13 @@
 
 A coordination harness for running N parallel AI coding agents (Claude Code, Codex, etc.) that talk to each other through file-based inboxes. One terminal tab per agent; each agent reads its own `CLAUDE.md`, watches a shared inbox, and posts back when it has something to say.
 
-Agents can run on **one machine** (default — append-only inbox files, polling watcher) or across **multiple machines on a tailnet** (per-host slice files synced via rsync over Tailscale SSH; local watcher unchanged). See [§ Multi-host swarms](#multi-host-swarms-cross-host-channels) below.
+Agents can run on **one machine** (default — append-only inbox files, polling watcher) or across **multiple machines** via a pluggable transport (v0.3+):
+
+- **`rsync+tailscale`** — rsync over Tailscale SSH. Lowest latency (~5s), needs Tailscale.
+- **`git`** — a private git repo as the shared state store. Slightly slower (~10s), works through any firewall, no tailnet needed.
+- **`local`** — single-host (default when no `[[hosts]]`).
+
+See [§ Multi-host swarms](#multi-host-swarms-cross-host-channels) for the operator flow and [TRANSPORT_DESIGN.md](TRANSPORT_DESIGN.md) for the plug architecture.
 
 ```
 ===
@@ -156,51 +162,91 @@ A giga swarm can span multiple physical machines on a tailnet. Agents on differe
 
 Each cross-host channel has per-host slice files `<channel>.<host>.md` next to the merged `<channel>.md`. A local `giga sync` daemon rsyncs each host's own slice files over Tailscale SSH; a local `giga merger` daemon appends incoming slice bytes to the watched merged file. The watcher itself doesn't change — remote messages appear as ordinary appends to the same file it's been tailing. Channels with all participants on `this_host` skip the slice path entirely (fast-path direct write to the merged file). Auth is tailnet identity — no SSH key exchange, no `authorized_keys` files. See [REMOTE_DESIGN.md](REMOTE_DESIGN.md) for the full architecture.
 
-### Bootstrap a new tailnet peer — 2 shots (assumes `giga` binary already installed on both hosts)
+### Choose a transport
 
-Install the giga binary on both hosts first (Linux/macOS/WSL):
+| Transport | Connectivity | Latency | Setup | When |
+|---|---|---|---|---|
+| `rsync+tailscale` | mutual tailnet membership | ~5s | install Tailscale on each peer, click auth URL | you already have a tailnet OR want minimal latency |
+| `git` | any git host (GitHub/GitLab/self-hosted) | ~10s | create a private state repo + each peer clones it | no tailnet, behind firewalls, already have git auth set up |
+| `local` | (single-host only) | n/a | nothing | swarm fits on one machine |
+
+### Bootstrap a new tailnet peer — 2 shots (rsync+tailscale)
+
+Install the giga binary on both hosts (Linux/macOS/WSL):
 
 ```sh
 curl -sSfL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
 ```
 
-Then:
-
 **Shot 1 — on the NEW host (interactive: Tailscale auth URL):**
 
 ```sh
-giga setup --remote-node
+giga setup --remote-node                                # defaults to --transport rsync+tailscale
 ```
 
-This installs Tailscale + rsync, runs `tailscale up` (prints an auth URL you click), enables Tailscale SSH, creates `~/projects/inbox`. ~5 min, mostly the auth click. Note the tailnet hostname it prints at the end.
+Installs Tailscale + rsync, runs `tailscale up`, enables Tailscale SSH, creates `~/projects/inbox`. ~5 min.
 
-**Shot 2 — on your OPERATOR host (the box that already has the swarm):**
+**Shot 2 — on the OPERATOR host:**
 
 ```sh
-NEW=wsl-b                          # whatever slug you want for the new host
-PEER_TAILNET=wsl-b.tail0000.ts.net # what `giga setup --remote-node` printed on the new host
-PEER_USER=neo                      # OS user on the new host
-SWARM=remote-test                  # your swarm's name
-
-giga add-host --name $NEW \
-              --tailnet-hostname $PEER_TAILNET \
-              --ssh-user $PEER_USER \
-              --remote-config-dir /home/$PEER_USER/.giga/configs/$SWARM
-
-giga add-agent --host $NEW --name agent-on-new --peer existing-local-agent \
-               --role "what this agent does" \
-               --workdir /home/$PEER_USER/.giga/configs/$SWARM/workdirs/agent-on-new
+giga add-host --name wsl-b \
+              --tailnet-hostname wsl-b.tail0000.ts.net \
+              --ssh-user neo \
+              --remote-config-dir /home/neo/.giga/configs/<swarm>
+giga add-agent --host wsl-b --name <slug> --peer <existing> --role "..." \
+               --workdir /home/neo/.giga/configs/<swarm>/workdirs/<slug>
+giga launch --host wsl-b --only <slug>
 ```
 
-`add-host` registers the peer in the swarm + pushes the canonical TOML to it. `add-agent --host` scaffolds the new agent on the peer end-to-end (TOML edit + rsync swarm dir + ensure `this_host.toml` + run `giga init` remotely to render the workdir + CLAUDE.md).
+Post-to-fire latency: ~3-10 seconds.
 
-Bring up the new agent's terminal on the peer (still from operator):
+### Bootstrap a new git-transport peer — 2 shots
+
+Create a private state repo once per swarm (any git host works):
 
 ```sh
-giga launch --host $NEW --only agent-on-new
+gh repo create mick-swarm-state-<swarm> --private --confirm
 ```
 
-That's it — 2 shots end-to-end. Post-to-fire latency: ~3-10 seconds.
+Add the transport stanza to your swarm's `giga-harness.toml`:
+
+```toml
+[transport]
+kind = "git"
+
+[transport.git]
+state_repo = "git@github.com:mick/mick-swarm-state-<swarm>.git"
+```
+
+Install the giga binary on both hosts (same one-liner as above). Then:
+
+**Shot 1 — on the NEW host:**
+
+```sh
+giga setup --remote-node --transport git \
+           --repo git@github.com:mick/mick-swarm-state-<swarm>.git
+```
+
+Installs git + rsync, smoke-tests repo auth (`git ls-remote`), creates `~/projects/inbox`.
+
+**Shot 2 — on the OPERATOR host (edit TOML to register the peer):**
+
+```toml
+[[hosts]]
+name = "wsl-b"
+tailnet_hostname = "unused"     # required field but ignored under git transport
+```
+
+```sh
+giga add-agent --host wsl-b --name <slug> --peer <existing> --role "..." \
+               --workdir /home/neo/.giga/configs/<swarm>/workdirs/<slug>
+# Then on wsl-b directly (giga remote --host doesn't work under git transport):
+giga launch --only <slug>
+```
+
+The new agent's terminal needs to be brought up ON the peer (no remote-exec under git). Post-to-fire latency: ~10-15 seconds.
+
+> **Heads-up:** with `transport.kind = "git"`, the `--host` flags on `sweep` / `launch` / `add-agent`'s auto-launch don't work — they need synchronous reach to the peer (SSH), which git doesn't provide. Operator orchestrates each peer's local commands; the swarm coordinates over git for slice traffic. See [TRANSPORT_DESIGN.md §2](TRANSPORT_DESIGN.md) (`supports_remote_exec`).
 
 Full operator runbook with troubleshooting + the `[[hosts]]` schema deep dive: **[REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md)**.
 
