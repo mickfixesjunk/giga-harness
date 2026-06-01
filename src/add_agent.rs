@@ -214,6 +214,33 @@ pub fn run(args: Args) -> Result<()> {
 
 // --------------------------------------------------------------- pre-flight
 
+/// Refuse to write a path with a leading tilde to the TOML. Used by both
+/// --workdir and --code-root validation. The error message points at the
+/// remediation operators most often want (the absolute path that the
+/// tilde was trying to spell). Pure — testable.
+fn reject_tilde(flag: &str, path: &str) -> Result<()> {
+    if path.starts_with('~') {
+        let abs_hint = if let Some(home) = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .and_then(|h| h.into_string().ok())
+        {
+            path.replacen('~', &home, 1)
+        } else {
+            format!("/home/<user>{}", &path[1..])
+        };
+        return Err(anyhow!(
+            "{flag} contains a literal `~` — this won't expand at `giga launch` time \
+             because the path gets shell-escaped before bash sees it.\n\n\
+             For local agents on this host, use the absolute path:\n\
+             \u{20}\u{20}{flag} {abs_hint}\n\n\
+             For cross-host agents (--host <peer>), use the absolute path under THAT host's \
+             $HOME (e.g. /home/<their-user>/.giga/configs/<swarm>/workdirs/<slug>) — giga can't \
+             auto-expand `~` against a remote host's $HOME from the operator side."
+        ));
+    }
+    Ok(())
+}
+
 fn preflight(cfg: &Config, args: &Args) -> Result<()> {
     if args.name.is_empty() {
         return Err(anyhow!("--name cannot be empty"));
@@ -233,6 +260,18 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
     }
     if args.workdir.is_empty() {
         return Err(anyhow!("--workdir cannot be empty"));
+    }
+    // Reject literal `~` early — see quality finding 3 (2026-05-31): the
+    // path is shell_escape::escape'd into the launch `cd` command, which
+    // single-quotes `~` and bash doesn't expand it. Fails loudly at TOML
+    // write time instead of confusingly hours later in a tmux pane.
+    // Cross-host case: we don't know the peer's $HOME locally, so we
+    // can't auto-expand. Local case: we could expand via dirs::home_dir()
+    // but absolute paths make the TOML more portable across machines, so
+    // a hard rule is cleaner.
+    reject_tilde("--workdir", &args.workdir)?;
+    if let Some(cr) = &args.code_root {
+        reject_tilde("--code-root", cr)?;
     }
     if args.role.is_empty() {
         return Err(anyhow!("--role cannot be empty"));
@@ -571,6 +610,55 @@ purpose = "All-hands."
         args.name = "alice".into();
         let err = preflight(&cfg, &args).unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    // -----------------------------------------------------------------
+    // v0.3.3: reject `~` in --workdir / --code-root early (quality finding 3).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn preflight_rejects_tilde_workdir() {
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.workdir = "~/.giga/configs/x/workdirs/y".into();
+        let err = preflight(&cfg, &args).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--workdir"));
+        assert!(msg.contains("literal `~`"));
+        // Surfaces remediation:
+        assert!(msg.contains("absolute path"));
+    }
+
+    #[test]
+    fn preflight_rejects_tilde_code_root() {
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.code_root = Some("~/projects/myproj".into());
+        let err = preflight(&cfg, &args).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--code-root"));
+        assert!(msg.contains("literal `~`"));
+    }
+
+    #[test]
+    fn preflight_accepts_absolute_workdir() {
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.workdir = "/home/me/.giga/configs/x/workdirs/y".into();
+        assert!(preflight(&cfg, &args).is_ok());
+    }
+
+    #[test]
+    fn reject_tilde_inlines_home_in_remediation_when_HOME_set() {
+        // Save + restore HOME so we don't break other tests.
+        let orig = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", "/home/quality-test") };
+        let err = reject_tilde("--workdir", "~/x").unwrap_err();
+        match orig {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(err.to_string().contains("/home/quality-test/x"));
     }
 
     #[test]
