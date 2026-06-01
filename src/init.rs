@@ -408,7 +408,15 @@ fn prepend_header(body: &str, agent: &Agent, cfg: &Config, config_path: &Path) -
     // start. Inject the coordination section so a fresh init carries
     // the instructions regardless of whether the agent uses a custom
     // claudemd_template or the auto-generated one.
-    if agent.swarm_boss {
+    //
+    // v0.3.7 Bug 10 fix: gate on [[hosts]] non-empty. In a local-only
+    // swarm, sync/merger exit immediately ("no [[hosts]] declared")
+    // and Monitor reports the task as completed — looks like a daemon
+    // crash. Keep the flag legal in a local-only TOML (so users can
+    // set it up ahead of adding hosts) but don't inject Monitor lines
+    // that would only fire once and look broken. Re-run `giga init`
+    // after adding the first host to materialize them.
+    if agent.swarm_boss && !cfg.hosts.is_empty() {
         let host = agent
             .host
             .as_deref()
@@ -673,6 +681,43 @@ swarm_boss = true
         assert!(
             claudemd.contains("host-a"),
             "section should name the host the boss is responsible for"
+        );
+    }
+
+    /// v0.3.7 Bug 10 fix: swarm_boss flag set on a local-only swarm
+    /// (no [[hosts]] yet) does NOT inject sync/merger Monitor lines.
+    /// Those daemons exit immediately on a local-only config, so
+    /// Monitor reports them as completed/crashed — confusing UX.
+    #[test]
+    fn claudemd_omits_swarm_coordination_section_when_local_only_swarm() {
+        let cfg = Config::load_str_for_test(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+swarm_boss = true
+"#,
+        )
+        .unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
+        assert!(
+            !body.contains("Swarm coordination"),
+            "swarm_boss on a local-only swarm must not inject sync/merger Monitors"
         );
     }
 

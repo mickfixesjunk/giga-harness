@@ -185,7 +185,14 @@ enum Command {
     /// Append a properly-formatted message to a channel file.
     Post {
         /// Channel filename (must match a [[channels]] entry) OR an absolute path.
-        channel: String,
+        /// May be passed positionally OR via `--channel <name>` (v0.3.7 Bug 8).
+        channel: Option<String>,
+        /// v0.3.7 Bug 8: alias for the positional CHANNEL arg. Users
+        /// naturally type `--channel <name>` and clap used to error
+        /// with a misleading "unexpected argument" tip. Now both forms
+        /// work; exactly one must be provided.
+        #[arg(long = "channel", value_name = "CHANNEL")]
+        channel_flag: Option<String>,
         /// Your agent name — must match one of the channel's participants.
         #[arg(long, value_name = "AGENT")]
         r#as: String,
@@ -564,6 +571,7 @@ fn main() -> Result<()> {
         }
         Command::Post {
             channel,
+            channel_flag,
             r#as,
             subject,
             body,
@@ -571,6 +579,20 @@ fn main() -> Result<()> {
             needs,
             config,
         } => {
+            // v0.3.7 Bug 8: resolve channel from positional or --channel flag.
+            let channel = match (channel, channel_flag) {
+                (Some(c), None) | (None, Some(c)) => c,
+                (Some(_), Some(_)) => {
+                    return Err(anyhow::anyhow!(
+                        "channel passed both positionally and via --channel — pick one"
+                    ));
+                }
+                (None, None) => {
+                    return Err(anyhow::anyhow!(
+                        "channel is required — pass it positionally or as --channel <NAME>"
+                    ));
+                }
+            };
             let config = registry::resolve_config(config)?;
             post::run(post::Args {
                 channel,

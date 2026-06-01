@@ -285,10 +285,15 @@ impl Config {
             .with_context(|| format!("reading config at {}", path.display()))?;
         let mut cfg: Config = toml::from_str(&text)
             .with_context(|| format!("parsing TOML config at {}", path.display()))?;
-        cfg.this_host = load_this_host(path)?;
-        cfg.source_path = Some(
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
-        );
+        // v0.3.7 Bug 1 fix: callers commonly pass a symlinked path
+        // (e.g., workdirs/<agent>/giga-harness.toml -> swarm/giga-harness.toml).
+        // sibling lookups (this_host.toml) must resolve relative to the
+        // target's directory, NOT the symlink's parent — otherwise the
+        // sibling is silently missing and downstream code degrades to
+        // "no this_host" with a confusing 0-channels-tracked watcher.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        cfg.this_host = load_this_host(&canonical)?;
+        cfg.source_path = Some(canonical);
         cfg.validate()?;
         Ok(cfg)
     }
@@ -683,6 +688,62 @@ bench_scheduler = true"#,
         );
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.agents.iter().filter(|a| a.bench_scheduler).count(), 1);
+    }
+
+    /// v0.3.7 Bug 1 fix: when the config is loaded via a symlink (the
+    /// canonical case for agents whose workdir contains a symlink to
+    /// the swarm-dir TOML), this_host.toml MUST be found relative to
+    /// the symlink's TARGET, not its parent. Pre-fix: agents armed
+    /// `giga watch` from their workdir, config reload silently failed
+    /// because workdir/this_host.toml didn't exist, watcher tracked 0
+    /// channels, looked alive in Monitor but produced no events.
+    #[cfg(unix)]
+    #[test]
+    fn load_resolves_this_host_relative_to_symlink_target() {
+        let swarm = tempfile::TempDir::new().unwrap();
+        let workdir = tempfile::TempDir::new().unwrap();
+
+        // Real config + this_host.toml live in swarm/
+        let real_config = swarm.path().join("giga-harness.toml");
+        std::fs::write(
+            &real_config,
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "host-a"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            swarm.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
+
+        // Workdir has a symlink to the real config.
+        let symlink = workdir.path().join("giga-harness.toml");
+        std::os::unix::fs::symlink(&real_config, &symlink).unwrap();
+        // Crucially, NO this_host.toml in the workdir — only the
+        // symlink target's directory has it.
+        assert!(!workdir.path().join("this_host.toml").exists());
+
+        // Load via the symlink. Should resolve to swarm/this_host.toml.
+        let cfg = Config::load(&symlink).unwrap();
+        assert_eq!(
+            cfg.this_host.as_deref(),
+            Some("host-a"),
+            "this_host must be resolved via the symlink target, not its parent"
+        );
     }
 
     /// v0.3.6 S1 (SWARM_BOSS_DESIGN.md): two agents both flagged
