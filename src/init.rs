@@ -20,12 +20,20 @@ pub fn run(config_path: &Path) -> Result<()> {
 
 pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     let cfg = Config::load(config_path)?;
-    let config_dir = config_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("config path has no parent dir"))?;
+    // v0.6.4 fix: derive config_dir from the CANONICALIZED path so
+    // claudemd_template relative paths resolve against the swarm dir,
+    // NOT a workdir-side symlink to the canonical config. Same class
+    // of bug as v0.3.7 Bug 1 (this_host.toml symlink leakage) — fixed
+    // there but missed for template lookup. Symptom: `giga launch
+    // --only X` from a workdir/<agent>/ cwd errored with "No such file
+    // or directory" on `agents/<other-agent>.md` because the parent
+    // dir of the symlink was the workdir, not the swarm dir.
     let abs_config = config_path
         .canonicalize()
         .unwrap_or_else(|_| config_path.to_path_buf());
+    let config_dir = abs_config
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("config path has no parent dir"))?;
 
     // Host-aware filtering: when this_host is set (cross-host swarm), only
     // scaffold local-host artifacts — agents whose host matches this_host,
