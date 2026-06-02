@@ -328,6 +328,15 @@ pub enum BroadcastPrefix {
     /// `[all]` or no prefix — fire for every participant (with
     /// staggered fanout from `BroadcastConfig.stagger_seconds`).
     All,
+    /// v0.6.3: `[giga-rearm]` — silent watcher-rebinary signal.
+    /// Watcher writes its cursor past this message, then POSIX-execve's
+    /// itself with the same args. New binary loads from disk; Monitor
+    /// task sees no exit; agent's Claude session is never woken.
+    /// Zero API calls swarm-wide. `giga upgrade` posts with this
+    /// prefix as of v0.6.3. Pre-v0.6.3 watchers parse this as None →
+    /// fall back to `All` (wake-up rearm) — backward compat for the
+    /// first upgrade ONTO v0.6.3.
+    GigaRearm,
 }
 
 /// Parse the leading broadcast prefix out of a subject line. Tolerant
@@ -353,6 +362,9 @@ pub fn parse_broadcast_prefix(subject: &str) -> Option<BroadcastPrefix> {
     }
     if lower == "all" {
         return Some(BroadcastPrefix::All);
+    }
+    if lower == "giga-rearm" {
+        return Some(BroadcastPrefix::GigaRearm);
     }
     // `[ack: a, b, c]` form. Split on first `:`.
     if let Some(colon) = inside.find(':') {
@@ -390,6 +402,7 @@ fn strip_timestamp_prefix(s: &str) -> &str {
     let lower = inside.trim().to_ascii_lowercase();
     let is_broadcast_tag = lower == "fyi"
         || lower == "all"
+        || lower == "giga-rearm"
         || lower.starts_with("ack:")
         || lower.starts_with("ack ");
     if looks_like_timestamp && !is_broadcast_tag {
@@ -1718,6 +1731,21 @@ participants = ["a", "b"]
     fn broadcast_config_stagger_zero_disables_fanout_delay() {
         assert_eq!(fanout_delay_seconds("alice", &["alice", "bob"], 0), 0);
         assert_eq!(fanout_delay_seconds("bob", &["alice", "bob"], 0), 0);
+    }
+
+    #[test]
+    /// v0.6.3: `[giga-rearm]` triggers the silent watcher self-rearm
+    /// path. parse_broadcast_prefix returns the new variant so
+    /// watch.rs can dispatch on it.
+    #[test]
+    fn parse_broadcast_prefix_recognizes_giga_rearm() {
+        assert_eq!(parse_broadcast_prefix("[giga-rearm] giga upgraded"), Some(BroadcastPrefix::GigaRearm));
+        assert_eq!(parse_broadcast_prefix("[GIGA-REARM] case insensitive"), Some(BroadcastPrefix::GigaRearm));
+        // After timestamp wrapper.
+        assert_eq!(
+            parse_broadcast_prefix("[design 2026-06-02 12:00 PST] [giga-rearm] please"),
+            Some(BroadcastPrefix::GigaRearm),
+        );
     }
 
     #[test]

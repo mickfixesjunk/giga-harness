@@ -314,6 +314,29 @@ pub fn run_multi(
                 // Broadcast channel: parse subject prefix for filtering + stagger.
                 let subject = extract_subject(line);
                 match config::parse_broadcast_prefix(subject) {
+                    Some(BroadcastPrefix::GigaRearm) => {
+                        // v0.6.3: silent watcher self-rearm. Advance
+                        // the cursor past this message FIRST so the
+                        // new watcher (loaded from disk after exec)
+                        // doesn't re-process the rearm broadcast and
+                        // ping-pong infinitely. Then exec self with
+                        // the same args — POSIX execve replaces the
+                        // process in-place, Monitor's stdout pipe
+                        // stays connected to the same PID running
+                        // new code, and the agent's Claude session
+                        // is never woken. Zero API calls.
+                        eprintln!(
+                            "watch: [giga-rearm] received on `{}` → cursor advanced + execing self",
+                            state.name,
+                        );
+                        if let Some(home) = &giga_home {
+                            cursor::write(home, me, &state.name, state.last_size);
+                        }
+                        self_rearm();
+                        // self_rearm() doesn't return on success; if
+                        // exec failed we keep handling the broadcast
+                        // as if it were [all] (fall through to wake-up).
+                    }
                     Some(BroadcastPrefix::Fyi) => {
                         // Archive; don't fire.
                         if let Some(home) = &giga_home {
@@ -853,4 +876,60 @@ fn slot_for(this_agent: &str, recipients: &[&str]) -> usize {
     let mut sorted: Vec<&str> = recipients.to_vec();
     sorted.sort();
     sorted.iter().position(|a| *a == this_agent).unwrap_or(0)
+}
+
+/// v0.6.3: replace the running watcher process with a fresh `giga
+/// watch` invocation that loads the new binary from disk.
+///
+/// On POSIX, `execve(2)` reuses the same process slot — PID, open
+/// file descriptors, stdio pipes — and replaces the program text +
+/// heap. The Monitor task that spawned us sees no exit; its pipe
+/// stays connected to the new code reading the same channels. The
+/// agent's Claude session is genuinely never woken. Zero API calls
+/// across the whole upgrade-rearm path.
+///
+/// On Windows, exec-in-place isn't available; we fall back to spawn
+/// + exit. Monitor sees the parent die and reports it (which costs
+/// an API call to the agent), but the agent's next turn can re-arm
+/// from CLAUDE.md / AGENTS.md as before. Worse than POSIX, but
+/// matches today's behavior on Windows.
+///
+/// We rebuild the argv from `std::env::args()` so flags like
+/// `--as`, `--codex`, `--agy`, `--stagger-seconds`, `--config` are
+/// preserved verbatim across the rearm.
+fn self_rearm() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "watch: self-rearm failed to resolve current_exe ({e}) — \
+                 falling through to wake-up rearm"
+            );
+            return;
+        }
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    eprintln!(
+        "watch: self-rearm → exec {} {}",
+        exe.display(),
+        args.join(" ")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // exec() only returns on FAILURE. On success, the current
+        // process is replaced — anything below this line never runs.
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        eprintln!(
+            "watch: self-rearm exec failed ({err}) — falling through to wake-up rearm"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: no in-place exec. Spawn + exit. Monitor will see
+        // the parent die; the agent's next turn must re-arm via the
+        // CLAUDE.md/AGENTS.md instructions (today's wake-up flow).
+        let _ = std::process::Command::new(&exe).args(&args).spawn();
+        std::process::exit(0);
+    }
 }

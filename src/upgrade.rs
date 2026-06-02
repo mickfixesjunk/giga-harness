@@ -217,14 +217,23 @@ fn install_remote(config: &std::path::Path, peer: &str, dry_run: bool) -> Result
 /// Post the canonical "please re-arm your watcher" message to one
 /// broadcast channel. Re-invokes this same binary so the post goes
 /// through the standard `giga post` validation + dual-write path.
+///
+/// v0.6.3: subject uses the `[giga-rearm]` prefix. v0.6.3+ watchers
+/// detect this and self-rearm via in-place execve — no agent turn
+/// triggered, no API call. Pre-v0.6.3 watchers don't recognize the
+/// prefix and fall back to the `All` branch (wake-up rearm), so
+/// behavior is backward-compatible during the v0.6.2 → v0.6.3
+/// transition. From the FIRST upgrade onto a v0.6.3+ swarm onward,
+/// rearm broadcasts are silent end-to-end.
 fn post_rearm(config: &std::path::Path, as_agent: &str, channel: &str) -> Result<()> {
-    let subject = "giga upgraded — please re-arm your inbox watcher";
+    let subject = "[giga-rearm] giga upgraded — please re-arm your inbox watcher";
     let body = "giga has been upgraded to the latest release on all hosts. \
-                Please TaskStop your `giga inbox watcher` Monitor — the \
-                current one is still running the pre-upgrade binary in-process \
-                — then re-arm by re-issuing the Monitor TOOL call from your \
-                CLAUDE.md. ~5 seconds; no pending notifications are lost \
-                (your cursor persists across watcher restarts).";
+                v0.6.3+ watchers self-rearm silently via in-place execve on \
+                this `[giga-rearm]` broadcast — no agent turn triggered, no \
+                API call. Pre-v0.6.3 watchers see this as an ordinary \
+                broadcast and need to TaskStop + re-Monitor manually \
+                (one final time; after this upgrade lands, future upgrades \
+                are silent).";
     let status = Command::new(std::env::current_exe()?)
         .args([
             "post",
