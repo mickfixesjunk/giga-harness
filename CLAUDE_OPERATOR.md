@@ -105,7 +105,18 @@ giga upgrade --skip-peers --skip-broadcast   # local-only silent update
 
 Agents see the broadcast, do `TaskStop` on their `giga inbox watcher` Monitor, re-arm from `CLAUDE.md`, new binary loaded. Broadcast itself uses v0.4.0 stagger smoothing automatically.
 
-### 7. Address a broadcast to a subset (v0.4.0)
+### 7. Teleport an agent between hosts
+
+```sh
+giga teleport research --to trinity-wsl                  # full one-shot
+giga teleport research --to trinity-wsl --dry-run        # preview steps
+giga teleport research --to trinity-wsl --keep-running   # don't kill source pane
+giga teleport research --to trinity-wsl --from morpheus-wsl  # explicit source override
+```
+
+Moves the agent's workdir over tailnet SSH (direct A→B; two-hop via operator fallback). Prepends a banner to HANDOVER.md so the agent knows it was moved when it boots on the new host. Kills the source tmux pane gracefully (SIGTERM + 5s + kill). Past channel slice contributions stay where they were (append-only history); future posts go to the new host's slice. Conversation history doesn't transfer — HANDOVER.md is the migration vehicle.
+
+### 8. Address a broadcast to a subset
 
 ```sh
 # Only A and B get a notification; other participants see the message in the

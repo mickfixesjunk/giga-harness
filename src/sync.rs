@@ -400,7 +400,7 @@ pub fn compute_sync_plan(
 /// `path` must already be a forward-slash string — the peer is always
 /// Linux/WSL. Callers compute it via `remote_join()` which normalizes
 /// backslashes that a Windows operator's `PathBuf::display()` would emit.
-fn build_rsync_target(peer: &Host, remote_path: &str) -> Result<String> {
+pub(crate) fn build_rsync_target(peer: &Host, remote_path: &str) -> Result<String> {
     let user = peer
         .ssh_user
         .clone()
@@ -423,7 +423,7 @@ fn build_rsync_target(peer: &Host, remote_path: &str) -> Result<String> {
 /// separator (`\` on a Windows operator), which produces invalid paths
 /// on the Linux peer. Normalize `\` → `/` and trim trailing separators
 /// before joining.
-fn remote_join(dir: &Path, name: &str) -> String {
+pub(crate) fn remote_join(dir: &Path, name: &str) -> String {
     let dir_str = dir.display().to_string().replace('\\', "/");
     let trimmed = dir_str.trim_end_matches('/');
     format!("{trimmed}/{name}")
@@ -549,7 +549,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
 /// binaries (`~/.cargo/bin/giga` etc.) that aren't on PATH for plain
 /// non-interactive ssh. Inherits stderr so the user sees what happens;
 /// captures stdout only (currently unused).
-fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
+pub(crate) fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
     let wrapped = format!(
         "bash -lc {}",
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd))
