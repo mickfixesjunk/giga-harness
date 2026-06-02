@@ -119,7 +119,7 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga sync [--once] [--dry-run] [--quiet]` | Long-running daemon — every 3s, rsync the canonical TOML + own slice files to each peer. Re-reads the config every ~15s so `add-agent` / `add-channel` after launch is picked up automatically. `--once` runs a single tick. `--dry-run` previews. `--quiet` suppresses per-tick chatter (used by swarm_boss Monitors). |
 | `giga merger [--once] [--quiet]` | Long-running daemon — polls all `<channel>.<host>.md` slice files and appends new bytes to the watched `<channel>.md`. Auto-spawned by `giga launch` on cross-host swarms. |
 | `giga post <channel> [--to A,B] [--fyi] ...` | Append a message. For broadcast channels (`_*.md`): `--to` synthesizes `[ack: A, B]` subject prefix so only named agents wake; `--fyi` synthesizes `[fyi]` (zero LLM cost; receivers archive instead of firing). |
-| `giga watch --as <agent> [--stagger-seconds N \| --no-stagger]` | Long-running watcher. Posts on `_*.md` channels stagger per-agent by `slot × stagger_seconds` (default 15s; override via `[broadcast].stagger_seconds` in TOML or `--stagger-seconds N` / `--no-stagger` per invocation). Prevents synchronous N-agent LLM wake-up storms that blow per-account TPM caps. |
+| `giga watch --as <agent> [--stagger-seconds N \| --no-stagger] [--agy \| --codex]` | Long-running watcher. Posts on `_*.md` channels stagger per-agent by `slot × stagger_seconds` (default 15s; override via `[broadcast].stagger_seconds` in TOML or `--stagger-seconds N` / `--no-stagger` per invocation). `--agy` / `--codex` switch the delivery mode for Antigravity / Codex runtimes (see Multi-runtime below). |
 | `giga upgrade [--as <agent>] [--skip-peers] [--skip-broadcast] [--dry-run]` | Install latest giga binary on this host + every peer over `giga remote`, then post a "please re-arm your watcher" broadcast to all `_*.md` channels. Auto-detects `--as` (swarm_boss first; falls back to any local broadcast participant); pass `--as <agent>` to override. |
 
 ## Multi-account switching
@@ -310,6 +310,35 @@ See [BROADCAST_FANOUT_DESIGN.md](BROADCAST_FANOUT_DESIGN.md) for the full design
 ### One-shot upgrade
 
 `giga upgrade` installs the latest binary on this host + every peer over `giga remote`, then posts a "please re-arm your watcher" broadcast to every `_*.md` channel. Auto-detects the posting agent (swarm_boss first; falls back to any local broadcast participant); pass `--as <agent>` to override. Flags: `--skip-peers`, `--skip-broadcast`, `--dry-run`. The broadcast itself uses the stagger limiter automatically.
+
+### Multi-runtime (Claude / Codex / Antigravity)
+
+v0.6.0: swarms can mix agent runtimes on the same channels. Set the project-wide default in TOML:
+
+```toml
+[project]
+runtime = "claude"  # or "codex", "agy"
+```
+
+Or override per-agent:
+
+```toml
+[[agents]]
+name = "research"
+runtime = "agy"
+```
+
+Per-runtime behavior:
+
+| Runtime | Launch command | Watcher mode | Pane count | Coordination |
+|---|---|---|---|---|
+| `claude` (default) | `claude -c` | `giga watch` (Monitor TOOL inside session) | 1 | stdout → Monitor notification |
+| `agy` (Antigravity) | `agy` | `giga watch --agy` (in AGY background task) | 1 | stdout streams to inbox + exit-on-`WAITING ON: <me>` triggers reactive wakeup |
+| `codex` (Codex CLI) | `codex` | `giga watch --codex` (separate `<agent>-bridge` pane) | **2** | JSON envelopes written to `$CODEX_CHANNEL_DIR/inbox/`; codex consumes |
+
+Every agent gets a universal `AGENTS.md` file (not per-runtime). The Session Start section adapts per runtime — Monitor instructions for Claude, `run_command` background-task instructions for AGY, bridge-pane explanation for Codex. Snippets live in `templates/runtimes/{claude,codex,agy}.md` (readable in source) and are bundled into the binary via `include_str!`.
+
+For codex agents specifically, `giga init` scaffolds `<workdir>/codex-channel/{inbox,outbox,processed}` and `giga launch` spawns two panes: `<agent>-cli` (runs the codex CLI with `CODEX_CHANNEL_DIR` set) and `<agent>-bridge` (runs `giga watch --codex`).
 
 ### When NOT to use it (current v1 limitations)
 

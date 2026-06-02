@@ -16,7 +16,7 @@ use crate::cursor;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const RELOAD_EVERY_N_TICKS: u64 = 5;
-static SEQ: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct Args {
     pub me: String,
@@ -233,7 +233,7 @@ fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-fn write_envelope(
+pub(crate) fn write_envelope(
     inbox_dir: &Path,
     swarm: &str,
     me: &str,
