@@ -57,6 +57,14 @@ pub struct Args {
 
 pub fn run(args: Args) -> Result<()> {
     let cfg = Config::load(&args.config)?;
+    // v0.4.5 bug fix: canonicalize the config path before passing it
+    // to subprocesses (giga remote, giga post). Pre-fix: when the
+    // operator ran `giga upgrade` from a non-swarm-dir CWD with the
+    // default `giga-harness.toml`, the subprocess inherited the
+    // operator's CWD and couldn't resolve the relative config path —
+    // the post step failed with "config not found". design saw this
+    // exact failure on 2026-06-02 after a 0.4.2 → 0.4.4 upgrade.
+    let abs_config = std::fs::canonicalize(&args.config).unwrap_or(args.config.clone());
 
     // --- 1. local install ---------------------------------------------
     println!("==> upgrading giga on local host");
@@ -75,7 +83,7 @@ pub fn run(args: Args) -> Result<()> {
     if !peers.is_empty() {
         println!("\n==> upgrading giga on {} peer host(s)", peers.len());
         for peer in &peers {
-            match install_remote(&args.config, peer, args.dry_run) {
+            match install_remote(&abs_config, peer, args.dry_run) {
                 Ok(()) => println!("  + {peer}: upgraded"),
                 Err(e) => eprintln!("  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"),
             }
@@ -134,7 +142,7 @@ pub fn run(args: Args) -> Result<()> {
             println!("  [dry-run] would post to {ch}");
             continue;
         }
-        match post_rearm(&args.config, &posting_agent, ch) {
+        match post_rearm(&abs_config, &posting_agent, ch) {
             Ok(()) => println!("  + posted to {ch}"),
             Err(e) => eprintln!("  ! {ch}: post failed ({e:#})"),
         }

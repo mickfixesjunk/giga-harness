@@ -143,14 +143,14 @@ enum Command {
         #[arg(long, value_name = "MODE", default_value = "auto")]
         terminal: String,
     },
-    /// v0.4.1: install the latest giga binary on this host (and
-    /// optionally on every peer), then post a "please re-arm your
-    /// watcher" broadcast to all `_*.md` channels so agents pick up
-    /// the new binary.
+    /// Install the latest giga binary on this host (and optionally on
+    /// every peer), then post a "please re-arm your watcher" broadcast
+    /// to all `_*.md` channels so agents pick up the new binary.
     ///
-    /// Without flags: updates local + all peers, then asks for `--as`
-    /// to post the broadcast. Pass `--as <agent>` for the one-shot.
-    /// `--skip-peers` / `--skip-broadcast` for partial runs;
+    /// Without flags: updates local + all peers, auto-detects an agent
+    /// to post the broadcast as (swarm_boss preferred; falls back to
+    /// any local broadcast participant). Pass `--as <agent>` to
+    /// override. `--skip-peers` / `--skip-broadcast` for partial runs;
     /// `--dry-run` to preview.
     Upgrade {
         #[arg(long, default_value = "giga-harness.toml")]
@@ -213,27 +213,23 @@ enum Command {
     /// Append a properly-formatted message to a channel file.
     Post {
         /// Channel filename (must match a [[channels]] entry) OR an absolute path.
-        /// May be passed positionally OR via `--channel <name>` (v0.3.7 Bug 8).
+        /// May be passed positionally OR via `--channel <name>`.
         channel: Option<String>,
-        /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): for broadcast channels
-        /// (`_*.md`), address this message to a specific subset of
-        /// participants. Synthesizes a `[ack: a, b, c]` subject prefix
-        /// that the receiver-side watcher honors — only named agents
-        /// fire a Monitor notification. Pass as CSV. No-op on
-        /// non-broadcast channels.
+        /// For broadcast channels (`_*.md`), address this message to a
+        /// specific subset of participants. Synthesizes a `[ack: a, b, c]`
+        /// subject prefix that the receiver-side watcher honors — only
+        /// named agents fire a Monitor notification. Pass as CSV. No-op
+        /// on non-broadcast channels. See BROADCAST_FANOUT_DESIGN.md.
         #[arg(long, value_name = "AGENT-CSV", value_delimiter = ',')]
         to: Vec<String>,
-        /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): mark this broadcast as
-        /// informational. Synthesizes a `[fyi]` subject prefix —
-        /// receiver-side watchers append to a per-agent FYI archive
-        /// instead of firing a Monitor notification (zero LLM cost).
-        /// Mutually exclusive with --to.
+        /// Mark this broadcast as informational. Synthesizes a `[fyi]`
+        /// subject prefix — receiver-side watchers append to a per-agent
+        /// FYI archive instead of firing a Monitor notification (zero
+        /// LLM cost). Mutually exclusive with --to.
         #[arg(long, conflicts_with = "to")]
         fyi: bool,
-        /// v0.3.7 Bug 8: alias for the positional CHANNEL arg. Users
-        /// naturally type `--channel <name>` and clap used to error
-        /// with a misleading "unexpected argument" tip. Now both forms
-        /// work; exactly one must be provided.
+        /// Alias for the positional CHANNEL arg. Either form works;
+        /// exactly one must be provided.
         #[arg(long = "channel", value_name = "CHANNEL")]
         channel_flag: Option<String>,
         /// Your agent name — must match one of the channel's participants.
@@ -357,10 +353,10 @@ enum Command {
         /// Print the planned change without writing.
         #[arg(long)]
         dry_run: bool,
-        /// v0.3.8 Bug 2: name to register THIS host as in [[hosts]]
-        /// during a first-host migration (local-only → multi-host).
-        /// Auto-detected from $HOSTNAME or /etc/hostname when omitted.
-        /// Ignored when the swarm already has [[hosts]] entries.
+        /// Name to register THIS host as in [[hosts]] during a
+        /// first-host migration (local-only → multi-host). Auto-detected
+        /// from $HOSTNAME or /etc/hostname when omitted. Ignored when
+        /// the swarm already has [[hosts]] entries.
         #[arg(long, value_name = "NAME")]
         this_host_name: Option<String>,
         #[arg(long, default_value = "giga-harness.toml")]
@@ -434,16 +430,16 @@ enum Command {
         /// (in multi-channel mode) to enumerate participating channels.
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
-        /// v0.4.0: override the per-swarm broadcast stagger value
-        /// (BROADCAST_FANOUT_DESIGN.md). Affects only this watcher
-        /// invocation. Precedence: --stagger-seconds > TOML
-        /// `[broadcast].stagger_seconds` > 15s default.
+        /// Override the per-swarm broadcast stagger value for this
+        /// watcher invocation. Precedence: --stagger-seconds > TOML
+        /// `[broadcast].stagger_seconds` > 15s default. See
+        /// BROADCAST_FANOUT_DESIGN.md for the fanout-limiter rationale.
         #[arg(long, value_name = "N")]
         stagger_seconds: Option<u64>,
-        /// v0.4.0: shorthand for `--stagger-seconds 0` — instant
-        /// broadcast fanout (today's pre-v0.4.0 behavior). Use when
-        /// you've confirmed rate-limit headroom and want notifications
-        /// to surface ASAP. Mutually exclusive with --stagger-seconds.
+        /// Shorthand for `--stagger-seconds 0` — instant broadcast
+        /// fanout (no per-slot delay). Use when you've confirmed
+        /// rate-limit headroom and want notifications to surface
+        /// ASAP. Mutually exclusive with --stagger-seconds.
         #[arg(long, conflicts_with = "stagger_seconds")]
         no_stagger: bool,
     },
@@ -460,17 +456,17 @@ enum Command {
         /// catch-up scenarios).
         #[arg(long)]
         once: bool,
-        /// Suppress per-tick startup chatter; only emit on errors. Set
-        /// by the swarm_boss CLAUDE.md Monitor lines so the agent's
-        /// notification stream doesn't flood. (v0.3.6)
+        /// Suppress startup chatter; only emit on errors. Set by the
+        /// swarm_boss CLAUDE.md Monitor lines so the agent's
+        /// notification stream doesn't flood.
         #[arg(long)]
         quiet: bool,
     },
     /// Long-running sync daemon — every ~3s, rsync the canonical
     /// giga-harness.toml + own slice files to each peer host over
-    /// Tailscale SSH (per REMOTE_DESIGN.md §4). v0.4.2: the daemon
-    /// re-reads the config every ~15s so `add-agent` / `add-channel`
-    /// after launch is picked up automatically.
+    /// Tailscale SSH (per REMOTE_DESIGN.md §4). Re-reads the config
+    /// every ~15s so `add-agent` / `add-channel` after launch is
+    /// picked up automatically.
     ///
     /// Runs alongside `giga watch` + `giga merger` per host. No-op when
     /// the swarm has no [[hosts]] (today's local-only swarms).
@@ -484,10 +480,10 @@ enum Command {
         /// Combine with --once for a no-side-effects preview.
         #[arg(long)]
         dry_run: bool,
-        /// Suppress per-tick summary lines (v0.3.4 F10); only emit on
-        /// errors and startup. Set by the swarm_boss CLAUDE.md Monitor
-        /// lines so the agent's notification stream doesn't flood with
-        /// "tick complete: N attempted" every 3 seconds. (v0.3.6)
+        /// Suppress per-tick summary lines; only emit on errors and
+        /// startup. Set by the swarm_boss CLAUDE.md Monitor lines so
+        /// the agent's notification stream doesn't flood with "tick
+        /// complete: N attempted" every 3 seconds.
         #[arg(long)]
         quiet: bool,
     },

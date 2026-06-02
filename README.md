@@ -116,11 +116,11 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga setup --remote-node` | Bootstrap a bare WSL host as a swarm peer: installs Tailscale + rsync, runs `tailscale up` (interactive auth), enables Tailscale SSH, creates the inbox dir. Run on the new host first; then `add-host` from operator side. |
 | `giga add-host --name H --tailnet-hostname FQDN [--ssh-user U] [--remote-config-dir P] [--remote-inbox-dir P]` | Append a `[[hosts]]` entry to the canonical TOML and (by default) auto-bootstrap the new peer: mkdir + rsync swarm dir + ensure peer's `this_host.toml`. `--no-bootstrap` opts out. |
 | `giga remote --host H -- <subcommand>` | SSH passthrough primitive — runs any giga subcommand on the peer over Tailscale SSH, streaming stdout/stderr back. `--host H` flags on add-agent/sweep/launch are sugar over this. Note: put trailing args after `--`. |
-| `giga sync [--once] [--dry-run] [--quiet]` | Long-running daemon — every 3s, rsync the canonical TOML + own slice files to each peer. Re-reads the config every ~15s (v0.4.2) so `add-agent` / `add-channel` after launch is picked up automatically. `--once` runs a single tick. `--dry-run` previews. `--quiet` suppresses per-tick chatter (used by swarm_boss Monitors). |
+| `giga sync [--once] [--dry-run] [--quiet]` | Long-running daemon — every 3s, rsync the canonical TOML + own slice files to each peer. Re-reads the config every ~15s so `add-agent` / `add-channel` after launch is picked up automatically. `--once` runs a single tick. `--dry-run` previews. `--quiet` suppresses per-tick chatter (used by swarm_boss Monitors). |
 | `giga merger [--once] [--quiet]` | Long-running daemon — polls all `<channel>.<host>.md` slice files and appends new bytes to the watched `<channel>.md`. Auto-spawned by `giga launch` on cross-host swarms. |
-| `giga post <channel> [--to A,B] [--fyi] ...` | v0.4.0 sender sugar for broadcast channels (`_*.md`): `--to` synthesizes `[ack: A, B]` subject prefix so only named agents wake; `--fyi` synthesizes `[fyi]` (zero LLM cost; receivers archive instead of firing). |
-| `giga watch --as <agent> [--stagger-seconds N \| --no-stagger]` | v0.4.0 receiver fanout limiter: posts on `_*.md` channels stagger per-agent by `slot × stagger_seconds` (default 15s; override via `[broadcast].stagger_seconds` in TOML or `--stagger-seconds N` / `--no-stagger` per invocation). Prevents synchronous N-agent LLM wake-up storms that blow per-account TPM caps. |
-| `giga upgrade --as <agent> [--skip-peers] [--skip-broadcast] [--dry-run]` | v0.4.1: install latest giga binary on this host + every peer over `giga remote`, then post a "please re-arm your watcher" broadcast to all `_*.md` channels. `--as <agent>` is the slug to post as (must be a broadcast-channel participant). Omit `--as` to skip the post and print the manual command instead. |
+| `giga post <channel> [--to A,B] [--fyi] ...` | Append a message. For broadcast channels (`_*.md`): `--to` synthesizes `[ack: A, B]` subject prefix so only named agents wake; `--fyi` synthesizes `[fyi]` (zero LLM cost; receivers archive instead of firing). |
+| `giga watch --as <agent> [--stagger-seconds N \| --no-stagger]` | Long-running watcher. Posts on `_*.md` channels stagger per-agent by `slot × stagger_seconds` (default 15s; override via `[broadcast].stagger_seconds` in TOML or `--stagger-seconds N` / `--no-stagger` per invocation). Prevents synchronous N-agent LLM wake-up storms that blow per-account TPM caps. |
+| `giga upgrade [--as <agent>] [--skip-peers] [--skip-broadcast] [--dry-run]` | Install latest giga binary on this host + every peer over `giga remote`, then post a "please re-arm your watcher" broadcast to all `_*.md` channels. Auto-detects `--as` (swarm_boss first; falls back to any local broadcast participant); pass `--as <agent>` to override. |
 
 ## Multi-account switching
 
@@ -263,12 +263,12 @@ ssh_user = "neo"                                       # optional; defaults to $
 remote_config_dir = "/home/neo/.giga/configs/<swarm>"  # optional; defaults to local path
 remote_inbox_dir  = "/tmp/<swarm>-inbox"               # optional; defaults to paths.wsl_inbox
 
-[[hosts.paths]]                                        # v0.3.2: per-host inbox override
+[[hosts.paths]]                                        # per-host inbox override
 wsl_inbox = "/home/<their-user>/projects/inbox"
 
 [[agents]]
 host = "wsl-b"                                         # which host this agent runs on
-swarm_boss = true                                      # v0.3.6: hosts sync + merger as Monitors (optional, one per host)
+swarm_boss = true                                      # hosts sync + merger as Monitors (optional, one per host)
 ```
 
 Plus a one-line `this_host.toml` next to the canonical config on each host:
@@ -277,7 +277,7 @@ Plus a one-line `this_host.toml` next to the canonical config on each host:
 this_host = "wsl-a"
 ```
 
-### Where the sync + merger daemons run (v0.3.6: `swarm_boss`)
+### Where the sync + merger daemons run (`swarm_boss`)
 
 Each multi-host host needs one `giga sync` daemon (pushes its own slices to peers) and one `giga merger` daemon (pulls peer slices into local merged files). By default `giga launch` spawns them as tmux panes alongside the agent panes.
 
@@ -294,9 +294,9 @@ That agent's `CLAUDE.md` (generated by `giga init`) auto-includes two `Monitor` 
 
 Trade-off: when the swarm_boss agent's Claude session ends, the daemons die — cross-host comms degrade for that host until restart. Pick a long-lived, low-churn agent as the boss (e.g. `design`, not an actively-iterating code agent). The Monitor architecture also keeps an LLM in the loop for daemon errors — rsync failures and peer-unreachable events surface as notifications the agent can flag rather than dying silently in a tmux pane. See [SWARM_BOSS_DESIGN.md](SWARM_BOSS_DESIGN.md) for the trade-offs and failure modes.
 
-### Broadcast fanout limiter (v0.4.0)
+### Broadcast fanout limiter
 
-Posts on `_*.md` (broadcast) channels can wake every channel participant within a single 3-second poll tick. With ~17 agents at ~100K input tokens each, a synchronous broadcast = ~1.7M tokens per Anthropic TPM window — blows even Tier 4 caps. v0.4.0 introduces a receiver-side fanout limiter:
+Posts on `_*.md` (broadcast) channels can wake every channel participant within a single 3-second poll tick. With ~17 agents at ~100K input tokens each, a synchronous broadcast = ~1.7M tokens per Anthropic TPM window — blows even Tier 4 caps. The receiver-side fanout limiter:
 
 - **Staggered fanout** — watcher delays each broadcast notification by `slot × stagger_seconds` (default 15s; per-agent slot is alphabetical-sort position; deterministic across restarts). 17 agents → ~4-minute fanout window. Override per-swarm via `[broadcast].stagger_seconds = N` in TOML; per-invocation via `giga watch --stagger-seconds N` or `--no-stagger`.
 - **Subject-prefix filtering** — three conventions parsed from the subject:
@@ -307,9 +307,9 @@ Posts on `_*.md` (broadcast) channels can wake every channel participant within 
 
 See [BROADCAST_FANOUT_DESIGN.md](BROADCAST_FANOUT_DESIGN.md) for the full design.
 
-### One-shot upgrade (v0.4.1)
+### One-shot upgrade
 
-`giga upgrade --as <agent>` installs the latest binary on this host + every peer over `giga remote`, then posts a "please re-arm your watcher" broadcast to every `_*.md` channel. Flags: `--skip-peers`, `--skip-broadcast`, `--dry-run`. The broadcast itself uses v0.4.0 stagger smoothing automatically.
+`giga upgrade` installs the latest binary on this host + every peer over `giga remote`, then posts a "please re-arm your watcher" broadcast to every `_*.md` channel. Auto-detects the posting agent (swarm_boss first; falls back to any local broadcast participant); pass `--as <agent>` to override. Flags: `--skip-peers`, `--skip-broadcast`, `--dry-run`. The broadcast itself uses the stagger limiter automatically.
 
 ### When NOT to use it (current v1 limitations)
 
