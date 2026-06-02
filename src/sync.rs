@@ -36,6 +36,12 @@ use anyhow::{anyhow, Context, Result};
 use crate::config::{Config, Host};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// v0.4.2 Bug 11 fix: how many ticks between config rereads. Matches
+/// the watch + merger cadence (5 × 3s = ~15s). Without this, the
+/// sync daemon iterates the channel/host list it captured at startup
+/// forever — `giga add-agent` / `giga add-channel` after launch
+/// silently disappear from the push set.
+const RELOAD_EVERY_N_TICKS: u64 = 5;
 
 pub struct Args {
     pub config: PathBuf,
@@ -75,7 +81,7 @@ fn quiet() -> bool {
 
 pub fn run(args: Args) -> Result<()> {
     QUIET.store(args.quiet, std::sync::atomic::Ordering::Relaxed);
-    let cfg = Config::load(&args.config)?;
+    let mut cfg = Config::load(&args.config)?;
     if cfg.hosts.is_empty() {
         eprintln!("sync: no [[hosts]] declared — local-only swarm, nothing to sync. Exiting.");
         return Ok(());
@@ -118,6 +124,7 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    let mut tick: u64 = 0;
     loop {
         if let Err(e) = transport.tick(&cfg, &this_host, args.dry_run) {
             eprintln!("sync: {} tick failed ({e}) — will retry next tick", transport.name());
@@ -126,6 +133,24 @@ pub fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         thread::sleep(POLL_INTERVAL);
+        tick = tick.wrapping_add(1);
+        // v0.4.2 Bug 11 fix: re-read the config every RELOAD_EVERY_N_TICKS.
+        // Without this, `giga add-agent` / `giga add-channel` after the
+        // daemon launches are silently invisible — the push set is the
+        // startup snapshot. Reload failure (transient TOML race) keeps
+        // the current cfg, matching watch + merger behavior.
+        if tick % RELOAD_EVERY_N_TICKS == 0 {
+            match Config::load(&args.config) {
+                Ok(new_cfg) => {
+                    cfg = new_cfg;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "sync: config reload failed ({e}) — keeping previous snapshot"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1114,5 +1139,61 @@ host = "wsl-only"
         // so compare against the canonicalized fixture path too.
         let expected = std::fs::canonicalize(&config_path).unwrap_or(config_path.clone());
         assert_eq!(resolved, expected);
+    }
+
+    /// v0.4.2 Bug 11 fix: the daemon loop reloads cfg every
+    /// RELOAD_EVERY_N_TICKS. This test simulates the reload semantic
+    /// by computing a sync plan against a config, then mutating the
+    /// file, then reloading + recomputing the plan, and asserting the
+    /// post-mutation plan reflects the new channel. Pre-fix the
+    /// daemon would have kept iterating the original snapshot
+    /// forever; this asserts the fix's contract end-to-end at the
+    /// data-flow level.
+    #[test]
+    fn config_reload_picks_up_newly_added_channel_at_runtime() {
+        let (_tmp, config_path) = fixture("wsl-a");
+        let cfg_before = Config::load(&config_path).unwrap();
+        let plan_before = compute_sync_plan(&cfg_before, "wsl-a", &config_path);
+        let slice_pushes_before: Vec<_> =
+            plan_before.iter().filter(|c| c.kind == "slice").collect();
+        assert_eq!(slice_pushes_before.len(), 1, "fixture starts with 1 cross-host channel");
+
+        // Mutate the on-disk config to add another cross-host channel
+        // (simulates `giga add-channel` or `giga add-agent` after the
+        // daemon launched).
+        let mut text = fs::read_to_string(&config_path).unwrap();
+        text.push_str(
+            r#"
+[[agents]]
+name = "carol"
+workdir = "/h/carol"
+role = "."
+platform = "wsl"
+host = "wsl-b"
+
+[[channels]]
+file = "alice-carol.md"
+side = "wsl"
+participants = ["alice", "carol"]
+"#,
+        );
+        fs::write(&config_path, text).unwrap();
+
+        let cfg_after = Config::load(&config_path).unwrap();
+        let plan_after = compute_sync_plan(&cfg_after, "wsl-a", &config_path);
+        let slice_pushes_after: Vec<_> =
+            plan_after.iter().filter(|c| c.kind == "slice").collect();
+        assert_eq!(
+            slice_pushes_after.len(),
+            2,
+            "post-reload plan must include the newly-added channel's slice push"
+        );
+        assert!(
+            slice_pushes_after.iter().any(|c| c
+                .local_path
+                .to_string_lossy()
+                .ends_with("alice-carol.wsl-a.md")),
+            "new channel `alice-carol.md` slice push missing from reloaded plan"
+        );
     }
 }

@@ -94,6 +94,31 @@ giga sweep --host <peer>          # run sweep on a peer (SSHs there)
 giga hosts                        # who lives where
 ```
 
+### 6. Upgrade the binary across the whole swarm (v0.4.1)
+
+```sh
+giga upgrade --as design          # installs latest on this host + all peers,
+                                  # posts rearm broadcast on every _*.md
+giga upgrade --dry-run --as design   # preview without running anything
+giga upgrade --skip-peers --skip-broadcast   # local-only silent update
+```
+
+Agents see the broadcast, do `TaskStop` on their `giga inbox watcher` Monitor, re-arm from `CLAUDE.md`, new binary loaded. Broadcast itself uses v0.4.0 stagger smoothing automatically.
+
+### 7. Address a broadcast to a subset (v0.4.0)
+
+```sh
+# Only A and B get a notification; other participants see the message in the
+# channel file but their watchers stay silent.
+giga post _broadcast --as design --to alice,bob \
+  --subject "scope question" --body "..."
+
+# FYI — no Monitor notification fires for ANYONE. Archived to
+# ~/.giga/fyi-archive.<agent>.log per receiver.
+giga post _broadcast --as design --fyi \
+  --subject "morpheus came online" --body "..."
+```
+
 ## Sharp edges (what to know)
 
 1. **`giga remote --host H -- <sub> --flag X`** — flags AFTER the `--` go to the remote subcommand; flags before `--` go to giga remote. Without the `--`, clap captures `--config` as giga remote's own arg and the remote sub sees the wrong (or no) config.

@@ -468,7 +468,9 @@ enum Command {
     },
     /// Long-running sync daemon — every ~3s, rsync the canonical
     /// giga-harness.toml + own slice files to each peer host over
-    /// Tailscale SSH (per REMOTE_DESIGN.md §4).
+    /// Tailscale SSH (per REMOTE_DESIGN.md §4). v0.4.2: the daemon
+    /// re-reads the config every ~15s so `add-agent` / `add-channel`
+    /// after launch is picked up automatically.
     ///
     /// Runs alongside `giga watch` + `giga merger` per host. No-op when
     /// the swarm has no [[hosts]] (today's local-only swarms).
