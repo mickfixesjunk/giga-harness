@@ -1,6 +1,6 @@
 [package]
 name = "giga-harness"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 description = "Manual multi-agent coordination harness — one command, N terminals, agents chatting via file-based inboxes."
 repository = "https://github.com/mickfixesjunk/giga-harness"

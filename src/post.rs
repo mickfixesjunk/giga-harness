@@ -4,7 +4,7 @@
 //! header block or forget the WAITING ON / informational tag.
 
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -168,50 +168,89 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Append `bytes` to `path`, attempting an exclusive file lock for
-/// the duration of the write but falling back to a plain append if
-/// the lock can't be acquired.
+/// Append `bytes` to `path` under an exclusive file lock that
+/// works on both POSIX and Windows.
 ///
-/// The lock prevents torn frames when post and merger both write to
-/// the merged file concurrently (v0.3.5 dual-write for cross-host
-/// channels). POSIX O_APPEND alone is atomic up to PIPE_BUF (4KB);
-/// typical posts fit, but large reports (~10KB) can split into
-/// multiple write syscalls and interleave.
+/// The lock serializes concurrent writers to prevent torn frames
+/// (v0.3.5 dual-write for cross-host channels: both `post` and
+/// `merger` write the merged file). POSIX `O_APPEND` alone is
+/// atomic only up to PIPE_BUF (4KB) — typical posts fit, large
+/// reports (~10KB) can interleave without the lock.
 ///
-/// v0.3.9 Bug 11 fix: on Windows, `File::lock` regularly returns
-/// `ERROR_ACCESS_DENIED` when ANY conflicting handle exists on the
-/// same file (antivirus, Windows Search indexer, stale handles from
-/// crashed processes). Previously this errored every `giga post` and
-/// fully blocked posting from Windows agents. The lock is now
-/// best-effort: try to acquire it, log a one-line warning on
-/// failure, and proceed with plain append. Typical posts (single
-/// frame ≤ 4KB) are atomic without the lock; larger frames have a
-/// small torn-write risk that's acceptable vs the "posts fail
-/// entirely" alternative.
+/// v0.4.4 Bug 11 root-cause fix (Windows agent's diagnosis):
+/// `OpenOptions::append(true)` on Windows opens the file with
+/// `FILE_APPEND_DATA` access only. `LockFileEx` requires
+/// `GENERIC_READ` or `GENERIC_WRITE`, so the lock call returns
+/// `ERROR_ACCESS_DENIED` (os error 5) regardless of whether
+/// anything actually holds a lock. v0.3.9 worked around this with
+/// try-lock-then-fall-back-to-plain-append, but the lock NEVER
+/// succeeded on Windows — the fallback path ran 100% of the time.
 ///
-/// Uses stdlib `File::lock` (stable since 1.89).
+/// Proper fix: open the file with `read(true).write(true).create(true)`
+/// (translates to `GENERIC_READ | GENERIC_WRITE` on Windows;
+/// `O_RDWR | O_CREAT` on POSIX). That satisfies `LockFileEx`. Then
+/// explicitly `seek(End)` inside the locked region before each
+/// write — without `O_APPEND`, the kernel no longer seeks for us,
+/// but the lock now serializes seek+write atomically across
+/// processes (same end-state as O_APPEND, just explicit).
+///
+/// If the lock acquire fails for some OTHER reason (rare — true
+/// contention from a misbehaving process, etc.), we fall back to
+/// `O_APPEND`-style plain append for resilience.
 pub(crate) fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
-    let f = OpenOptions::new()
+    // v0.4.4: read+write open so LockFileEx works on Windows.
+    let open_result = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path);
+    let mut f = match open_result {
+        Ok(f) => f,
+        Err(_) => {
+            // Open failed — fall through to plain append. This is
+            // the legitimate retry path (e.g., race during file
+            // creation, transient FS issue).
+            return append_plain(path, bytes);
+        }
+    };
+    let locked = f.lock().is_ok();
+    if !locked {
+        // Unexpected on v0.4.4+ — proper open should always satisfy
+        // LockFileEx now. Fall back gracefully and surface the
+        // unexpected.
+        eprintln!(
+            "post: couldn't acquire exclusive lock on {} despite read+write open — \
+             proceeding without lock (rare; investigate if persistent)",
+            path.display(),
+        );
+        drop(f);
+        return append_plain(path, bytes);
+    }
+    // Lock held. Explicit seek-to-end (we opened R/W, not O_APPEND).
+    let seek_result = f.seek(SeekFrom::End(0));
+    if let Err(e) = seek_result {
+        let _ = f.unlock();
+        return Err(anyhow!("seek to end of {} failed: {e}", path.display()));
+    }
+    let write_result = f.write_all(bytes);
+    // File::unlock is implicit on drop, but call explicitly to keep
+    // the locked window tight and surface unlock errors.
+    let _ = f.unlock();
+    write_result.with_context(|| format!("writing to {}", path.display()))?;
+    Ok(())
+}
+
+/// Fallback append path used when the read+write open or the lock
+/// acquire fails. Plain `OpenOptions::append(true)`; on POSIX this
+/// preserves O_APPEND kernel-side atomicity for ≤4KB writes.
+fn append_plain(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut f = OpenOptions::new()
         .append(true)
         .create(true)
         .open(path)
         .with_context(|| format!("opening {} for append", path.display()))?;
-    let locked = f.lock().is_ok();
-    let result = (&f).write_all(bytes);
-    if locked {
-        // File::unlock is implicit on drop, but call explicitly to
-        // surface any errors and to keep the lock window as tight as
-        // possible.
-        let _ = f.unlock();
-    } else {
-        eprintln!(
-            "post: couldn't acquire exclusive lock on {} — proceeding without it \
-             (typical posts ≤4KB are atomic on POSIX O_APPEND without the lock; \
-             larger frames have a small torn-write risk)",
-            path.display(),
-        );
-    }
-    result.with_context(|| format!("writing to {}", path.display()))?;
+    f.write_all(bytes)
+        .with_context(|| format!("writing to {}", path.display()))?;
     Ok(())
 }
 
@@ -297,6 +336,45 @@ mod tests {
     use super::*;
 
     const TS: &str = "2026-05-25T12:00:00Z";
+
+    /// v0.4.4 Bug 11 root-cause fix: append_with_lock succeeds via
+    /// the locked path (read+write open + LockFileEx). On Windows
+    /// pre-v0.4.4 the lock attempt returned ERROR_ACCESS_DENIED
+    /// because OpenOptions::append's FILE_APPEND_DATA-only handle
+    /// can't be locked. This test exercises the happy path on
+    /// whichever platform CI runs.
+    #[test]
+    fn append_with_lock_appends_and_releases_cleanly() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("under-lock.md");
+        append_with_lock(&path, b"first frame\n").unwrap();
+        append_with_lock(&path, b"second frame\n").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "first frame\nsecond frame\n");
+
+        // After the call returns, the file must NOT be left locked
+        // — a subsequent open + lock must succeed without contention.
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .unwrap();
+        f.lock().expect("file must be unlocked after append_with_lock returns");
+    }
+
+    /// v0.4.4: when the file doesn't yet exist, append_with_lock
+    /// creates it (`.create(true)`).
+    #[test]
+    fn append_with_lock_creates_missing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("brand-new.md");
+        assert!(!path.exists());
+        append_with_lock(&path, b"hello\n").unwrap();
+        assert!(path.exists());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "hello\n");
+    }
 
     #[test]
     fn informational_block_uses_no_response_required_footer() {
