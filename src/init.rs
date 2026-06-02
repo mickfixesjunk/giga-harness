@@ -171,20 +171,12 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
             .with_context(|| format!("write {}", agents_md_path.display()))?;
         println!("  [gen]  {}", agents_md_path.display());
 
-        // v0.6.0: belt-and-suspenders CLAUDE.md → AGENTS.md symlink
-        // for Claude-runtime agents on platforms where Claude Code
-        // doesn't yet auto-read AGENTS.md. Idempotent. Linux/macOS
-        // only — Windows agents read CLAUDE.md from a different
-        // launcher convention.
-        #[cfg(unix)]
-        if cfg.agent_runtime(agent) == crate::runtime::Runtime::Claude
-            && agent.platform != "windows"
-        {
-            let claudemd_link = host_workdir.join("CLAUDE.md");
-            if claudemd_link.symlink_metadata().is_err() {
-                let _ = std::os::unix::fs::symlink("AGENTS.md", &claudemd_link);
-            }
-        }
+        // v0.6.7: removed the v0.6.0 belt-and-suspenders
+        // CLAUDE.md → AGENTS.md symlink. Modern Claude Code reads
+        // AGENTS.md natively; the symlink was for legacy versions
+        // that's a non-issue now. Single source of truth: AGENTS.md.
+        // Existing CLAUDE.md files in workdirs are left untouched —
+        // operator cleanup script (one-liner) handles old swarms.
 
         // v0.6.0: for codex-runtime agents, scaffold the channel-bridge
         // directory tree under the agent's workdir. The codex CLI reads
@@ -809,7 +801,9 @@ host = "host-b"
         run_with(&config_path, false).unwrap();
 
         // alice's workdir created; bob's was skipped (lives on host-b).
-        assert!(tmp.path().join("alice-wd").join("CLAUDE.md").exists());
+        // v0.6.7: AGENTS.md is the universal filename; CLAUDE.md is no
+        // longer auto-symlinked.
+        assert!(tmp.path().join("alice-wd").join("AGENTS.md").exists());
         assert!(
             !tmp.path().join("bob-wd").exists(),
             "bob's workdir must NOT be created on host-a (lives on host-b)"
