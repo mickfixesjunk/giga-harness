@@ -25,10 +25,21 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::config::{self, BroadcastPrefix, Config};
 use crate::cursor;
+
+/// v0.6.0: watch delivery mode. Default = Claude (stdout lines for
+/// Monitor tool). `--agy` = stdout lines + flush + exit-on-WAITING-ON-me.
+/// `--codex` = write JSON envelopes to `$CODEX_CHANNEL_DIR/inbox/`.
+/// Mutually exclusive at the CLI level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchMode {
+    Default,
+    Agy,
+    Codex,
+}
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// How many poll ticks between config rereads. 5 ticks * 3s = ~15s,
@@ -81,7 +92,13 @@ fn agent_is_busy(lock: Option<&PathBuf>) -> bool {
 
 /// Single-file mode — legacy form, preserved for backward compat with
 /// agents whose CLAUDE.md still spells out one Monitor per channel.
-pub fn run_single(channel: &Path, me: &str) -> Result<()> {
+pub fn run_single(channel: &Path, me: &str, mode: WatchMode) -> Result<()> {
+    if matches!(mode, WatchMode::Codex) {
+        return Err(anyhow!(
+            "--codex requires multi-channel mode (omit the positional CHANNEL arg) — \
+             single-channel codex watching isn't supported; the bridge needs access to all channels"
+        ));
+    }
     if !channel.exists() {
         anyhow::bail!("channel file not found: {}", channel.display());
     }
@@ -120,6 +137,13 @@ pub fn run_single(channel: &Path, me: &str) -> Result<()> {
         }
         for line in pending.drain(..) {
             println!("{line}");
+            if matches!(mode, WatchMode::Agy) {
+                let _ = std::io::stdout().flush();
+                if is_waiting_on_me(channel, me) {
+                    eprintln!("watch [agy]: WAITING ON `{me}` detected → exit 0");
+                    std::process::exit(0);
+                }
+            }
         }
     }
 }
@@ -131,7 +155,12 @@ pub fn run_single(channel: &Path, me: &str) -> Result<()> {
 /// (written by `giga catchup` or a previous watch session) so the
 /// agent is not re-notified about messages it has already seen.
 /// Newly-discovered channels with no cursor fall back to current EOF.
-pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) -> Result<()> {
+pub fn run_multi(
+    config_path: &Path,
+    me: &str,
+    stagger_override: Option<u64>,
+    mode: WatchMode,
+) -> Result<()> {
     if !config_path.exists() {
         anyhow::bail!(
             "config file not found: {} — pass --config <path>",
@@ -144,8 +173,45 @@ pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) ->
     let mut tracked: HashMap<String, ChannelState> = HashMap::new();
     let mut tick: u64 = 0;
 
+    // v0.6.0: --agy implies --no-stagger. AGY's reactive-wakeup model
+    // doesn't benefit from staggering (no TPM-burst risk per slot;
+    // delayed delivery defeats the wake-on-task-exit signal).
+    let effective_stagger_override = if matches!(mode, WatchMode::Agy) {
+        Some(0)
+    } else {
+        stagger_override
+    };
+
+    // v0.6.0: --codex needs $CODEX_CHANNEL_DIR pointing at the per-agent
+    // bridge directory (created by `giga init` for codex agents).
+    // Validate up-front so we fail loud on the operator's pane instead
+    // of silently dropping envelopes.
+    let codex_inbox = if matches!(mode, WatchMode::Codex) {
+        let dir = std::env::var("CODEX_CHANNEL_DIR").map_err(|_| {
+            anyhow!(
+                "--codex requires CODEX_CHANNEL_DIR env var (path to the agent's codex-channel/ dir). \
+                 `giga launch` sets this automatically for codex agents."
+            )
+        })?;
+        let inbox = PathBuf::from(dir).join("inbox");
+        if !inbox.exists() {
+            return Err(anyhow!(
+                "codex inbox dir not found: {} — run `giga init` to scaffold it",
+                inbox.display(),
+            ));
+        }
+        Some(inbox)
+    } else {
+        None
+    };
+
+    // Swarm name (for envelope `swarm` field) loaded once.
+    let swarm_name = Config::load(config_path)
+        .map(|c| c.project.name.clone())
+        .unwrap_or_else(|_| "unknown".to_string());
+
     // v0.4.0: resolve the broadcast stagger value. CLI > TOML > 15s default.
-    let stagger_seconds = match stagger_override {
+    let stagger_seconds = match effective_stagger_override {
         Some(v) => v,
         None => Config::load(config_path)
             .map(|c| c.broadcast.stagger_seconds)
@@ -270,6 +336,7 @@ pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) ->
             continue;
         }
         let now = Instant::now();
+        let mut should_exit_for_agy = false;
         for state in tracked.values_mut() {
             if state.pending.is_empty() {
                 continue;
@@ -277,7 +344,53 @@ pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) ->
             let mut still_pending: Vec<(Instant, String)> = Vec::new();
             for (ready_at, line) in state.pending.drain(..) {
                 if ready_at <= now {
-                    println!("{line}");
+                    // v0.6.0: dispatch on watch mode.
+                    match mode {
+                        WatchMode::Default => {
+                            println!("{line}");
+                        }
+                        WatchMode::Agy => {
+                            println!("{line}");
+                            // Force-flush so AGY's stdout-stream
+                            // delivers immediately (no line-buffering).
+                            let _ = std::io::stdout().flush();
+                            // If the channel's latest message is
+                            // WAITING ON us, exit 0 — triggers AGY's
+                            // task-completion wakeup with the action
+                            // already delivered.
+                            if is_waiting_on_me(&state.path, me) {
+                                should_exit_for_agy = true;
+                            }
+                        }
+                        WatchMode::Codex => {
+                            // Write a brief envelope into the codex
+                            // inbox dir. The codex CLI picks it up,
+                            // surfaces it to the agent, and writes a
+                            // receipt to the outbox.
+                            if let Some(inbox) = &codex_inbox {
+                                let text = format!(
+                                    "Giga inbox notification for `{me}`.\n\n\
+                                     Channel: {channel}\n\
+                                     Path: {path}\n\
+                                     Header: {line}\n\n\
+                                     Read the channel file, follow your agent instructions, \
+                                     and respond via `giga post` if the message requires action.",
+                                    channel = state.name,
+                                    path = state.path.display(),
+                                );
+                                if let Err(e) = crate::codex_channel::write_envelope(
+                                    inbox,
+                                    &swarm_name,
+                                    me,
+                                    &state.name,
+                                    state.last_size,
+                                    &text,
+                                ) {
+                                    eprintln!("watch [codex]: envelope write failed: {e:#}");
+                                }
+                            }
+                        }
+                    }
                 } else {
                     still_pending.push((ready_at, line));
                 }
@@ -288,6 +401,13 @@ pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) ->
                     cursor::write(home, me, &state.name, state.last_size);
                 }
             }
+        }
+        // v0.6.0: AGY exit-on-WAITING-ON happens AFTER the cursor write
+        // so the persisted state reflects what we delivered. The next
+        // re-armed `giga watch --agy` resumes from the right offset.
+        if should_exit_for_agy {
+            eprintln!("watch [agy]: WAITING ON `{me}` detected → exiting 0 to fire AGY task-completion wakeup");
+            std::process::exit(0);
         }
     }
 }
@@ -537,6 +657,50 @@ mod tests {
         assert!(!agent_is_busy(Some(&lock)));
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// v0.6.0: is_waiting_on_me returns true when the LATEST message
+    /// on the channel has a `WAITING ON: <me>` footer.
+    #[test]
+    fn is_waiting_on_me_detects_direct_addressed_footer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(&path, "===\n[design] hello — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n").unwrap();
+        assert!(is_waiting_on_me(&path, "research"));
+        assert!(!is_waiting_on_me(&path, "design"));
+    }
+
+    /// v0.6.0: informational footer means NO ONE is waited on.
+    #[test]
+    fn is_waiting_on_me_returns_false_for_informational() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(&path, "===\n[design] FYI — 2026-06-02T00:00:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n").unwrap();
+        assert!(!is_waiting_on_me(&path, "research"));
+        assert!(!is_waiting_on_me(&path, "design"));
+    }
+
+    /// v0.6.0: only the LAST message matters — older WAITING ON lines
+    /// don't trigger if a subsequent message is informational or
+    /// addresses someone else.
+    #[test]
+    fn is_waiting_on_me_only_considers_latest_message() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(
+            &path,
+            "===\n[design] first — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n\n\
+             ===\n[research] reply — 2026-06-02T00:01:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n",
+        )
+        .unwrap();
+        // The LATEST message is informational → research is no longer waited on.
+        assert!(!is_waiting_on_me(&path, "research"));
+    }
+
+    /// v0.6.0: missing file = no, not panic.
+    #[test]
+    fn is_waiting_on_me_returns_false_for_missing_file() {
+        assert!(!is_waiting_on_me(Path::new("/nonexistent/__giga_test"), "anyone"));
+    }
 }
 
 fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
@@ -582,4 +746,48 @@ fn append_fyi_archive(giga_home: &Path, agent: &str, channel: &str, header: &str
             archive_path.display(),
         );
     }
+}
+
+/// v0.6.0: scan the channel file's LAST header block for a
+/// `WAITING ON: <agent>` line. Returns true when the latest message
+/// is actively addressed to `me`. Used by `--agy` mode to decide
+/// whether to exit cleanly (firing AGY's task-completion wakeup).
+///
+/// Naive single-target parse: matches the first non-`<` token on the
+/// WAITING ON line. Tolerates surrounding punctuation. Multi-target
+/// "WAITING ON: a, b" is treated as "waiting on a" (good enough for
+/// v1; refinement deferred to multi-target spec if it ships).
+fn is_waiting_on_me(path: &Path, me: &str) -> bool {
+    let Ok(body) = fs::read_to_string(path) else {
+        return false;
+    };
+    let lines: Vec<&str> = body.lines().collect();
+    // Find the last header line — they look like `[<sender>] <subject>
+    // — <UTC timestamp>`. The is_header_line predicate is already
+    // defined in this module.
+    let mut last_header_idx = None;
+    for (i, line) in lines.iter().enumerate() {
+        if is_header_line(line) {
+            last_header_idx = Some(i);
+        }
+    }
+    let Some(idx) = last_header_idx else {
+        return false;
+    };
+    // Scan FORWARD from the last header for WAITING ON or the
+    // informational footer (which means no one is waited on).
+    for line in lines.iter().skip(idx + 1) {
+        if let Some(rest) = line.trim_start().strip_prefix("WAITING ON: ") {
+            let who = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            return who == me;
+        }
+        if line.contains("Informational, no response required") {
+            return false;
+        }
+    }
+    false
 }

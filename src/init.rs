@@ -154,11 +154,44 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         let host_workdir = to_host_fs(&agent.workdir);
         fs::create_dir_all(&host_workdir)
             .with_context(|| format!("mkdir -p agent workdir {}", host_workdir.display()))?;
-        let claudemd_path = host_workdir.join("CLAUDE.md");
+        // v0.6.0: universal AGENTS.md filename across runtimes. Modern
+        // Claude Code reads AGENTS.md alongside CLAUDE.md; codex + agy
+        // expect AGENTS.md natively. Single source of truth.
+        let agents_md_path = host_workdir.join("AGENTS.md");
         let body = render_agent_claudemd(&cfg, agent, config_dir, &abs_config)?;
-        fs::write(&claudemd_path, body)
-            .with_context(|| format!("write {}", claudemd_path.display()))?;
-        println!("  [gen]  {}", claudemd_path.display());
+        fs::write(&agents_md_path, body)
+            .with_context(|| format!("write {}", agents_md_path.display()))?;
+        println!("  [gen]  {}", agents_md_path.display());
+
+        // v0.6.0: belt-and-suspenders CLAUDE.md → AGENTS.md symlink
+        // for Claude-runtime agents on platforms where Claude Code
+        // doesn't yet auto-read AGENTS.md. Idempotent. Linux/macOS
+        // only — Windows agents read CLAUDE.md from a different
+        // launcher convention.
+        #[cfg(unix)]
+        if cfg.agent_runtime(agent) == crate::runtime::Runtime::Claude
+            && agent.platform != "windows"
+        {
+            let claudemd_link = host_workdir.join("CLAUDE.md");
+            if claudemd_link.symlink_metadata().is_err() {
+                let _ = std::os::unix::fs::symlink("AGENTS.md", &claudemd_link);
+            }
+        }
+
+        // v0.6.0: for codex-runtime agents, scaffold the channel-bridge
+        // directory tree under the agent's workdir. The codex CLI reads
+        // CODEX_CHANNEL_DIR=<workdir>/codex-channel; the bridge (giga
+        // watch --codex) writes envelopes into inbox/ and reads receipts
+        // from outbox/.
+        if cfg.agent_runtime(agent) == crate::runtime::Runtime::Codex {
+            let bridge_dir = host_workdir.join("codex-channel");
+            for sub in ["inbox", "outbox", "processed"] {
+                let p = bridge_dir.join(sub);
+                fs::create_dir_all(&p)
+                    .with_context(|| format!("mkdir -p {}", p.display()))?;
+            }
+            println!("  [codex] {} (inbox/outbox/processed)", bridge_dir.display());
+        }
 
         // Symlink the project config into the workdir so the agent's
         // bare `giga watch --as <name>` (whose --config defaults to
@@ -351,8 +384,16 @@ fn render_agent_claudemd(
             .map(|c| format!("`{}`", c.file))
             .collect::<Vec<_>>()
             .join(", ");
-        s.push_str("## Session Start (do this first, every session)\n\n");
-        s.push_str(&crate::templates::WATCHER.replace("{{AGENT}}", &agent.name));
+        // v0.6.0: per-runtime Session Start snippet. The Session Start
+        // header itself is already inside the bundled snippet — don't
+        // duplicate it. Each runtime's snippet lives in
+        // templates/runtimes/<runtime>.md and is bundled at compile time.
+        let runtime = cfg.agent_runtime(agent);
+        s.push_str(
+            &runtime
+                .session_start_snippet()
+                .replace("{{AGENT}}", &agent.name),
+        );
         s.push_str(&format!(
             "\nYour channels: {channel_list}.\n\n",
         ));

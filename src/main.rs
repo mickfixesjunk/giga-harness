@@ -38,6 +38,7 @@ mod transport;
 mod transports;
 mod templates;
 mod terminal;
+mod runtime;
 mod trust;
 mod upgrade;
 mod validate;
@@ -442,6 +443,22 @@ enum Command {
         /// ASAP. Mutually exclusive with --stagger-seconds.
         #[arg(long, conflicts_with = "stagger_seconds")]
         no_stagger: bool,
+        /// Antigravity-runtime mode: force-flush stdout after every
+        /// line, and exit 0 the moment a new message arrives that's
+        /// `WAITING ON: <this-agent>`. AGY's reactive-wakeup system
+        /// fires on the task completion, resuming the agent's
+        /// session with the action-worthy event delivered. Implies
+        /// `--no-stagger`. Mutually exclusive with `--codex`.
+        #[arg(long, conflicts_with = "codex")]
+        agy: bool,
+        /// Codex-runtime mode: instead of stdout, write JSON
+        /// envelopes to `$CODEX_CHANNEL_DIR/inbox/`. The codex CLI
+        /// reads from inbox and surfaces envelopes as inbound
+        /// messages. Requires `CODEX_CHANNEL_DIR` env var — set
+        /// automatically by `giga launch` for codex-runtime agents.
+        /// Mutually exclusive with `--agy`.
+        #[arg(long)]
+        codex: bool,
     },
     /// Long-running merger daemon — for every cross-host channel,
     /// poll all <channel>.<host>.md slice files and append new bytes
@@ -778,6 +795,8 @@ fn main() -> Result<()> {
             config,
             stagger_seconds,
             no_stagger,
+            agy,
+            codex,
         } => {
             let config = registry::resolve_config(config)?;
             let stagger_override = if no_stagger {
@@ -785,12 +804,21 @@ fn main() -> Result<()> {
             } else {
                 stagger_seconds
             };
+            // v0.6.0: derive watch mode. clap's conflicts_with enforces
+            // --agy and --codex are mutually exclusive; default is Claude.
+            let mode = if agy {
+                watch::WatchMode::Agy
+            } else if codex {
+                watch::WatchMode::Codex
+            } else {
+                watch::WatchMode::Default
+            };
             match channel {
                 Some(c) => {
                     let path = resolve_channel(&c, &config)?;
-                    watch::run_single(&path, &r#as)
+                    watch::run_single(&path, &r#as, mode)
                 }
-                None => watch::run_multi(&config, &r#as, stagger_override),
+                None => watch::run_multi(&config, &r#as, stagger_override, mode),
             }
         }
         Command::Merger {

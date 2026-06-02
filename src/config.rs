@@ -84,6 +84,11 @@ pub struct Project {
     /// for cheaper agents.
     #[serde(default = "default_launch_model")]
     pub launch_model: String,
+    /// v0.6.0: agent runtime for this swarm. "claude" (default; today's
+    /// behavior), "codex", or "agy". Each agent can override via
+    /// [[agents]].runtime. See src/runtime.rs.
+    #[serde(default)]
+    pub runtime: Option<crate::runtime::Runtime>,
 }
 
 fn default_launch_model() -> String {
@@ -222,6 +227,13 @@ pub struct Agent {
     /// swarm_boss agent exists. See SWARM_BOSS_DESIGN.md.
     #[serde(default)]
     pub swarm_boss: bool,
+    /// v0.6.0: per-agent runtime override. When set, this agent uses
+    /// the specified runtime ("claude", "codex", "agy") regardless of
+    /// the project-level [project].runtime. When None, falls back to
+    /// the project default (which itself defaults to "claude"). Lets
+    /// mixed-runtime swarms coexist on the same channels.
+    #[serde(default)]
+    pub runtime: Option<crate::runtime::Runtime>,
 }
 
 fn default_platform() -> String {
@@ -659,6 +671,16 @@ impl Config {
             .host
             .as_deref()
             .or(self.this_host.as_deref())
+    }
+
+    /// v0.6.0: resolve which runtime an agent uses. Priority:
+    /// explicit `agent.runtime` → `project.runtime` → `Runtime::Claude`
+    /// (backward compat default).
+    pub fn agent_runtime(&self, agent: &Agent) -> crate::runtime::Runtime {
+        agent
+            .runtime
+            .or(self.project.runtime)
+            .unwrap_or_default()
     }
 
     /// True when every participant of the channel lives on `this_host`

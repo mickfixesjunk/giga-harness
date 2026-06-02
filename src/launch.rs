@@ -61,22 +61,58 @@ pub fn run(
     };
 
     let mut panes: Vec<Pane> = agents_iter
-        .map(|a| {
+        .flat_map(|a| {
+            let runtime = cfg.agent_runtime(a);
             let cwd = a.workdir.to_string_lossy().to_string();
-            // Per-agent launch_cmd override wins; otherwise pick a
-            // default that matches the platform and includes the
-            // intro prompt so the agent starts working immediately.
             let agent_intro = intro_for_agent(intro, a);
+            // Per-agent launch_cmd override wins; otherwise pick a
+            // runtime-appropriate default.
             let cmd = a.launch_cmd.clone().unwrap_or_else(|| {
-                default_cmd(&a.platform, &agent_intro, &cfg.project.launch_model)
+                default_cmd_for_runtime(
+                    runtime,
+                    &a.platform,
+                    &agent_intro,
+                    &cfg.project.launch_model,
+                )
             });
-            Pane {
-                title: a.name.clone(),
-                cwd,
-                cmd,
-                platform: a.platform.clone(),
-                admin: a.admin,
+            // v0.6.0: codex-runtime agents get TWO panes: the CLI pane
+            // (named `<agent>-cli`) and a bridge sidecar (named
+            // `<agent>-bridge`) running `giga watch --codex` with
+            // CODEX_CHANNEL_DIR pointing at the per-agent inbox tree.
+            // Other runtimes get the single-pane shape titled `<agent>`.
+            let mut out: Vec<Pane> = Vec::new();
+            if runtime.needs_bridge_pane() {
+                let bridge_dir = a.workdir.join("codex-channel");
+                let bridge_dir_unix = bridge_dir.display().to_string();
+                let bridge_cmd = format!(
+                    "CODEX_CHANNEL_DIR={} giga watch --as {} --codex",
+                    shell_escape::unix::escape(std::borrow::Cow::Borrowed(bridge_dir_unix.as_str())),
+                    a.name,
+                );
+                out.push(Pane {
+                    title: format!("{}-bridge", a.name),
+                    cwd: cwd.clone(),
+                    cmd: bridge_cmd,
+                    platform: a.platform.clone(),
+                    admin: a.admin,
+                });
+                out.push(Pane {
+                    title: format!("{}-cli", a.name),
+                    cwd,
+                    cmd,
+                    platform: a.platform.clone(),
+                    admin: a.admin,
+                });
+            } else {
+                out.push(Pane {
+                    title: a.name.clone(),
+                    cwd,
+                    cmd,
+                    platform: a.platform.clone(),
+                    admin: a.admin,
+                });
             }
+            out
         })
         .collect();
 
@@ -232,14 +268,55 @@ fn daemon_pane(title: &str, cmd: &str, swarm_dir: &str) -> Pane {
     }
 }
 
-/// Platform-appropriate default shell command. Tries `claude -c`
-/// first to resume the most-recent session in this cwd; falls back
-/// to `claude` (fresh session) if `-c` fails — which it does on the
-/// first launch of a brand-new agent, where no prior session exists.
-/// (Claude Code's `-c` errors with "No conversation found to
-/// continue" rather than starting fresh, so we have to handle that
-/// here.)
-fn default_cmd(platform: &str, intro: &str, model: &str) -> String {
+/// v0.6.0: per-runtime default command. Dispatches on the agent's
+/// runtime; Claude keeps the existing two-attempt resume-or-fresh
+/// shape; Codex and Agy use their simpler `echo intro | cli`
+/// pattern (these CLIs read stdin for the initial prompt and don't
+/// have a Claude-style session-resume flag).
+fn default_cmd_for_runtime(
+    runtime: crate::runtime::Runtime,
+    platform: &str,
+    intro: &str,
+    model: &str,
+) -> String {
+    match runtime {
+        crate::runtime::Runtime::Claude => default_cmd_claude(platform, intro, model),
+        crate::runtime::Runtime::Codex => default_cmd_simple_stdin("codex", platform, intro),
+        crate::runtime::Runtime::Agy => default_cmd_simple_stdin("agy", platform, intro),
+    }
+}
+
+/// Pipe the intro on stdin to a CLI that reads stdin for its initial
+/// prompt (Codex, Agy). `bin` is the binary name. Wraps with `command
+/// -v` so missing binaries fail visibly rather than hanging the pane.
+fn default_cmd_simple_stdin(bin: &str, platform: &str, intro: &str) -> String {
+    match platform {
+        "windows" => {
+            let ps_intro = intro.replace('\'', "''");
+            format!(
+                "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ \
+                   '{ps_intro}' | {bin} \
+                 }}",
+            )
+        }
+        _ => {
+            let sh_intro = shell_escape::unix::escape(intro.into());
+            format!(
+                "command -v {bin} >/dev/null && \
+                 echo {sh_intro} | {bin} || true",
+            )
+        }
+    }
+}
+
+/// Platform-appropriate default shell command for Claude agents.
+/// Tries `claude -c` first to resume the most-recent session in this
+/// cwd; falls back to `claude` (fresh session) if `-c` fails — which
+/// it does on the first launch of a brand-new agent, where no prior
+/// session exists. (Claude Code's `-c` errors with "No conversation
+/// found to continue" rather than starting fresh, so we have to
+/// handle that here.)
+fn default_cmd_claude(platform: &str, intro: &str, model: &str) -> String {
     match platform {
         "windows" => {
             // PowerShell. Single-quote the intro and double any inner
@@ -321,6 +398,7 @@ mod tests {
             code_root: code_root.map(PathBuf::from),
             admin: false,
             swarm_boss: false,
+            runtime: None,
         }
     }
 
