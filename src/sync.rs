@@ -609,6 +609,19 @@ pub fn run_remote_giga_init(
 }
 
 fn execute(cmd: &SyncCommand) -> Result<()> {
+    // v0.4.3 Bug 12: skip cleanly when the local file doesn't exist
+    // yet. For slice files this is the common "no posts on this
+    // channel from this host yet" state — pre-fix, rsync fired
+    // anyway, failed with exit 23 ("No such file or directory"),
+    // and the loop logged a `push failed` warning every tick. The
+    // research agent's report (morpheus, 2026-06-02) tied a Monitor-
+    // reported daemon exit (exit 144) to this cascade. Silent
+    // no-op until the source file materializes is the right shape:
+    // sync's contract is "push what exists", not "complain about
+    // what doesn't".
+    if !cmd.local_path.exists() {
+        return Ok(());
+    }
     // `rsync -avz [--append-verify] <local> <target>`. `-a` preserves
     // metadata, `-v` is verbose (printed to our stderr), `-z` compresses
     // the on-wire bytes. We don't need --partial because a failed transfer
@@ -1139,6 +1152,25 @@ host = "wsl-only"
         // so compare against the canonicalized fixture path too.
         let expected = std::fs::canonicalize(&config_path).unwrap_or(config_path.clone());
         assert_eq!(resolved, expected);
+    }
+
+    /// v0.4.3 Bug 12: execute() returns Ok WITHOUT shelling to rsync
+    /// when the local source file doesn't exist. This is the common
+    /// pre-first-post state on a freshly-added channel — the slice
+    /// file doesn't materialize until the local agent posts. Pre-fix
+    /// rsync fired and failed (exit 23 / no such file), logged as a
+    /// recurring "push failed" warning every 3 seconds.
+    #[test]
+    fn execute_silently_skips_when_local_path_missing() {
+        let cmd = SyncCommand {
+            peer_target: "user@host:/remote/path".to_string(),
+            local_path: PathBuf::from("/this/path/does/not/exist/__giga_test"),
+            use_append_verify: false,
+            kind: "slice",
+        };
+        // Must return Ok without panicking — and without invoking
+        // rsync (we'd see ERROR_NOT_FOUND or exit 23 if it did).
+        execute(&cmd).expect("nonexistent local_path must be a silent no-op");
     }
 
     /// v0.4.2 Bug 11 fix: the daemon loop reloads cfg every

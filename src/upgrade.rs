@@ -102,12 +102,27 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let posting_agent = match args.as_agent.as_deref() {
-        Some(slug) => slug.to_string(),
-        None => {
-            print_manual_broadcast_command(&broadcast_channels);
-            return Ok(());
-        }
+    // v0.4.3 (Bug 74): auto-detect a posting agent when --as not
+    // supplied. Priority:
+    //   1. Explicit --as flag (operator's choice; never overridden)
+    //   2. swarm_boss agent on this_host (the canonical orchestrator)
+    //   3. Any agent on this_host that participates in the first
+    //      broadcast channel (best-effort fallback)
+    //   4. Print the manual command if nothing resolves.
+    // Lets `giga upgrade` "just work" without the operator needing
+    // to know which slug to pass.
+    let posting_agent = match args.as_agent.clone() {
+        Some(slug) => slug,
+        None => match resolve_default_posting_agent(&cfg, &broadcast_channels) {
+            Some(slug) => {
+                println!("\n(auto-detected --as `{slug}` — pass --as explicitly to override)");
+                slug
+            }
+            None => {
+                print_manual_broadcast_command(&broadcast_channels);
+                return Ok(());
+            }
+        },
     };
 
     println!(
@@ -231,6 +246,47 @@ fn post_rearm(config: &std::path::Path, as_agent: &str, channel: &str) -> Result
     Ok(())
 }
 
+/// v0.4.3 (Bug 74): pick a default agent to post the rearm broadcast
+/// AS when the operator didn't supply --as. Prefers the swarm_boss
+/// agent on this_host; falls back to any local agent that
+/// participates in the first broadcast channel. Returns None if
+/// nothing reasonable is in scope — caller prints the manual
+/// command in that case.
+fn resolve_default_posting_agent(cfg: &Config, broadcast_channels: &[&str]) -> Option<String> {
+    let this_host = cfg.this_host.as_deref();
+    // 1. swarm_boss on this_host (if multi-host). The canonical
+    //    orchestrator and the agent whose CLAUDE.md is set up to
+    //    react to such operational broadcasts.
+    let boss = cfg.agents.iter().find(|a| {
+        a.swarm_boss
+            && match this_host {
+                Some(this) => a.host.as_deref() == Some(this) || a.host.is_none(),
+                None => a.host.is_none(),
+            }
+    });
+    if let Some(b) = boss {
+        return Some(b.name.clone());
+    }
+    // 2. First local agent that participates in the first broadcast
+    //    channel. Resolves the "no swarm_boss flagged" case (e.g.,
+    //    swarms that use tmux daemons instead).
+    let first_channel = broadcast_channels.first()?;
+    let channel = cfg.channels.iter().find(|c| &c.file.as_str() == first_channel)?;
+    for participant_name in &channel.participants {
+        let agent = cfg.agents.iter().find(|a| &a.name == participant_name);
+        if let Some(a) = agent {
+            let is_local = match this_host {
+                Some(this) => a.host.as_deref() == Some(this) || a.host.is_none(),
+                None => true,
+            };
+            if is_local {
+                return Some(a.name.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Print a copy-paste broadcast command for the operator to run when
 /// --as wasn't supplied. Helps them pick a participant slug without
 /// re-running upgrade.
@@ -258,6 +314,93 @@ mod tests {
     // What we CAN unit-test: the broadcast-channel enumeration logic
     // is just `cfg.channels.iter().filter(is_broadcast_channel)`,
     // already covered by config::tests::is_broadcast_channel_matches_underscore_prefix.
+
+    /// v0.4.3 (Bug 74): swarm_boss agent is preferred when --as not
+    /// supplied. Makes "just say 'upgrade giga'" work end-to-end.
+    #[test]
+    fn resolve_default_posting_agent_prefers_swarm_boss() {
+        let cfg = Config::load_str_for_test(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+swarm_boss = true
+[[agents]]
+name = "code"
+workdir = "/h/code"
+role = "."
+platform = "wsl"
+[[channels]]
+file = "_broadcast.md"
+side = "wsl"
+participants = ["design", "code"]
+"#,
+        )
+        .unwrap();
+        let picked = resolve_default_posting_agent(&cfg, &["_broadcast.md"]);
+        assert_eq!(picked.as_deref(), Some("design"));
+    }
+
+    /// v0.4.3: when no swarm_boss, fall back to any participant of
+    /// the broadcast channel (local first when this_host is set).
+    #[test]
+    fn resolve_default_posting_agent_falls_back_to_first_broadcast_participant() {
+        let cfg = Config::load_str_for_test(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+[[agents]]
+name = "code"
+workdir = "/h/code"
+role = "."
+platform = "wsl"
+[[channels]]
+file = "_broadcast.md"
+side = "wsl"
+participants = ["design", "code"]
+"#,
+        )
+        .unwrap();
+        let picked = resolve_default_posting_agent(&cfg, &["_broadcast.md"]);
+        // First participant of _broadcast.md = "design"
+        assert_eq!(picked.as_deref(), Some("design"));
+    }
+
+    /// v0.4.3: returns None when there are no agents at all (so the
+    /// caller falls through to the manual-command print path).
+    #[test]
+    fn resolve_default_posting_agent_returns_none_when_no_match() {
+        let cfg = Config::load_str_for_test(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+"#,
+        )
+        .unwrap();
+        // No broadcast channels passed in → nothing to fall back to.
+        let picked = resolve_default_posting_agent(&cfg, &[]);
+        assert!(picked.is_none());
+    }
 
     #[test]
     fn install_url_points_at_this_project_repo() {
