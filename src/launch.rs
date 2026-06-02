@@ -37,7 +37,7 @@ pub fn run(
     // If --only was passed, narrow the agent list to that set and
     // error on any name the config doesn't know — typos here are
     // common and silent skips would be worse than a hard failure.
-    let agents_iter: Box<dyn Iterator<Item = &_>> = if only.is_empty() {
+    let name_filtered: Box<dyn Iterator<Item = &_>> = if only.is_empty() {
         Box::new(cfg.agents.iter())
     } else {
         let known: Vec<&str> = cfg.agents.iter().map(|a| a.name.as_str()).collect();
@@ -59,6 +59,41 @@ pub fn run(
                 .filter(|a| only.iter().any(|n| n == &a.name)),
         )
     };
+
+    // v0.6.6: host-aware filter. Skip agents whose `host` doesn't
+    // match this_host so launch on a multi-host swarm only spawns
+    // panes for agents that actually live here. Pre-fix: Mick saw
+    // `giga launch` on TRINITY spawn WT panes for all 4 morpheus
+    // agents alongside the 4 trinity agents — they failed because
+    // the workdirs only exist on the peer. Same class as init's
+    // v0.3.4 F9 fix (which filtered scaffolding but launch didn't).
+    //
+    // For legacy local-only swarms (no this_host) → no filter.
+    // Collect into Vec rather than chaining iterators so cfg can be
+    // moved/borrowed later in run() without lifetime gymnastics.
+    let local_agents: Vec<&crate::config::Agent> = match cfg.this_host.as_deref() {
+        Some(th) => name_filtered
+            .filter(|a| cfg.agent_host(a).map(|h| h == th).unwrap_or(false))
+            .collect(),
+        None => name_filtered.collect(),
+    };
+    let skipped_count = if let Some(th) = cfg.this_host.as_deref() {
+        cfg.agents
+            .iter()
+            .filter(|a| {
+                (only.is_empty() || only.iter().any(|n| n == &a.name))
+                    && cfg.agent_host(a).map(|h| h != th).unwrap_or(false)
+            })
+            .count()
+    } else {
+        0
+    };
+    if skipped_count > 0 {
+        println!(
+            "  (skipping {skipped_count} peer-host agent(s) — they live on other hosts)"
+        );
+    }
+    let agents_iter: Box<dyn Iterator<Item = &_>> = Box::new(local_agents.into_iter());
 
     let mut panes: Vec<Pane> = agents_iter
         .flat_map(|a| {
