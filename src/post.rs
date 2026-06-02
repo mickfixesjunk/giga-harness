@@ -140,31 +140,50 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Append `bytes` to `path` with an exclusive file lock held for the
-/// duration of the write. The lock prevents torn frames when post and
-/// merger both write to the merged file concurrently (v0.3.5: posts on
-/// cross-host channels dual-write to merged, breaking the pre-v0.3.5
-/// "merger is sole writer to merged" invariant). POSIX O_APPEND alone
-/// guarantees atomicity only up to PIPE_BUF (4KB); typical posts fit
-/// but large reports (~10KB) can be split into multiple write
-/// operations. The lock closes that window.
+/// Append `bytes` to `path`, attempting an exclusive file lock for
+/// the duration of the write but falling back to a plain append if
+/// the lock can't be acquired.
 ///
-/// Uses stdlib `File::lock` (stable since 1.89). Blocking — waits for
-/// any concurrent writer to release. Lock is released automatically
-/// when the File handle drops.
+/// The lock prevents torn frames when post and merger both write to
+/// the merged file concurrently (v0.3.5 dual-write for cross-host
+/// channels). POSIX O_APPEND alone is atomic up to PIPE_BUF (4KB);
+/// typical posts fit, but large reports (~10KB) can split into
+/// multiple write syscalls and interleave.
+///
+/// v0.3.9 Bug 11 fix: on Windows, `File::lock` regularly returns
+/// `ERROR_ACCESS_DENIED` when ANY conflicting handle exists on the
+/// same file (antivirus, Windows Search indexer, stale handles from
+/// crashed processes). Previously this errored every `giga post` and
+/// fully blocked posting from Windows agents. The lock is now
+/// best-effort: try to acquire it, log a one-line warning on
+/// failure, and proceed with plain append. Typical posts (single
+/// frame ≤ 4KB) are atomic without the lock; larger frames have a
+/// small torn-write risk that's acceptable vs the "posts fail
+/// entirely" alternative.
+///
+/// Uses stdlib `File::lock` (stable since 1.89).
 pub(crate) fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
     let f = OpenOptions::new()
         .append(true)
         .create(true)
         .open(path)
         .with_context(|| format!("opening {} for append", path.display()))?;
-    f.lock()
-        .with_context(|| format!("locking {} for append", path.display()))?;
-    (&f).write_all(bytes)
-        .with_context(|| format!("writing to {}", path.display()))?;
-    // File::unlock is implicit on drop, but call explicitly to surface
-    // any errors and to keep the lock window as tight as possible.
-    let _ = f.unlock();
+    let locked = f.lock().is_ok();
+    let result = (&f).write_all(bytes);
+    if locked {
+        // File::unlock is implicit on drop, but call explicitly to
+        // surface any errors and to keep the lock window as tight as
+        // possible.
+        let _ = f.unlock();
+    } else {
+        eprintln!(
+            "post: couldn't acquire exclusive lock on {} — proceeding without it \
+             (typical posts ≤4KB are atomic on POSIX O_APPEND without the lock; \
+             larger frames have a small torn-write risk)",
+            path.display(),
+        );
+    }
+    result.with_context(|| format!("writing to {}", path.display()))?;
     Ok(())
 }
 

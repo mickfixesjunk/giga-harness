@@ -43,6 +43,18 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     } else {
         cfg.agents.iter().collect()
     };
+    // v0.3.9 Bug 5: name the agents we're NOT scaffolding so the
+    // success message reflects reality. Pre-fix: init exited "OK — 4
+    // agent CLAUDE.md files in place" without saying it had skipped
+    // 3 others that live on a peer host.
+    let skipped_agents: Vec<&Agent> = if let Some(this) = cfg.this_host.as_deref() {
+        cfg.agents
+            .iter()
+            .filter(|a| cfg.agent_host(a).map(|h| h != this).unwrap_or(false))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let local_channels: Vec<&crate::config::Channel> = if let Some(this) = cfg.this_host.as_deref() {
         cfg.channels
             .iter()
@@ -117,6 +129,12 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         let header = render_channel_header(&cfg, ch);
         fs::write(&path, header).with_context(|| format!("write {}", path.display()))?;
         println!("  [new]  {}", path.display());
+    }
+
+    // v0.3.9 Bug 5: explicit visibility on what's being skipped.
+    for agent in &skipped_agents {
+        let host = cfg.agent_host(agent).unwrap_or("?");
+        println!("  [skip] {} (lives on `{host}`, not this host)", agent.name);
     }
 
     // Generate per-agent CLAUDE.md in the agent's workdir. The
@@ -222,11 +240,20 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         Err(e) => eprintln!("  [reg] warning: couldn't update swarm registry — {}", e),
     }
 
-    println!(
-        "\nginit OK — {} channels + {} agent CLAUDE.md files in place",
-        local_channels.len(),
-        local_agents.len(),
-    );
+    if skipped_agents.is_empty() {
+        println!(
+            "\nginit OK — {} channels + {} agent CLAUDE.md files in place",
+            local_channels.len(),
+            local_agents.len(),
+        );
+    } else {
+        println!(
+            "\nginit OK — {} channels + {} local agent CLAUDE.md files in place; {} skipped (live on other hosts)",
+            local_channels.len(),
+            local_agents.len(),
+            skipped_agents.len(),
+        );
+    }
     println!("next: `giga launch <config>` to open the terminals");
     Ok(())
 }
@@ -681,6 +708,62 @@ swarm_boss = true
         assert!(
             claudemd.contains("host-a"),
             "section should name the host the boss is responsible for"
+        );
+    }
+
+    /// v0.3.9 Bug 5 visibility: when init runs on a host where some
+    /// agents live elsewhere, the skipped agents must be enumerated
+    /// (otherwise the success message looks like everything worked
+    /// while peer-hosted workdirs are silently missing).
+    #[test]
+    fn init_skips_agents_on_other_hosts_and_skip_count_in_summary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wsl_inbox = tmp.path().join("wsl-inbox");
+        let cfg_text = format!(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = '{wsl}'
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = '{workdir_alice}'
+role = "."
+platform = "wsl"
+host = "host-a"
+
+[[agents]]
+name = "bob"
+workdir = '{workdir_bob}'
+role = "."
+platform = "wsl"
+host = "host-b"
+"#,
+            wsl = wsl_inbox.display(),
+            workdir_alice = tmp.path().join("alice-wd").display(),
+            workdir_bob = tmp.path().join("bob-wd").display(),
+        );
+        let config_path = tmp.path().join("giga-harness.toml");
+        fs::write(&config_path, cfg_text).unwrap();
+        fs::write(tmp.path().join("this_host.local.toml"), "this_host = \"host-a\"\n").unwrap();
+
+        run_with(&config_path, false).unwrap();
+
+        // alice's workdir created; bob's was skipped (lives on host-b).
+        assert!(tmp.path().join("alice-wd").join("CLAUDE.md").exists());
+        assert!(
+            !tmp.path().join("bob-wd").exists(),
+            "bob's workdir must NOT be created on host-a (lives on host-b)"
         );
     }
 

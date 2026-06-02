@@ -109,10 +109,12 @@ pub fn run(args: Args) -> Result<()> {
     // Save original for rollback if validation fails post-edit.
     let original = fs::read_to_string(&args.config)
         .with_context(|| format!("reading {}", args.config.display()))?;
+    // v0.3.9 Bug 5b: write the new `.local.toml` name. Reader accepts
+    // either name; this writer always produces the new one.
     let this_host_toml_path = args
         .config
         .parent()
-        .map(|p| p.join("this_host.toml"));
+        .map(|p| p.join(crate::config::THIS_HOST_FILE));
 
     let mut doc: DocumentMut = original
         .parse()
@@ -436,9 +438,9 @@ platform = "wsl"
             "all pre-existing agents should be assigned to the local host on first migration"
         );
 
-        // this_host.toml was written.
-        let this_host_path = tmp.path().join("this_host.toml");
-        assert!(this_host_path.exists(), "this_host.toml must exist after first migration");
+        // v0.3.9: this_host.local.toml was written (new name).
+        let this_host_path = tmp.path().join(crate::config::THIS_HOST_FILE);
+        assert!(this_host_path.exists(), "this_host.local.toml must exist after first migration");
         let contents = fs::read_to_string(&this_host_path).unwrap();
         assert!(contents.contains("operator-host"));
     }

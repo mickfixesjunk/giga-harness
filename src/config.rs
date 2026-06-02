@@ -260,21 +260,37 @@ struct ThisHostFile {
     this_host: String,
 }
 
-/// Look for `this_host.toml` next to the canonical config, parse it,
-/// and return the host name. Missing file is OK (local-only mode);
-/// parse errors are surfaced.
+/// Look for the per-host identity file next to the canonical config,
+/// parse it, and return the host name. Missing file is OK (local-only
+/// mode); parse errors are surfaced.
+///
+/// v0.3.9 Bug 5b: prefer `this_host.local.toml` (the v0.3.9+ name).
+/// The `.local.toml` suffix is a convention meaning "host-private,
+/// never rsync between machines" — chosen so a bare `rsync -av` of
+/// the swarm dir between hosts doesn't overwrite the peer's identity
+/// (the bug user-agent hit). Fall back to legacy `this_host.toml`
+/// for backward compat with v0.3.8 and earlier swarms.
+pub const THIS_HOST_FILE: &str = "this_host.local.toml";
+pub const THIS_HOST_FILE_LEGACY: &str = "this_host.toml";
+
 fn load_this_host(config_path: &Path) -> Result<Option<String>> {
     let Some(parent) = config_path.parent() else {
         return Ok(None);
     };
-    let sibling = parent.join("this_host.toml");
-    if !sibling.exists() {
+    // v0.3.9+ name wins when both exist.
+    let preferred = parent.join(THIS_HOST_FILE);
+    let legacy = parent.join(THIS_HOST_FILE_LEGACY);
+    let path = if preferred.exists() {
+        preferred
+    } else if legacy.exists() {
+        legacy
+    } else {
         return Ok(None);
-    }
-    let text = std::fs::read_to_string(&sibling)
-        .with_context(|| format!("reading {}", sibling.display()))?;
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
     let parsed: ThisHostFile = toml::from_str(&text)
-        .with_context(|| format!("parsing {} (expected `this_host = \"...\"`)", sibling.display()))?;
+        .with_context(|| format!("parsing {} (expected `this_host = \"...\"`)", path.display()))?;
     Ok(Some(parsed.this_host))
 }
 
@@ -718,6 +734,87 @@ bench_scheduler = true"#,
         );
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.agents.iter().filter(|a| a.bench_scheduler).count(), 1);
+    }
+
+    /// v0.3.9 Bug 5b: load_this_host prefers the new `.local.toml`
+    /// name. Reader still accepts the legacy `this_host.toml` for
+    /// backward compat with v0.3.8 and earlier swarms.
+    #[test]
+    fn load_prefers_this_host_local_toml_over_legacy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "host-new"
+tailnet_hostname = "host-new.tail0.ts.net"
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+host = "host-new"
+"#,
+        )
+        .unwrap();
+        // Both files present, different values — the new name wins.
+        std::fs::write(
+            tmp.path().join("this_host.local.toml"),
+            "this_host = \"host-new\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-legacy\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        // Wait — cfg validation requires this_host to be in [[hosts]].
+        // host-legacy isn't in [[hosts]], so if the legacy file won,
+        // validation would fail. The fact that load succeeded with
+        // host-new in [[hosts]] proves the new name was picked.
+        assert_eq!(cfg.this_host.as_deref(), Some("host-new"));
+    }
+
+    /// v0.3.9 Bug 5b: legacy `this_host.toml` is still accepted when
+    /// `this_host.local.toml` is absent — backward compat for v0.3.8
+    /// and earlier swarms that haven't been migrated.
+    #[test]
+    fn load_falls_back_to_legacy_this_host_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "host-x"
+tailnet_hostname = "host-x.tail0.ts.net"
+[[agents]]
+name = "a"
+workdir = "/h/a"
+role = "."
+platform = "wsl"
+host = "host-x"
+"#,
+        )
+        .unwrap();
+        // Only legacy file present.
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-x\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        assert_eq!(cfg.this_host.as_deref(), Some("host-x"));
     }
 
     /// v0.3.7 Bug 1 fix: when the config is loaded via a symlink (the

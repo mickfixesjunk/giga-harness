@@ -10,6 +10,7 @@ You are operating a `giga-harness` swarm — N parallel AI agents that coordinat
 - A swarm can be **single-host** (default — all agents on one machine, polling watcher on local files) or **multi-host** (agents on multiple machines on a tailnet — per-host slice files `<channel>.<host>.md` rsync'd via Tailscale SSH; a local merger appends incoming peer bytes to the watched merged file). The watcher doesn't know or care which case is which.
 - In multi-host mode (v0.3.5+), `giga post` on a cross-host channel **dual-writes** the frame to the slice (for sync to ship to peers) AND to the merged file (so local watchers see it immediately, independent of merger liveness). Adding one remote agent doesn't disrupt local-to-local comms.
 - **v0.3.8 strict validation in multi-host swarms:** every `[[agents]]` block must declare `host = "<name>"` explicitly. The pre-v0.3.8 fallback to `this_host` silently misrouted channels.
+- **v0.3.9 `this_host.local.toml`:** per-host identity file (was `this_host.toml`). The `*.local.toml` suffix is the new convention for "host-private, never rsync between hosts" files. Legacy name still accepted at load.
 - **swarm_boss agent (v0.3.6, optional):** one agent per host can be flagged `swarm_boss = true` to host the sync + merger daemons as `Monitor` entries in its CLAUDE.md instead of as separate tmux panes. Three Monitors total instead of one. Daemons die with the agent's session — pick a long-lived agent.
 
 ## Core commands (10 you'll use 90% of the time)

@@ -110,18 +110,14 @@ pub fn run(args: Args) -> Result<()> {
     if let Some(parent) = template_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
     }
-    if template_path.exists() {
-        // Rare but possible: agents/<slug>.md already exists from a
-        // prior aborted add. Don't clobber — surface it instead.
-        return Err(anyhow!(
-            "template path {} already exists; refusing to overwrite. \
-             Either remove it manually if it's a leftover, or pick a \
-             different --name.",
-            template_path.display(),
-        ));
+    // v0.3.9 Bug 3: collision check happens in preflight (BEFORE the
+    // TOML write). If template_path already exists at this point, the
+    // operator passed --template pointing at it — the file IS the
+    // template body, no write needed.
+    if !template_path.exists() {
+        fs::write(&template_path, template_body)
+            .with_context(|| format!("writing {}", template_path.display()))?;
     }
-    fs::write(&template_path, template_body)
-        .with_context(|| format!("writing {}", template_path.display()))?;
 
     // ---- re-validate the updated config ----------------------------
     let revalidated = Config::load(&args.config)
@@ -304,6 +300,39 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
                     .map(|a| a.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
+            ));
+        }
+    }
+    // v0.3.9 Bug 3: template-exists check moved here (was post-TOML-write
+    // → half-committed state on failure). Special-case the "user passes
+    // --template pointing at the target itself" case: that's intentional
+    // pre-write usage, not a collision. Tested via canonicalize so
+    // relative vs absolute paths compare correctly.
+    //
+    // When the config path has no parent (test fixtures that pass
+    // PathBuf::new()), skip the existence check — there's no real
+    // filesystem target to check against.
+    let template_path = match template_target(&args.config, &args.name) {
+        Ok(p) => p,
+        Err(_) => return Ok(()), // no parent dir; nothing to check
+    };
+    if template_path.exists() {
+        let in_place = match &args.template {
+            Some(p) => {
+                let a = std::fs::canonicalize(p).ok();
+                let b = std::fs::canonicalize(&template_path).ok();
+                a.is_some() && a == b
+            }
+            None => false,
+        };
+        if !in_place {
+            return Err(anyhow!(
+                "template path {} already exists; refusing to overwrite. \
+                 Either remove it manually if it's a leftover, pick a \
+                 different --name, or pass --template {} to use the \
+                 existing file in place.",
+                template_path.display(),
+                template_path.display(),
             ));
         }
     }
@@ -718,6 +747,50 @@ bench_scheduler = true"#,
     fn preflight_accepts_minimal_valid() {
         let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
         let args = base_args(PathBuf::new());
+        preflight(&cfg, &args).unwrap();
+    }
+
+    /// v0.3.9 Bug 3: when a stray `agents/<slug>.md` exists from a
+    /// prior aborted add, preflight catches it BEFORE any TOML edit.
+    /// Pre-fix: TOML got appended with the new agent + channels +
+    /// broadcast participants, then the template-write step errored
+    /// with the file-exists message. Operator left holding a
+    /// half-committed config.
+    #[test]
+    fn preflight_rejects_when_template_exists_and_not_in_place() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, minimal_config_text()).unwrap();
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::write(
+            tmp.path().join("agents").join("charlie.md"),
+            "# stray template\n",
+        )
+        .unwrap();
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let args = base_args(cfg_path);
+        let err = preflight(&cfg, &args).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        assert!(err.to_string().contains("--template"));
+    }
+
+    /// v0.3.9 Bug 3: when --template points at the template_target
+    /// path itself, preflight allows it (user pre-wrote the template
+    /// and is telling us to use it in place).
+    #[test]
+    fn preflight_accepts_template_pointing_at_target_in_place() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, minimal_config_text()).unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let template_path = agents_dir.join("charlie.md");
+        std::fs::write(&template_path, "# pre-written body\n").unwrap();
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let mut args = base_args(cfg_path);
+        args.template = Some(template_path);
+        // Preflight must accept this — user passed --template pointing
+        // exactly at where add-agent would write.
         preflight(&cfg, &args).unwrap();
     }
 

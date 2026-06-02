@@ -119,6 +119,8 @@ If post-edit validation fails, the TOML rolls back to the original. Pre-v0.3.8 t
 
 **Heads-up:** the placeholder `tailnet_hostname` written for the local host equals the local hostname (works under MagicDNS). If your tailnet hostname differs, edit the local `[[hosts]]` block manually — peers need it to push slices back.
 
+**v0.3.9 — `this_host.local.toml` convention.** The per-host identity file is now named `this_host.local.toml` (was `this_host.toml`). Convention: any file in the swarm dir matching `*.local.toml` is host-private and never rsync'd between machines. `giga sync` / `giga add-host` bootstrap automatically excludes the pattern. If you do `rsync -av` of the swarm dir manually, the `*.local.toml` files are excluded by giga's own tooling but your bare rsync will overwrite them — use `rsync --exclude '*.local.toml'` for safety. Backward compat: the legacy name is still accepted at load time; new writes use the `.local.toml` name.
+
 **Strict validation in multi-host swarms.** v0.3.8 also requires every `[[agents]]` block in a multi-host swarm (`[[hosts]]` non-empty) to declare `host = "<name>"` explicitly. The pre-v0.3.8 fallback (default to `this_host`) silently misrouted channels because the same canonical TOML resolved agents differently on each host. Existing swarms with host-less agents will fail `giga validate` after upgrade — fix by adding `host =` to each agent (or re-run `giga add-host --this-host-name <local>` on a still-local-only swarm to bulk-assign).
 
 ### 5. Add an agent on host B (single command — does everything)

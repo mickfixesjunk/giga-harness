@@ -471,14 +471,18 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
 
     // 2. rsync the WHOLE swarm dir (canonical TOML + agents/ templates
     //    + handover stubs + anything else under the config dir).
-    //    Excludes this_host.toml so each host's per-host identity isn't
-    //    trampled; excludes workdirs/ so an agent's accumulated session
-    //    state isn't clobbered. The remote `giga init` (step 3 from
-    //    the add-agent caller) re-renders workdir CLAUDE.md from the
-    //    template that this rsync just delivered.
+    //    Excludes `*.local.toml` (v0.3.9 convention) so each host's
+    //    per-host identity files aren't trampled; excludes workdirs/
+    //    so an agent's accumulated session state isn't clobbered. The
+    //    remote `giga init` (step 3 from the add-agent caller)
+    //    re-renders workdir CLAUDE.md from the template that this
+    //    rsync just delivered. Legacy `this_host.toml` is excluded
+    //    explicitly too for swarms that haven't been migrated yet.
     let dir_rsync_status = Command::new("rsync")
         .args([
             "-avz",
+            "--exclude",
+            "*.local.toml",
             "--exclude",
             "this_host.toml",
             "--exclude",
@@ -498,15 +502,19 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         ));
     }
 
-    // 3. ensure this_host.toml exists on the peer (only set if missing
-    //    — never overwrite, in case a previous bootstrap got there first).
-    let this_host_path = remote_join(&remote_dir, "this_host.toml");
-    let escaped_path =
+    // 3. ensure the peer has a per-host identity file. v0.3.9: write the
+    //    new `this_host.local.toml` name. Idempotent — only set if neither
+    //    the new nor the legacy `this_host.toml` exists yet.
+    let this_host_path = remote_join(&remote_dir, crate::config::THIS_HOST_FILE);
+    let legacy_path = remote_join(&remote_dir, crate::config::THIS_HOST_FILE_LEGACY);
+    let escaped_new =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(this_host_path.as_str()));
+    let escaped_legacy =
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(legacy_path.as_str()));
     let ensure_cmd = format!(
-        "test -f {escaped_path} || echo 'this_host = \"{peer_name}\"' > {escaped_path}",
+        "test -f {escaped_new} || test -f {escaped_legacy} || echo 'this_host = \"{peer_name}\"' > {escaped_new}",
     );
-    ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host.toml")?;
+    ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host identity file")?;
 
     Ok(())
 }
