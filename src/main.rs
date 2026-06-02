@@ -39,6 +39,7 @@ mod transports;
 mod templates;
 mod terminal;
 mod trust;
+mod upgrade;
 mod validate;
 mod watch;
 
@@ -141,6 +142,33 @@ enum Command {
         /// `tmux`, `wt`, `print`.
         #[arg(long, value_name = "MODE", default_value = "auto")]
         terminal: String,
+    },
+    /// v0.4.1: install the latest giga binary on this host (and
+    /// optionally on every peer), then post a "please re-arm your
+    /// watcher" broadcast to all `_*.md` channels so agents pick up
+    /// the new binary.
+    ///
+    /// Without flags: updates local + all peers, then asks for `--as`
+    /// to post the broadcast. Pass `--as <agent>` for the one-shot.
+    /// `--skip-peers` / `--skip-broadcast` for partial runs;
+    /// `--dry-run` to preview.
+    Upgrade {
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+        /// Agent slug to post the rearm broadcast as (must be a
+        /// participant of the broadcast channel). Omit to print the
+        /// broadcast command for manual run instead.
+        #[arg(long, value_name = "AGENT")]
+        r#as: Option<String>,
+        /// Don't propagate the install to peer hosts.
+        #[arg(long)]
+        skip_peers: bool,
+        /// Don't post the rearm broadcast after upgrade.
+        #[arg(long)]
+        skip_broadcast: bool,
+        /// Print what would happen; don't run install or post.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// List the swarm's hosts + which agents live on each + whether
     /// this_host matches. Read-only; useful for orientation after
@@ -581,6 +609,22 @@ fn main() -> Result<()> {
             }
         }
         Command::ClaudeOperator => claude_operator::run(),
+        Command::Upgrade {
+            config,
+            r#as,
+            skip_peers,
+            skip_broadcast,
+            dry_run,
+        } => {
+            let config = registry::resolve_config(config)?;
+            upgrade::run(upgrade::Args {
+                config,
+                as_agent: r#as,
+                skip_peers,
+                skip_broadcast,
+                dry_run,
+            })
+        }
         Command::Sweep {
             config,
             owed_by,

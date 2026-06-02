@@ -118,6 +118,7 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga remote --host H -- <subcommand>` | SSH passthrough primitive — runs any giga subcommand on the peer over Tailscale SSH, streaming stdout/stderr back. `--host H` flags on add-agent/sweep/launch are sugar over this. Note: put trailing args after `--`. |
 | `giga sync [--once] [--dry-run]` | Long-running daemon — every 3s, rsync the canonical TOML + own slice files to each peer. `--once` runs a single tick. `--dry-run` previews. Auto-spawned by `giga launch` on cross-host swarms. |
 | `giga merger [--once]` | Long-running daemon — polls all `<channel>.<host>.md` slice files and appends new bytes to the watched `<channel>.md`. Auto-spawned by `giga launch` on cross-host swarms. |
+| `giga upgrade --as <agent> [--skip-peers] [--skip-broadcast] [--dry-run]` | v0.4.1: install latest giga binary on this host + every peer over `giga remote`, then post a "please re-arm your watcher" broadcast to all `_*.md` channels. `--as <agent>` is the slug to post as (must be a broadcast-channel participant). Omit `--as` to skip the post and print the manual command instead. |
 
 ## Multi-account switching
 
