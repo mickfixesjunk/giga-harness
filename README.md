@@ -121,6 +121,7 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga post <channel> [--to A,B] [--fyi] ...` | Append a message. For broadcast channels (`_*.md`): `--to` synthesizes `[ack: A, B]` subject prefix so only named agents wake; `--fyi` synthesizes `[fyi]` (zero LLM cost; receivers archive instead of firing). |
 | `giga watch --as <agent> [--stagger-seconds N \| --no-stagger] [--agy \| --codex]` | Long-running watcher. Posts on `_*.md` channels stagger per-agent by `slot × stagger_seconds` (default 15s; override via `[broadcast].stagger_seconds` in TOML or `--stagger-seconds N` / `--no-stagger` per invocation). `--agy` / `--codex` switch the delivery mode for Antigravity / Codex runtimes (see Multi-runtime below). |
 | `giga upgrade [--as <agent>] [--skip-peers] [--skip-broadcast] [--dry-run]` | Install latest giga binary on this host + every peer over `giga remote`, then post a "please re-arm your watcher" broadcast to all `_*.md` channels. Auto-detects `--as` (swarm_boss first; falls back to any local broadcast participant); pass `--as <agent>` to override. |
+| `giga teleport <agent> --to <host> [--from <host>] [--keep-running] [--dry-run]` | Move an agent from one host to another. Updates TOML, rsyncs workdir over tailnet SSH, prepends a "you have been teleported" banner to HANDOVER.md, kills source pane gracefully, launches on target. See [TELEPORT_DESIGN.md](TELEPORT_DESIGN.md). |
 
 ## Multi-account switching
 

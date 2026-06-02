@@ -39,6 +39,7 @@ mod transports;
 mod templates;
 mod terminal;
 mod runtime;
+mod teleport;
 mod trust;
 mod upgrade;
 mod validate;
@@ -143,6 +144,42 @@ enum Command {
         /// `tmux`, `wt`, `print`.
         #[arg(long, value_name = "MODE", default_value = "auto")]
         terminal: String,
+    },
+    /// Move an agent from one host to another in the tailnet.
+    ///
+    /// Updates `agent.host` in the canonical TOML, rsyncs the agent's
+    /// workdir from source to target (direct over tailnet SSH;
+    /// two-hop fallback via operator), prepends a "you have been
+    /// teleported" banner to HANDOVER.md on the target, syncs TOML
+    /// to peers, kills the source tmux pane gracefully, and launches
+    /// the agent on the target.
+    ///
+    /// Channel slice files are NOT moved (per-host append logs;
+    /// past posts stay in the source's slice forever, still visible
+    /// swarm-wide via merge). The agent's `~/.claude/` conversation
+    /// history is also per-machine — agent restarts fresh on target
+    /// and reads HANDOVER.md (with the teleport banner) for context.
+    /// See TELEPORT_DESIGN.md.
+    Teleport {
+        /// The agent slug to teleport.
+        agent: String,
+        /// Destination host name (must exist in [[hosts]]).
+        #[arg(long, value_name = "HOST")]
+        to: String,
+        /// Source host name. Optional — defaults to the agent's
+        /// current `host` field in the TOML.
+        #[arg(long, value_name = "HOST")]
+        from: Option<String>,
+        /// Don't kill the source tmux pane after the target pane is
+        /// up. Operator handles teardown manually after verifying the
+        /// target-side agent is healthy.
+        #[arg(long)]
+        keep_running: bool,
+        /// Print every step that would be taken; no side effects.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
     },
     /// Install the latest giga binary on this host (and optionally on
     /// every peer), then post a "please re-arm your watcher" broadcast
@@ -638,6 +675,24 @@ fn main() -> Result<()> {
                 skip_peers,
                 skip_broadcast,
                 dry_run,
+            })
+        }
+        Command::Teleport {
+            agent,
+            to,
+            from,
+            keep_running,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            teleport::run(teleport::Args {
+                agent,
+                to,
+                from,
+                keep_running,
+                dry_run,
+                config,
             })
         }
         Command::Sweep {
