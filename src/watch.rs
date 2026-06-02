@@ -210,12 +210,14 @@ pub fn run_multi(
         .map(|c| c.project.name.clone())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    // v0.4.0: resolve the broadcast stagger value. CLI > TOML > 15s default.
+    // v0.4.0: resolve the broadcast stagger value. CLI > TOML > default.
+    // v0.6.2: default bumped to 30 (was 15) to halve peak TPM during
+    // broadcast fanout; matches BroadcastConfig::default_broadcast_stagger.
     let stagger_seconds = match effective_stagger_override {
         Some(v) => v,
         None => Config::load(config_path)
             .map(|c| c.broadcast.stagger_seconds)
-            .unwrap_or(15),
+            .unwrap_or(30),
     };
 
     // Seed the file set immediately so we don't sit idle for the
@@ -237,6 +239,32 @@ pub fn run_multi(
     eprintln!(
         "watch: broadcast stagger = {stagger_seconds}s (0 = instant fanout)"
     );
+    // v0.6.2 diagnostic: per-broadcast-channel, print this agent's slot
+    // and the expected delay so the operator can verify stagger is
+    // engaged WITHOUT waiting for a broadcast to fire. If this section
+    // is missing from a watcher's startup log, the binary is pre-v0.6.2
+    // (or pre-v0.4.0 if even the previous "broadcast stagger" line is
+    // missing) — that's the diagnostic for "is stagger actually
+    // engaging or are we silently all firing at once?".
+    let mut broadcast_states: Vec<(&str, u64)> = tracked
+        .values()
+        .filter(|s| config::is_broadcast_channel(&s.name))
+        .map(|s| {
+            let recipients: Vec<&str> = s.participants.iter().map(|p| p.as_str()).collect();
+            let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
+            (s.name.as_str(), delay)
+        })
+        .collect();
+    broadcast_states.sort_by_key(|(name, _)| *name);
+    for (name, delay) in &broadcast_states {
+        let total = tracked
+            .get(*name)
+            .map(|s| s.participants.len())
+            .unwrap_or(0);
+        eprintln!(
+            "watch: broadcast `{name}` → this agent's slot delay = {delay}s ({total} participants)",
+        );
+    }
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
@@ -301,6 +329,16 @@ pub fn run_multi(
                             addressed.iter().map(|s| s.as_str()).collect();
                         let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
                         let ready_at = now + Duration::from_secs(delay);
+                        // v0.6.2 diagnostic: per-broadcast log the
+                        // deferral so the operator can confirm stagger
+                        // engaged on this specific message.
+                        eprintln!(
+                            "watch: broadcast on `{}` [ack] → deferring {}s (slot {} of {})",
+                            state.name,
+                            delay,
+                            slot_for(me, &recipients),
+                            recipients.len(),
+                        );
                         state
                             .pending
                             .push((ready_at, format!("inbox {}: {line}", state.name)));
@@ -311,6 +349,21 @@ pub fn run_multi(
                             state.participants.iter().map(|s| s.as_str()).collect();
                         let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
                         let ready_at = now + Duration::from_secs(delay);
+                        // v0.6.2 diagnostic: per-broadcast log the
+                        // deferral. If you see "deferring 0s slot 0"
+                        // for every agent in a swarm, stagger is NOT
+                        // engaging (Possibility B from the rate-limit
+                        // diagnosis). If you see varying delays per
+                        // agent, stagger IS engaging — the issue is
+                        // just per-turn TPM cost, fix by increasing
+                        // [broadcast].stagger_seconds further.
+                        eprintln!(
+                            "watch: broadcast on `{}` [all] → deferring {}s (slot {} of {})",
+                            state.name,
+                            delay,
+                            slot_for(me, &recipients),
+                            recipients.len(),
+                        );
                         state
                             .pending
                             .push((ready_at, format!("inbox {}: {line}", state.name)));
@@ -790,4 +843,14 @@ fn is_waiting_on_me(path: &Path, me: &str) -> bool {
         }
     }
     false
+}
+
+/// v0.6.2: compute the agent's slot index in the alphabetically-sorted
+/// recipient list. Mirror of `config::fanout_delay_seconds`'s slot
+/// computation but returns the slot number (for diagnostic logging)
+/// rather than the slot × stagger product.
+fn slot_for(this_agent: &str, recipients: &[&str]) -> usize {
+    let mut sorted: Vec<&str> = recipients.to_vec();
+    sorted.sort();
+    sorted.iter().position(|a| *a == this_agent).unwrap_or(0)
 }

@@ -303,7 +303,12 @@ impl Default for BroadcastConfig {
 }
 
 fn default_broadcast_stagger() -> u64 {
-    15
+    // v0.6.2: bumped 15 → 30. Halves peak TPM during broadcast
+    // fanout (relevant for `giga upgrade` rearm and other swarm-wide
+    // pings). 19 agents × 30s = 9.5-min worst-case fanout — slow for
+    // urgent traffic but the safety/UX tradeoff favors not blowing
+    // Anthropic per-account rate-limits during rearm storms.
+    30
 }
 
 fn default_broadcast_recipients() -> String {
@@ -1692,8 +1697,10 @@ participants = ["a", "b"]
 
     #[test]
     fn broadcast_config_defaults_when_section_missing() {
+        // v0.6.2: default bumped 15 → 30 to halve peak TPM during
+        // broadcast fanout.
         let cfg = Config::load_str_for_test(minimal()).unwrap();
-        assert_eq!(cfg.broadcast.stagger_seconds, 15);
+        assert_eq!(cfg.broadcast.stagger_seconds, 30);
         assert_eq!(cfg.broadcast.default_recipients, "all");
     }
 
