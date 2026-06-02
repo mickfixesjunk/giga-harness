@@ -39,6 +39,11 @@ pub struct Config {
     #[serde(default)]
     pub channels: Vec<Channel>,
     pub bench_protocol: Option<BenchProtocol>,
+    /// v0.4.0: configuration for the broadcast-channel fanout limiter.
+    /// When absent, sensible defaults apply (15s stagger, "all"
+    /// recipients). See BROADCAST_FANOUT_DESIGN.md.
+    #[serde(default)]
+    pub broadcast: BroadcastConfig,
     /// The host name (matching one of `[[hosts]].name`) that identifies
     /// THIS machine within the swarm. Loaded at `Config::load` time from
     /// a sibling `this_host.toml` next to the canonical config (so rsync
@@ -249,6 +254,159 @@ pub struct BenchProtocol {
 
 fn default_slot_pool() -> String {
     "this-host".to_string()
+}
+
+/// v0.4.0: broadcast fanout limiter config. See BROADCAST_FANOUT_DESIGN.md.
+///
+/// Controls how watchers handle notifications on `_*.md` channels (the
+/// broadcast convention). Pre-v0.4.0 every broadcast woke every
+/// participating agent within a single 3s poll tick → synchronous
+/// LLM-turn storm and per-account Anthropic TPM rate-limit risk.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BroadcastConfig {
+    /// Per-slot delay in seconds for staggered fanout on `_*.md`
+    /// channels. 0 disables (today's behavior; instant fan-out to
+    /// everyone). The watcher computes a stable slot per agent via
+    /// alphabetical ordering of the recipient list and delays the
+    /// Monitor notification by `slot × stagger_seconds`. Worst-case
+    /// fanout window for a swarm with N recipients = N × stagger.
+    #[serde(default = "default_broadcast_stagger")]
+    pub stagger_seconds: u64,
+    /// Treat broadcasts without a `[fyi]` / `[ack: ...]` / `[all]`
+    /// subject prefix as `[all]`. Set to `"named-only"` to enforce
+    /// explicit addressing (no prefix = post error; future use).
+    /// Today only `"all"` is wired through; the field exists so the
+    /// schema is forward-compatible.
+    #[serde(default = "default_broadcast_recipients")]
+    pub default_recipients: String,
+}
+
+impl Default for BroadcastConfig {
+    fn default() -> Self {
+        Self {
+            stagger_seconds: default_broadcast_stagger(),
+            default_recipients: default_broadcast_recipients(),
+        }
+    }
+}
+
+fn default_broadcast_stagger() -> u64 {
+    15
+}
+
+fn default_broadcast_recipients() -> String {
+    "all".to_string()
+}
+
+/// v0.4.0: parsed shape of a broadcast subject's leading prefix. Used
+/// by `watch.rs` to decide what to do with a notification on a `_*.md`
+/// channel. See BROADCAST_FANOUT_DESIGN.md §3.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroadcastPrefix {
+    /// `[fyi]` — informational. Watcher logs to per-agent archive
+    /// instead of firing Monitor notification (zero LLM cost).
+    Fyi,
+    /// `[ack: a, b, c]` — fire only for agents in the list.
+    Ack(Vec<String>),
+    /// `[all]` or no prefix — fire for every participant (with
+    /// staggered fanout from `BroadcastConfig.stagger_seconds`).
+    All,
+}
+
+/// Parse the leading broadcast prefix out of a subject line. Tolerant
+/// of whitespace; case-insensitive on the prefix tag. Returns `None`
+/// for the unprefixed case (caller treats as `All` when
+/// `default_recipients = "all"`). The prefix may appear AFTER the
+/// existing `[<agent> YYYY-MM-DD HH:MM PST]` convention header — the
+/// parser scans past the timestamp-shaped first prefix when present.
+pub fn parse_broadcast_prefix(subject: &str) -> Option<BroadcastPrefix> {
+    let rest = strip_timestamp_prefix(subject.trim_start());
+    let rest = rest.trim_start();
+    if !rest.starts_with('[') {
+        return None;
+    }
+    let end = rest.find(']')?;
+    let inside = rest[1..end].trim();
+    if inside.is_empty() {
+        return None;
+    }
+    let lower = inside.to_ascii_lowercase();
+    if lower == "fyi" {
+        return Some(BroadcastPrefix::Fyi);
+    }
+    if lower == "all" {
+        return Some(BroadcastPrefix::All);
+    }
+    // `[ack: a, b, c]` form. Split on first `:`.
+    if let Some(colon) = inside.find(':') {
+        let tag = inside[..colon].trim().to_ascii_lowercase();
+        if tag == "ack" {
+            let recipients: Vec<String> = inside[colon + 1..]
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Some(BroadcastPrefix::Ack(recipients));
+        }
+    }
+    None
+}
+
+/// If the subject begins with `[<word> YYYY-MM-DD HH:MM <TZ>]`, return
+/// the slice AFTER that prefix. Otherwise return the input. This is
+/// the convention header agents already use; broadcast prefixes
+/// appear AFTER it, so the parser needs to skip past.
+fn strip_timestamp_prefix(s: &str) -> &str {
+    if !s.starts_with('[') {
+        return s;
+    }
+    let Some(end) = s.find(']') else { return s; };
+    let inside = &s[1..end];
+    // Heuristic: contains a date-like `YYYY-MM-DD` substring AND
+    // doesn't look like one of our broadcast tags. Cheap + good enough.
+    let looks_like_timestamp = inside
+        .chars()
+        .filter(|c| *c == '-')
+        .count()
+        >= 2
+        && inside.chars().any(|c| c.is_ascii_digit());
+    let lower = inside.trim().to_ascii_lowercase();
+    let is_broadcast_tag = lower == "fyi"
+        || lower == "all"
+        || lower.starts_with("ack:")
+        || lower.starts_with("ack ");
+    if looks_like_timestamp && !is_broadcast_tag {
+        return &s[end + 1..];
+    }
+    s
+}
+
+/// True for channel filenames that match the broadcast convention
+/// (`_*.md`). Used by `watch.rs` to decide whether broadcast-specific
+/// fanout handling applies.
+pub fn is_broadcast_channel(filename: &str) -> bool {
+    filename.starts_with('_') && filename.ends_with(".md")
+}
+
+/// Compute the stable per-agent fanout delay slot for a broadcast.
+/// Slot = position of `this_agent` in the alphabetically-sorted
+/// recipient list. Same agent always gets the same slot (deterministic
+/// across watcher restarts). See BROADCAST_FANOUT_DESIGN.md §3.2.
+pub fn fanout_delay_seconds(
+    this_agent: &str,
+    recipients: &[&str],
+    stagger_seconds: u64,
+) -> u64 {
+    if stagger_seconds == 0 {
+        return 0;
+    }
+    let mut sorted: Vec<&str> = recipients.to_vec();
+    sorted.sort();
+    let slot = sorted
+        .iter()
+        .position(|a| *a == this_agent)
+        .unwrap_or(0) as u64;
+    slot * stagger_seconds
 }
 
 /// Format of the sibling `this_host.toml` file: a single key telling
@@ -1506,5 +1664,115 @@ participants = ["a", "b"]
             "channel_path on wsl-b should use wsl-b's override, got {}",
             path.display()
         );
+    }
+
+    // ----- v0.4.0 broadcast fanout: parser + slot computation ---------
+
+    #[test]
+    fn broadcast_config_defaults_when_section_missing() {
+        let cfg = Config::load_str_for_test(minimal()).unwrap();
+        assert_eq!(cfg.broadcast.stagger_seconds, 15);
+        assert_eq!(cfg.broadcast.default_recipients, "all");
+    }
+
+    #[test]
+    fn broadcast_config_overrides_via_toml() {
+        let body = format!(
+            "{}\n[broadcast]\nstagger_seconds = 5\ndefault_recipients = \"all\"\n",
+            minimal()
+        );
+        let cfg = Config::load_str_for_test(&body).unwrap();
+        assert_eq!(cfg.broadcast.stagger_seconds, 5);
+    }
+
+    #[test]
+    fn broadcast_config_stagger_zero_disables_fanout_delay() {
+        assert_eq!(fanout_delay_seconds("alice", &["alice", "bob"], 0), 0);
+        assert_eq!(fanout_delay_seconds("bob", &["alice", "bob"], 0), 0);
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_recognizes_fyi() {
+        assert_eq!(parse_broadcast_prefix("[fyi] morpheus came online"), Some(BroadcastPrefix::Fyi));
+        assert_eq!(parse_broadcast_prefix("[FYI] case insensitive"), Some(BroadcastPrefix::Fyi));
+        assert_eq!(parse_broadcast_prefix("  [ fyi ]  whitespace tolerant"), Some(BroadcastPrefix::Fyi));
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_recognizes_ack_list() {
+        let parsed = parse_broadcast_prefix("[ack: alice, bob, carol] cleanup nudge");
+        match parsed {
+            Some(BroadcastPrefix::Ack(list)) => {
+                assert_eq!(list, vec!["alice", "bob", "carol"]);
+            }
+            other => panic!("expected Ack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_recognizes_all() {
+        assert_eq!(parse_broadcast_prefix("[all] hello everyone"), Some(BroadcastPrefix::All));
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_returns_none_for_unprefixed() {
+        assert_eq!(parse_broadcast_prefix("plain subject no brackets"), None);
+        assert_eq!(parse_broadcast_prefix("[unknown-tag] something"), None);
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_skips_timestamp_header() {
+        // The convention from CLAUDE.md is "[<agent> YYYY-MM-DD HH:MM PST]".
+        // The parser must skip past that to find the broadcast prefix.
+        let parsed = parse_broadcast_prefix(
+            "[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge",
+        );
+        match parsed {
+            Some(BroadcastPrefix::Ack(list)) => assert_eq!(list, vec!["alice"]),
+            other => panic!("expected Ack after timestamp prefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_handles_fyi_after_timestamp() {
+        assert_eq!(
+            parse_broadcast_prefix("[design 2026-06-01 12:00 PST] [fyi] foo"),
+            Some(BroadcastPrefix::Fyi),
+        );
+    }
+
+    #[test]
+    fn parse_broadcast_prefix_empty_ack_list_yields_empty_vec() {
+        let parsed = parse_broadcast_prefix("[ack: ] empty list");
+        match parsed {
+            Some(BroadcastPrefix::Ack(list)) => assert!(list.is_empty()),
+            other => panic!("expected Ack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_broadcast_channel_matches_underscore_prefix() {
+        assert!(is_broadcast_channel("_broadcast.md"));
+        assert!(is_broadcast_channel("_announcements.md"));
+        assert!(!is_broadcast_channel("alice-bob.md"));
+        assert!(!is_broadcast_channel("broadcast.md"));
+        assert!(!is_broadcast_channel("_broadcast.txt"));
+    }
+
+    #[test]
+    fn fanout_delay_assigns_stable_slots() {
+        let agents = ["bob", "alice", "carol"];
+        // Sorted: alice (0), bob (1), carol (2). Stagger 10s.
+        assert_eq!(fanout_delay_seconds("alice", &agents, 10), 0);
+        assert_eq!(fanout_delay_seconds("bob", &agents, 10), 10);
+        assert_eq!(fanout_delay_seconds("carol", &agents, 10), 20);
+    }
+
+    #[test]
+    fn fanout_delay_for_unknown_agent_defaults_to_zero_slot() {
+        let agents = ["alice", "bob"];
+        // Unknown agent gets slot 0 (no delay) — conservative; the
+        // caller already filtered the recipient list.
+        assert_eq!(fanout_delay_seconds("eve", &agents, 10), 0);
     }
 }

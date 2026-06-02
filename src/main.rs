@@ -187,6 +187,21 @@ enum Command {
         /// Channel filename (must match a [[channels]] entry) OR an absolute path.
         /// May be passed positionally OR via `--channel <name>` (v0.3.7 Bug 8).
         channel: Option<String>,
+        /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): for broadcast channels
+        /// (`_*.md`), address this message to a specific subset of
+        /// participants. Synthesizes a `[ack: a, b, c]` subject prefix
+        /// that the receiver-side watcher honors — only named agents
+        /// fire a Monitor notification. Pass as CSV. No-op on
+        /// non-broadcast channels.
+        #[arg(long, value_name = "AGENT-CSV", value_delimiter = ',')]
+        to: Vec<String>,
+        /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): mark this broadcast as
+        /// informational. Synthesizes a `[fyi]` subject prefix —
+        /// receiver-side watchers append to a per-agent FYI archive
+        /// instead of firing a Monitor notification (zero LLM cost).
+        /// Mutually exclusive with --to.
+        #[arg(long, conflicts_with = "to")]
+        fyi: bool,
         /// v0.3.7 Bug 8: alias for the positional CHANNEL arg. Users
         /// naturally type `--channel <name>` and clap used to error
         /// with a misleading "unexpected argument" tip. Now both forms
@@ -391,6 +406,18 @@ enum Command {
         /// (in multi-channel mode) to enumerate participating channels.
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
+        /// v0.4.0: override the per-swarm broadcast stagger value
+        /// (BROADCAST_FANOUT_DESIGN.md). Affects only this watcher
+        /// invocation. Precedence: --stagger-seconds > TOML
+        /// `[broadcast].stagger_seconds` > 15s default.
+        #[arg(long, value_name = "N")]
+        stagger_seconds: Option<u64>,
+        /// v0.4.0: shorthand for `--stagger-seconds 0` — instant
+        /// broadcast fanout (today's pre-v0.4.0 behavior). Use when
+        /// you've confirmed rate-limit headroom and want notifications
+        /// to surface ASAP. Mutually exclusive with --stagger-seconds.
+        #[arg(long, conflicts_with = "stagger_seconds")]
+        no_stagger: bool,
     },
     /// Long-running merger daemon — for every cross-host channel,
     /// poll all <channel>.<host>.md slice files and append new bytes
@@ -584,6 +611,8 @@ fn main() -> Result<()> {
             waiting_on,
             needs,
             config,
+            to,
+            fyi,
         } => {
             // v0.3.7 Bug 8: resolve channel from positional or --channel flag.
             let channel = match (channel, channel_flag) {
@@ -608,6 +637,8 @@ fn main() -> Result<()> {
                 waiting_on,
                 needs,
                 config,
+                to,
+                fyi,
             })
         }
         Command::AddAgent {
@@ -703,14 +734,21 @@ fn main() -> Result<()> {
             channel,
             r#as,
             config,
+            stagger_seconds,
+            no_stagger,
         } => {
             let config = registry::resolve_config(config)?;
+            let stagger_override = if no_stagger {
+                Some(0)
+            } else {
+                stagger_seconds
+            };
             match channel {
                 Some(c) => {
                     let path = resolve_channel(&c, &config)?;
                     watch::run_single(&path, &r#as)
                 }
-                None => watch::run_multi(&config, &r#as),
+                None => watch::run_multi(&config, &r#as, stagger_override),
             }
         }
         Command::Merger {

@@ -20,14 +20,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::config::Config;
+use crate::config::{self, BroadcastPrefix, Config};
 use crate::cursor;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -131,7 +131,7 @@ pub fn run_single(channel: &Path, me: &str) -> Result<()> {
 /// (written by `giga catchup` or a previous watch session) so the
 /// agent is not re-notified about messages it has already seen.
 /// Newly-discovered channels with no cursor fall back to current EOF.
-pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
+pub fn run_multi(config_path: &Path, me: &str, stagger_override: Option<u64>) -> Result<()> {
     if !config_path.exists() {
         anyhow::bail!(
             "config file not found: {} — pass --config <path>",
@@ -143,6 +143,15 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
     let me_tag = format!("[{me}] ");
     let mut tracked: HashMap<String, ChannelState> = HashMap::new();
     let mut tick: u64 = 0;
+
+    // v0.4.0: resolve the broadcast stagger value. CLI > TOML > 15s default.
+    let stagger_seconds = match stagger_override {
+        Some(v) => v,
+        None => Config::load(config_path)
+            .map(|c| c.broadcast.stagger_seconds)
+            .unwrap_or(15),
+    };
+
     // Seed the file set immediately so we don't sit idle for the
     // first poll interval before discovering anything to watch.
     refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
@@ -159,6 +168,9 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
             tracked.keys().cloned().collect::<Vec<_>>().join(", "),
         );
     }
+    eprintln!(
+        "watch: broadcast stagger = {stagger_seconds}s (0 = instant fanout)"
+    );
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
@@ -169,6 +181,11 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
         // We advance the in-memory read position (last_size) as we consume
         // bytes, but do NOT emit or persist the cursor here: emission is
         // gated on the agent being idle (phase 2).
+        //
+        // v0.4.0: for broadcast channels (`_*.md`), apply prefix
+        // filtering ([fyi] / [ack: ...] / [all]) and compute a
+        // staggered "do-not-fire-before" Instant per pending entry.
+        let now = Instant::now();
         for state in tracked.values_mut() {
             let cur = match fs::metadata(&state.path) {
                 Ok(m) => m.len(),
@@ -185,6 +202,7 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                 Err(_) => continue,
             };
             state.last_size = cur;
+            let is_broadcast = config::is_broadcast_channel(&state.name);
             for line in delta.lines() {
                 if !is_header_line(line) {
                     continue;
@@ -192,7 +210,46 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
                 if line.starts_with(&me_tag) {
                     continue;
                 }
-                state.pending.push(format!("inbox {}: {line}", state.name));
+                // Non-broadcast: surface immediately (today's behavior).
+                if !is_broadcast {
+                    state
+                        .pending
+                        .push((now, format!("inbox {}: {line}", state.name)));
+                    continue;
+                }
+                // Broadcast channel: parse subject prefix for filtering + stagger.
+                let subject = extract_subject(line);
+                match config::parse_broadcast_prefix(subject) {
+                    Some(BroadcastPrefix::Fyi) => {
+                        // Archive; don't fire.
+                        if let Some(home) = &giga_home {
+                            append_fyi_archive(home, me, &state.name, line);
+                        }
+                    }
+                    Some(BroadcastPrefix::Ack(addressed)) => {
+                        if !addressed.iter().any(|a| a == me) {
+                            continue; // not addressed to us
+                        }
+                        // Staggered slot within the addressed set.
+                        let recipients: Vec<&str> =
+                            addressed.iter().map(|s| s.as_str()).collect();
+                        let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
+                        let ready_at = now + Duration::from_secs(delay);
+                        state
+                            .pending
+                            .push((ready_at, format!("inbox {}: {line}", state.name)));
+                    }
+                    Some(BroadcastPrefix::All) | None => {
+                        // Stagger across all channel participants.
+                        let recipients: Vec<&str> =
+                            state.participants.iter().map(|s| s.as_str()).collect();
+                        let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
+                        let ready_at = now + Duration::from_secs(delay);
+                        state
+                            .pending
+                            .push((ready_at, format!("inbox {}: {line}", state.name)));
+                    }
+                }
             }
         }
 
@@ -202,18 +259,34 @@ pub fn run_multi(config_path: &Path, me: &str) -> Result<()> {
         // assistant turn. When idle, they flush together — between turns,
         // the safe boundary — and only THEN is the cursor persisted, so a
         // crash while buffered re-delivers rather than loses.
+        //
+        // v0.4.0: an entry only flushes when ready_at <= now. Entries
+        // whose stagger window hasn't elapsed stay in pending for a
+        // future tick. The persisted cursor advances per channel to
+        // last_size only when ALL entries for that channel have flushed
+        // — otherwise we'd lose the un-flushed ones on a watcher
+        // restart.
         if agent_is_busy(lock.as_ref()) {
             continue;
         }
+        let now = Instant::now();
         for state in tracked.values_mut() {
             if state.pending.is_empty() {
                 continue;
             }
-            for line in state.pending.drain(..) {
-                println!("{line}");
+            let mut still_pending: Vec<(Instant, String)> = Vec::new();
+            for (ready_at, line) in state.pending.drain(..) {
+                if ready_at <= now {
+                    println!("{line}");
+                } else {
+                    still_pending.push((ready_at, line));
+                }
             }
-            if let Some(home) = &giga_home {
-                cursor::write(home, me, &state.name, state.last_size);
+            state.pending = still_pending;
+            if state.pending.is_empty() {
+                if let Some(home) = &giga_home {
+                    cursor::write(home, me, &state.name, state.last_size);
+                }
             }
         }
     }
@@ -223,12 +296,22 @@ struct ChannelState {
     name: String,
     path: PathBuf,
     last_size: u64,
+    /// v0.4.0: sorted participant list for this channel, captured at
+    /// refresh_tracked time. Used to compute the stable per-agent
+    /// fanout slot for broadcast channels.
+    participants: Vec<String>,
     /// Notifications read from the channel but not yet emitted, because
     /// the agent was busy when they arrived. Flushed at the next idle
     /// tick. The persisted cursor is NOT advanced until these are
     /// actually emitted, so a crash while buffered re-delivers them next
     /// session (re-delivery is safe; loss is not).
-    pending: Vec<String>,
+    ///
+    /// v0.4.0: each entry carries a "do-not-fire-before" Instant. For
+    /// non-broadcast channels this equals Instant::now() at push time
+    /// (immediate). For broadcast channels with `[all]` or no prefix,
+    /// it's pushed forward by `slot × stagger_seconds` to smooth the
+    /// per-account API rate-limit hit across the recipient set.
+    pending: Vec<(Instant, String)>,
 }
 
 /// Reread the config and adjust the tracked set:
@@ -254,22 +337,30 @@ fn refresh_tracked(
             return;
         }
     };
-    let active: Vec<(String, PathBuf)> = cfg
+    let active: Vec<(String, PathBuf, Vec<String>)> = cfg
         .channels
         .iter()
         .filter(|c| c.participants.iter().any(|p| p == me))
         .filter_map(|c| match cfg.channel_path(c) {
-            Ok(p) => Some((c.file.clone(), p)),
+            Ok(p) => {
+                let mut sorted_parts = c.participants.clone();
+                sorted_parts.sort();
+                Some((c.file.clone(), p, sorted_parts))
+            }
             Err(e) => {
                 eprintln!("watch: skip channel `{}` — {e}", c.file);
                 None
             }
         })
         .collect();
-    let active_names: HashSet<String> = active.iter().map(|(n, _)| n.clone()).collect();
+    let active_names: HashSet<String> = active.iter().map(|(n, _, _)| n.clone()).collect();
 
-    for (name, path) in &active {
-        if tracked.contains_key(name) {
+    for (name, path, participants) in &active {
+        if let Some(state) = tracked.get_mut(name) {
+            // v0.4.0: refresh the participants list in case it changed
+            // (add-agent appended a participant; new agent will get its
+            // own slot starting next broadcast).
+            state.participants = participants.clone();
             continue;
         }
         let eof = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -287,6 +378,7 @@ fn refresh_tracked(
                 name: name.clone(),
                 path: path.clone(),
                 last_size: start,
+                participants: participants.clone(),
                 pending: Vec::new(),
             },
         );
@@ -453,4 +545,41 @@ fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
     let mut buf = vec![0u8; (to - from) as usize];
     f.read_exact(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// v0.4.0: extract the subject text from a header line like
+/// `[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge — 2026-06-01T12:00:00Z`.
+/// Returns the slice between the first `]` (closing the agent/timestamp
+/// prefix the watcher already validated) and the trailing ISO timestamp
+/// or end-of-line. `parse_broadcast_prefix` then scans that subject.
+fn extract_subject(header_line: &str) -> &str {
+    // Header convention: `[<sender> <ts>] <subject> — <iso8601>`
+    // We want everything after the first `]`. The broadcast-prefix
+    // parser is robust to trailing whitespace.
+    let after_first = match header_line.find(']') {
+        Some(idx) => header_line[idx + 1..].trim_start(),
+        None => header_line,
+    };
+    after_first
+}
+
+/// v0.4.0: append a `[fyi]` broadcast to a per-agent local archive
+/// instead of firing it as a Monitor notification (BROADCAST_FANOUT_DESIGN.md
+/// Idea C). Best-effort — failures are logged to stderr but don't
+/// affect the watch loop.
+fn append_fyi_archive(giga_home: &Path, agent: &str, channel: &str, header: &str) {
+    let archive_path = giga_home.join(format!("fyi-archive.{agent}.log"));
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let line = format!("[{ts}] {channel}: {header}\n");
+    let result = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&archive_path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+    if let Err(e) = result {
+        eprintln!(
+            "watch: failed to append FYI to {} ({e}) — message will not be surfaced",
+            archive_path.display(),
+        );
+    }
 }

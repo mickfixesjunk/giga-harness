@@ -19,6 +19,18 @@ pub struct Args {
     pub waiting_on: Option<String>,
     pub needs: Option<String>,
     pub config: PathBuf,
+    /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): list of agent slugs to
+    /// address this broadcast to. Synthesizes a `[ack: a, b, c]`
+    /// subject prefix; recipients-only fire on the receiving end's
+    /// watchers, other participants on the channel stay silent. No-op
+    /// on non-broadcast channels (the prefix is only interpreted on
+    /// `_*.md` files).
+    pub to: Vec<String>,
+    /// v0.4.0: mark this post informational — synthesizes a `[fyi]`
+    /// subject prefix. Watchers archive it to per-agent log instead
+    /// of firing a Monitor notification (zero LLM cost). No-op on
+    /// non-broadcast channels. Mutually exclusive with `--to`.
+    pub fyi: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -107,10 +119,26 @@ pub fn run(args: Args) -> Result<()> {
         }
     };
 
+    // v0.4.0: synthesize broadcast prefix into the subject when --to
+    // or --fyi was passed. The prefix is what `giga watch` parses to
+    // decide whether to filter or stagger this message. No-op on
+    // non-broadcast channels (the prefix is harmless extra text in
+    // the subject; watchers only honor it for `_*.md` files).
+    if args.fyi && !args.to.is_empty() {
+        return Err(anyhow!("--fyi and --to are mutually exclusive"));
+    }
+    let subject_with_prefix = if args.fyi {
+        format!("[fyi] {}", args.subject)
+    } else if !args.to.is_empty() {
+        format!("[ack: {}] {}", args.to.join(", "), args.subject)
+    } else {
+        args.subject.clone()
+    };
+
     let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let block = format_block(
         &args.me,
-        &args.subject,
+        &subject_with_prefix,
         &ts,
         &body,
         args.waiting_on.as_deref(),
@@ -456,6 +484,8 @@ participants = ["alice", "bob"]
             waiting_on: None,
             needs: None,
             config: config_path,
+            to: vec![],
+            fyi: false,
         })
         .unwrap();
 
@@ -493,6 +523,8 @@ participants = ["alice", "bob"]
             waiting_on: None,
             needs: None,
             config: config_path,
+            to: vec![],
+            fyi: false,
         })
         .unwrap();
 
@@ -531,6 +563,8 @@ participants = ["alice", "bob"]
             waiting_on: None,
             needs: None,
             config: config_path,
+            to: vec![],
+            fyi: false,
         });
 
         assert!(
@@ -562,6 +596,8 @@ participants = ["alice", "bob"]
             waiting_on: None,
             needs: None,
             config: config_path,
+            to: vec![],
+            fyi: false,
         })
         .unwrap();
 
@@ -623,9 +659,170 @@ participants = ["alice", "bob"]
             waiting_on: None,
             needs: None,
             config: config_path,
+            to: vec![],
+            fyi: false,
         })
         .unwrap();
 
         assert!(inbox.join("alice-bob.md").exists());
+    }
+
+    /// v0.4.0 (BROADCAST_FANOUT_DESIGN.md): `--to alice,bob` synthesizes
+    /// `[ack: alice, bob]` into the subject. The header parser on the
+    /// watcher side then filters notifications to the named agents.
+    #[test]
+    fn post_with_to_flag_synthesizes_ack_prefix_in_subject() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let cfg_text = format!(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = '{}'
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+[[agents]]
+name = "carol"
+workdir = "/h/carol"
+role = "."
+platform = "wsl"
+[[channels]]
+file = "_broadcast.md"
+side = "wsl"
+participants = ["alice", "bob", "carol"]
+"#,
+            inbox.display(),
+        );
+        let config_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&config_path, cfg_text).unwrap();
+
+        run(Args {
+            channel: "_broadcast.md".into(),
+            me: "alice".into(),
+            subject: "cleanup nudge".into(),
+            body: Some("ping".into()),
+            waiting_on: None,
+            needs: None,
+            config: config_path,
+            to: vec!["bob".into(), "carol".into()],
+            fyi: false,
+        })
+        .unwrap();
+
+        let body = std::fs::read_to_string(inbox.join("_broadcast.md")).unwrap();
+        assert!(
+            body.contains("[ack: bob, carol] cleanup nudge"),
+            "subject must carry the ack-prefix:\n{body}"
+        );
+    }
+
+    /// v0.4.0: `--fyi` synthesizes the `[fyi]` prefix; watchers
+    /// archive instead of firing notifications.
+    #[test]
+    fn post_with_fyi_flag_synthesizes_fyi_prefix_in_subject() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let cfg_text = format!(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = '{}'
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+[[channels]]
+file = "_broadcast.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#,
+            inbox.display(),
+        );
+        let config_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&config_path, cfg_text).unwrap();
+
+        run(Args {
+            channel: "_broadcast.md".into(),
+            me: "alice".into(),
+            subject: "morpheus online".into(),
+            body: Some("FYI".into()),
+            waiting_on: None,
+            needs: None,
+            config: config_path,
+            to: vec![],
+            fyi: true,
+        })
+        .unwrap();
+
+        let body = std::fs::read_to_string(inbox.join("_broadcast.md")).unwrap();
+        assert!(
+            body.contains("[fyi] morpheus online"),
+            "subject must carry the fyi-prefix:\n{body}"
+        );
+    }
+
+    /// v0.4.0: --fyi + --to is rejected at the post handler.
+    #[test]
+    fn post_rejects_fyi_with_to_combination() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let inbox = tmp.path().join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let cfg_text = format!(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = '{}'
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+[[channels]]
+file = "_broadcast.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#,
+            inbox.display(),
+        );
+        let config_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&config_path, cfg_text).unwrap();
+
+        let err = run(Args {
+            channel: "_broadcast.md".into(),
+            me: "alice".into(),
+            subject: "x".into(),
+            body: Some("x".into()),
+            waiting_on: None,
+            needs: None,
+            config: config_path,
+            to: vec!["bob".into()],
+            fyi: true,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
     }
 }
