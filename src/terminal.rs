@@ -150,7 +150,29 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
             }
             append_tab_args(&mut cmd, pane, &tmpdir)?;
         }
-        let status = cmd.status().context("spawning Windows Terminal (regular tabs)")?;
+        // v0.6.5: when `wt.exe` exec fails with ENOEXEC (Exec format
+        // error / os error 8), the WindowsApps AppExecutionAlias stub
+        // for wt.exe is probably broken or absent — common on
+        // freshly-installed WSL distros where Windows Terminal isn't
+        // installed but the alias stub exists with zero bytes.
+        // Surface the fallback before the cryptic os-error reaches
+        // the operator.
+        let status = match cmd.status() {
+            Ok(s) => s,
+            Err(e) => {
+                if e.raw_os_error() == Some(8) {
+                    return Err(anyhow::anyhow!(
+                        "wt.exe spawn failed with ENOEXEC (os error 8) — \
+                         the Windows Terminal alias stub at /mnt/c/Users/.../WindowsApps/wt.exe \
+                         is likely a 0-byte AppExecutionAlias that isn't a real binary. \
+                         Either install Windows Terminal from the Microsoft Store, OR run \
+                         `giga launch --terminal tmux` to bypass wt entirely."
+                    ));
+                }
+                return Err(anyhow::Error::new(e)
+                    .context("spawning Windows Terminal (regular tabs)"));
+            }
+        };
         if !status.success() {
             anyhow::bail!("wt.exe exited with status {status}");
         }

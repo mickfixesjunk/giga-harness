@@ -141,14 +141,23 @@ pub fn run(
     // idempotent (sync is rsync no-ops; merger is append-with-mtime),
     // so the cost is "extra pane to clean up" rather than data damage.
     // Acceptable until we add per-host daemon presence detection.
-    if should_spawn_daemons(&cfg, incremental) {
-        let swarm_dir = config_path
+    if should_spawn_daemons_v2(&cfg, only) {
+        // v0.6.4-class fix: derive swarm_dir from CANONICALIZED config
+        // path so the daemon panes get the actual swarm dir as cwd
+        // even when launch was invoked via a workdir-side symlink.
+        // Pre-fix Mick saw "bash: cd: null directory" because the
+        // symlink resolved to a workdir parent that produced empty/null.
+        let canonical = config_path
+            .canonicalize()
+            .unwrap_or_else(|_| config_path.to_path_buf());
+        let swarm_dir = canonical
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
         panes.push(daemon_pane("giga-sync", "giga sync", &swarm_dir));
         panes.push(daemon_pane("giga-merger", "giga merger", &swarm_dir));
     }
+    let _ = incremental;
     let mux = terminal::parse_override(terminal).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown --terminal value `{}` — valid: auto, tmux, mac-terminal, wt, print",
@@ -239,9 +248,41 @@ const DEFAULT_INTRO_PROMPT: &str =
 /// avoid duplicate daemons. Per-host scoped: a peer host's swarm_boss
 /// doesn't affect this host's launch decision.
 fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool {
+    should_spawn_daemons_v2(cfg, &[])
+}
+
+/// v0.6.5: refined daemon-spawn rule (per Mick 2026-06-02). Daemons
+/// are needed only when there's actual cross-host work to coordinate.
+/// Per-rule decision:
+///
+/// | Scenario                                    | Spawn? |
+/// |---------------------------------------------|--------|
+/// | Local-only swarm (no [[hosts]])             | NO     |
+/// | Has [[hosts]] but no peers (single host)    | NO     |
+/// | Peers + swarm_boss on this_host             | NO (boss handles via Monitor) |
+/// | Peers + no boss + full launch (no --only)   | YES (last-resort bootstrap)   |
+/// | Peers + no boss + --only set                | NO  (operator knows; daemons should already be running) |
+///
+/// Last row is Mick's complaint: `giga launch --only codex-review`
+/// on a swarm with no boss was spawning daemons unnecessarily —
+/// the operator wasn't bootstrapping, just adding an agent. The
+/// daemons either already exist (run them manually OR via boss) or
+/// the operator does `giga launch` (no --only) for a fresh bootstrap.
+fn should_spawn_daemons_v2(cfg: &crate::config::Config, only: &[String]) -> bool {
     if cfg.hosts.is_empty() {
         return false;
     }
+    // No peers (single-host swarm with [[hosts]] populated) → daemons
+    // have nothing to do.
+    let has_peers = match cfg.this_host.as_deref() {
+        Some(this) => cfg.hosts.iter().any(|h| h.name != this),
+        None => !cfg.hosts.is_empty(),
+    };
+    if !has_peers {
+        return false;
+    }
+    // Boss on this_host owns the daemons via Monitor entries in its
+    // CLAUDE.md/AGENTS.md → no tmux daemon panes from launch.
     if let Some(this) = cfg.this_host.as_deref() {
         let has_local_boss = cfg.agents.iter().any(|a| {
             a.swarm_boss && cfg.agent_host(a).map(|h| h == this).unwrap_or(false)
@@ -250,7 +291,12 @@ fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool
             return false;
         }
     }
-    true
+    // No boss configured. Daemons need tmux panes — but only if this
+    // is a full launch (operator bootstrapping). --only launches are
+    // operator-knows-what-they're-doing and should NOT spawn daemons
+    // (avoids duplicates, matches "daemons are explicitly the boss's
+    // job" mental model).
+    only.is_empty()
 }
 
 /// Build a multiplexer pane for one of the per-host background daemons
@@ -281,30 +327,33 @@ fn default_cmd_for_runtime(
 ) -> String {
     match runtime {
         crate::runtime::Runtime::Claude => default_cmd_claude(platform, intro, model),
-        crate::runtime::Runtime::Codex => default_cmd_simple_stdin("codex", platform, intro),
-        crate::runtime::Runtime::Agy => default_cmd_simple_stdin("agy", platform, intro),
+        crate::runtime::Runtime::Codex => default_cmd_tty_only("codex", platform),
+        crate::runtime::Runtime::Agy => default_cmd_tty_only("agy", platform),
     }
 }
 
-/// Pipe the intro on stdin to a CLI that reads stdin for its initial
-/// prompt (Codex, Agy). `bin` is the binary name. Wraps with `command
-/// -v` so missing binaries fail visibly rather than hanging the pane.
-fn default_cmd_simple_stdin(bin: &str, platform: &str, intro: &str) -> String {
+/// v0.6.5: launch a TUI-style CLI (Codex, Agy) that REQUIRES an
+/// interactive TTY. Pre-v0.6.5 we piped the intro on stdin via
+/// `echo <intro> | codex`, which fails immediately with
+/// "stdin is not a terminal" because these CLIs detect the pipe
+/// and refuse to start in non-interactive mode. For codex agents
+/// the intro is delivered via the codex-channel envelope mechanism
+/// (bridge pane) instead of stdin. For agy the runtime's reactive
+/// task-spawn delivers it. Either way, plain `codex` / `agy`
+/// invocation is correct.
+///
+/// Wraps with `command -v` so missing binaries fail visibly rather
+/// than leaving an empty interactive shell. Operators who want to
+/// pipe an intro can override via `[[agents]].launch_cmd`.
+fn default_cmd_tty_only(bin: &str, platform: &str) -> String {
     match platform {
         "windows" => {
-            let ps_intro = intro.replace('\'', "''");
             format!(
-                "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ \
-                   '{ps_intro}' | {bin} \
-                 }}",
+                "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ {bin} }}",
             )
         }
         _ => {
-            let sh_intro = shell_escape::unix::escape(intro.into());
-            format!(
-                "command -v {bin} >/dev/null && \
-                 echo {sh_intro} | {bin} || true",
-            )
+            format!("command -v {bin} >/dev/null && {bin} || true")
         }
     }
 }
@@ -641,5 +690,82 @@ swarm_boss = true
         assert_eq!(p.cmd, "giga sync");
         assert_eq!(p.platform, "wsl");
         assert!(!p.admin);
+    }
+
+    /// v0.6.5: should_spawn_daemons_v2 returns false when [[hosts]]
+    /// is populated but has no peers (single-host swarm with
+    /// [[hosts]] declared). Mick's superdeduper case.
+    #[test]
+    fn daemons_suppressed_when_no_peers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "host-a"
+"#;
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        assert!(!should_spawn_daemons_v2(&cfg, &[]));
+        assert!(!should_spawn_daemons_v2(&cfg, &["alice".to_string()]));
+    }
+
+    /// v0.6.5: with peers + no boss + --only set, daemons skipped
+    /// (operator's adding agents, not bootstrapping).
+    #[test]
+    fn daemons_skipped_in_only_mode_when_no_boss() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[hosts]]
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
+
+[[hosts]]
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+host = "host-a"
+"#;
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        // Full launch (no --only) → still spawn daemons.
+        assert!(should_spawn_daemons_v2(&cfg, &[]));
+        // --only set without a boss → skip daemons.
+        assert!(!should_spawn_daemons_v2(&cfg, &["alice".to_string()]));
     }
 }
