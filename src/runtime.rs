@@ -269,5 +269,16 @@ mod tests {
         // Runtime-specific guidance present.
         assert!(codex.contains("bridge"), "codex intro should mention bridge pane:\n{codex}");
         assert!(agy.contains("run_command"), "agy intro should mention run_command:\n{agy}");
+        // v0.6.10 regression guard: every intro must tell the agent
+        // AGENTS.md lives in CWD (relative ./AGENTS.md). Burned on
+        // agy/coder 2026-06-02 — agy searched the entire filesystem
+        // with find / grep because the intro only said "follow Session
+        // Start in AGENTS.md" without saying where AGENTS.md is.
+        for (name, s) in [("claude", claude), ("codex", codex), ("agy", agy)] {
+            assert!(
+                s.contains("./AGENTS.md") || s.contains("cwd"),
+                "{name} intro must say AGENTS.md is in cwd:\n{s}",
+            );
+        }
     }
 }

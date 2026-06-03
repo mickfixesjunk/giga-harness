@@ -449,7 +449,7 @@ pub(crate) fn intro_for_agent(intro: &str, agent: &crate::config::Agent) -> Stri
     );
     if let Some(cr) = &agent.code_root {
         format!(
-            "{identity}{intro} Your code root (where all code work happens) is {cr} — cd there before editing files.",
+            "{identity}{intro} Your code root (where all code work happens) is {cr} — when you start editing code (LATER, not during session-start), cd there first. Until then stay in your launch cwd; AGENTS.md and HANDOVER.md live in cwd, NOT in the code root.",
             identity = identity,
             intro = intro,
             cr = cr.display(),
@@ -529,6 +529,20 @@ mod tests {
         assert!(
             out.contains("cd there"),
             "code_root clause should tell the agent to cd:\n{out}",
+        );
+        // Regression guard: the cd must be deferred so agents don't
+        // immediately cd out of their workdir on session start (which
+        // hides AGENTS.md / HANDOVER.md and triggers filesystem-wide
+        // hunting). Burned on agy/coder 2026-06-02.
+        assert!(
+            out.contains("LATER")
+                || out.contains("later")
+                || out.contains("when you start editing"),
+            "code_root clause must defer the cd, not demand it up front:\n{out}",
+        );
+        assert!(
+            out.contains("AGENTS.md") && out.contains("cwd"),
+            "code_root clause must remind agent that AGENTS.md lives in cwd:\n{out}",
         );
     }
 
