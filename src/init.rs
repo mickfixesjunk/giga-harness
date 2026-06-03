@@ -339,7 +339,7 @@ fn render_channel_header(cfg: &Config, ch: &crate::config::Channel) -> String {
     s
 }
 
-fn render_agent_claudemd(
+pub(crate) fn render_agent_claudemd(
     cfg: &Config,
     agent: &Agent,
     config_dir: &Path,

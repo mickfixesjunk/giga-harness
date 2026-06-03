@@ -39,6 +39,7 @@ mod transports;
 mod templates;
 mod terminal;
 mod runtime;
+mod takeover;
 mod teleport;
 mod trust;
 mod upgrade;
@@ -176,6 +177,32 @@ enum Command {
         #[arg(long)]
         keep_running: bool,
         /// Print every step that would be taken; no side effects.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
+    /// Flip an agent's runtime in-place: regenerate AGENTS.md with
+    /// the new runtime's session-start instructions, append a takeover
+    /// block to HANDOVER.md, and print a one-shot prompt the new
+    /// agent should follow. Designed for the operator workflow "start
+    /// a fresh CLI in the existing workdir and say: use giga to take
+    /// over from this <old-runtime> agent" — the new agent runs
+    /// `giga takeover` with no flags and giga handles the rest.
+    Takeover {
+        /// Override the agent slug. By default, takeover auto-detects
+        /// the agent by matching cwd to one of the [[agents]].workdir
+        /// entries — the new CLI already knows who it is from its
+        /// freshly-read AGENTS.md, so the flag is rarely needed.
+        #[arg(long = "as", value_name = "SLUG")]
+        as_agent: Option<String>,
+        /// Target runtime for the takeover. Defaults to `claude`
+        /// because Claude is the most common takeover tool, but any
+        /// supported runtime works (codex/agy).
+        #[arg(long, value_name = "RUNTIME", default_value = "claude")]
+        to: String,
+        /// Print the plan + the takeover prompt; don't touch TOML,
+        /// AGENTS.md, or HANDOVER.md.
         #[arg(long)]
         dry_run: bool,
         #[arg(long, default_value = "giga-harness.toml")]
@@ -693,6 +720,25 @@ fn main() -> Result<()> {
                 keep_running,
                 dry_run,
                 config,
+            })
+        }
+        Command::Takeover {
+            as_agent,
+            to,
+            dry_run,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            let to_runtime = runtime::Runtime::parse(&to).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown --to runtime `{to}` — valid: claude, codex, agy"
+                )
+            })?;
+            takeover::run(takeover::Args {
+                config,
+                as_agent,
+                to_runtime,
+                dry_run,
             })
         }
         Command::Sweep {
