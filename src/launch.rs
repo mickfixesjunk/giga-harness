@@ -362,24 +362,23 @@ fn default_cmd_for_runtime(
 ) -> String {
     match runtime {
         crate::runtime::Runtime::Claude => default_cmd_claude(platform, intro, model),
+        // v0.6.5: codex stays plain — intro delivered via the
+        // codex-channel bridge envelope mechanism, not via CLI.
         crate::runtime::Runtime::Codex => default_cmd_tty_only("codex", platform),
-        crate::runtime::Runtime::Agy => default_cmd_tty_only("agy", platform),
+        // v0.6.8: agy has native -i / --prompt-interactive for initial
+        // prompt + interactive session. Use it so the agent boots
+        // with the intro that tells it to read AGENTS.md, follow
+        // Session Start protocol, etc. Pre-v0.6.8 agy launched plain
+        // and the agent never saw the intro → boots generic.
+        crate::runtime::Runtime::Agy => default_cmd_agy_interactive(platform, intro),
     }
 }
 
-/// v0.6.5: launch a TUI-style CLI (Codex, Agy) that REQUIRES an
-/// interactive TTY. Pre-v0.6.5 we piped the intro on stdin via
-/// `echo <intro> | codex`, which fails immediately with
-/// "stdin is not a terminal" because these CLIs detect the pipe
-/// and refuse to start in non-interactive mode. For codex agents
-/// the intro is delivered via the codex-channel envelope mechanism
-/// (bridge pane) instead of stdin. For agy the runtime's reactive
-/// task-spawn delivers it. Either way, plain `codex` / `agy`
-/// invocation is correct.
-///
-/// Wraps with `command -v` so missing binaries fail visibly rather
-/// than leaving an empty interactive shell. Operators who want to
-/// pipe an intro can override via `[[agents]].launch_cmd`.
+/// v0.6.5: launch a TUI-style CLI that REQUIRES an interactive TTY
+/// with NO initial prompt. Used by codex (intro arrives via the
+/// codex-channel bridge envelope, not the CLI). Wraps with
+/// `command -v` so missing binaries fail visibly rather than
+/// leaving an empty interactive shell.
 fn default_cmd_tty_only(bin: &str, platform: &str) -> String {
     match platform {
         "windows" => {
@@ -389,6 +388,28 @@ fn default_cmd_tty_only(bin: &str, platform: &str) -> String {
         }
         _ => {
             format!("command -v {bin} >/dev/null && {bin} || true")
+        }
+    }
+}
+
+/// v0.6.8: agy supports `-i / --prompt-interactive <prompt>` for
+/// "run an initial prompt interactively and continue the session".
+/// This is the equivalent of `claude -c <intro>` — gives agy the
+/// intro that tells the agent to read AGENTS.md, arm the watcher,
+/// etc. Without this the agent boots with no context.
+fn default_cmd_agy_interactive(platform: &str, intro: &str) -> String {
+    match platform {
+        "windows" => {
+            let ps_intro = intro.replace('\'', "''");
+            format!(
+                "if (Get-Command agy -ErrorAction SilentlyContinue) {{ \
+                   agy -i '{ps_intro}' \
+                 }}",
+            )
+        }
+        _ => {
+            let sh_intro = shell_escape::unix::escape(intro.into());
+            format!("command -v agy >/dev/null && agy -i {sh_intro} || true")
         }
     }
 }
