@@ -37,9 +37,11 @@ pub enum Runtime {
     /// CLI consumes the envelopes.
     Codex,
     /// Antigravity CLI (`agy`). Has a reactive-wakeup background-task
-    /// primitive — watcher runs INSIDE the agent's session via
-    /// `run_command(background=true)` with `giga watch --agy` (exits 0
-    /// on WAITING ON me, which triggers AGY's task-completion wakeup).
+    /// primitive — watcher runs INSIDE the agent's session via the
+    /// `run_command` tool with a small `WaitMsBeforeAsync` to detach
+    /// (NOT a `background=true` parameter; that isn't in agy's tool
+    /// schema), running `giga watch --agy` (exits 0 on WAITING ON me,
+    /// which triggers AGY's task-completion wakeup).
     Agy,
 }
 
@@ -228,6 +230,36 @@ mod tests {
             assert!(!body.trim().is_empty(), "{} snippet must not be empty", r.as_str());
             assert!(body.contains("{{AGENT}}"), "{} snippet must use {{AGENT}} placeholder", r.as_str());
         }
+    }
+
+    #[test]
+    fn agy_snippet_uses_correct_tool_signatures() {
+        // Regression test for v0.6.11 — agy's AGENTS.md previously
+        // documented two fictitious things that crash the real Agy
+        // CLI on use:
+        //   1. `giga sweep --as <slug>` — there is no --as flag on
+        //      sweep; the real flag is --owed-by <slug>.
+        //   2. `run_command("...", background=true)` — Agy's actual
+        //      run_command tool doesn't take a `background` parameter;
+        //      detachment is via `WaitMsBeforeAsync`.
+        // Mick's coder agent caught both bugs on first session.
+        let body = Runtime::Agy.session_start_snippet();
+        assert!(
+            !body.contains("sweep --as"),
+            "agy snippet still recommends `sweep --as <slug>` (no such flag — use --owed-by):\n{body}",
+        );
+        assert!(
+            !body.contains("background=true") || body.contains("not a supported parameter"),
+            "agy snippet recommends background=true to run_command (Agy's schema doesn't have that):\n{body}",
+        );
+        assert!(
+            body.contains("--owed-by"),
+            "agy snippet must reference the correct sweep flag --owed-by:\n{body}",
+        );
+        assert!(
+            body.contains("WaitMsBeforeAsync"),
+            "agy snippet must reference WaitMsBeforeAsync for run_command backgrounding:\n{body}",
+        );
     }
 
     #[test]
