@@ -13,14 +13,17 @@
 //! propagation.
 //!
 //! Safety:
-//! * The local install runs the SAME `install.sh` an operator would
-//!   run manually — `curl -sSfL <release URL> | bash`. The URL is
+//! * The local install runs the SAME canonical installer an operator
+//!   would run manually — `install.sh` via bash on Linux/macOS,
+//!   `install.ps1` via PowerShell on Windows (v0.6.12). URLs are
 //!   hard-coded to this project's own GitHub release endpoint; no
 //!   indirection.
 //! * Overwriting the running binary is safe on Linux/macOS (open file
 //!   handles keep the old binary mapped; subsequent invocations see
-//!   the new inode). On Windows the in-place overwrite may fail; the
-//!   install.ps1 path is the operator's recourse there.
+//!   the new inode). On Windows the in-place overwrite of a running
+//!   `giga.exe` fails with sharing-violation — agents holding the
+//!   binary (watchers, daemons) need to be TaskStop'd before upgrade,
+//!   as the sdd-testwin flow already does.
 //! * Bootstrap post-failure (peer install failed; broadcast failed) is
 //!   non-fatal — local install already succeeded, peers/agents can be
 //!   re-prodded manually.
@@ -32,11 +35,15 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::config::{self, Config};
 
-/// URL operator install.sh — hard-coded to this project's GitHub
-/// release "latest" endpoint. v0.4.1+ ships with this baked in so
-/// `giga upgrade` doesn't need an extra config knob.
-const INSTALL_URL: &str =
+/// URLs for the per-platform installers — hard-coded to this
+/// project's GitHub release "latest" endpoint. v0.4.1+ ships with
+/// these baked in so `giga upgrade` doesn't need an extra config
+/// knob. v0.6.12 split into per-platform: `install.sh` for
+/// Linux/macOS, `install.ps1` for native Windows.
+const INSTALL_SH_URL: &str =
     "https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh";
+const INSTALL_PS1_URL: &str =
+    "https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.ps1";
 
 pub struct Args {
     pub config: PathBuf,
@@ -83,8 +90,9 @@ pub fn run(args: Args) -> Result<()> {
     if !peers.is_empty() {
         println!("\n==> upgrading giga on {} peer host(s)", peers.len());
         for peer in &peers {
-            match install_remote(&abs_config, peer, args.dry_run) {
-                Ok(()) => println!("  + {peer}: upgraded"),
+            let peer_platform = infer_host_platform(&cfg, peer);
+            match install_remote(&abs_config, peer, peer_platform, args.dry_run) {
+                Ok(()) => println!("  + {peer}: upgraded ({peer_platform})"),
                 Err(e) => eprintln!("  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"),
             }
         }
@@ -151,15 +159,34 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Run the canonical install.sh on this host. Streams stdout/stderr
-/// through to the operator so the install progress is visible.
+/// Run the canonical installer on this host, dispatched by platform.
+///
+/// v0.6.12: native Windows builds (`giga.exe`) now invoke
+/// `install.ps1` via PowerShell instead of `install.sh` via bash.
+/// Pre-fix, `giga upgrade` on Windows ran `bash -c "curl ... | bash"`
+/// which either failed outright (no bash on PATH) or — worse — found
+/// Git Bash and ran the Linux install.sh, writing giga into a POSIX
+/// path that the Windows giga.exe launcher never looks at. Mick saw
+/// this on 2026-06-03 after upgrading TRINITY to v0.6.11.
+///
+/// Linux/macOS keep the bash + curl + install.sh path unchanged.
+///
+/// Streams stdout/stderr through to the operator so install progress
+/// is visible.
 fn install_local(dry_run: bool) -> Result<()> {
+    if cfg!(target_os = "windows") {
+        install_local_windows(dry_run)
+    } else {
+        install_local_unix(dry_run)
+    }
+}
+
+fn install_local_unix(dry_run: bool) -> Result<()> {
     if dry_run {
-        println!("  [dry-run] would: curl -sSfL {INSTALL_URL} | bash");
+        println!("  [dry-run] would: curl -sSfL {INSTALL_SH_URL} | bash");
         return Ok(());
     }
-    // `bash -c 'curl ... | bash'` so the pipe lives inside the child.
-    let pipeline = format!("curl -sSfL {INSTALL_URL} | bash");
+    let pipeline = format!("curl -sSfL {INSTALL_SH_URL} | bash");
     let status = Command::new("bash")
         .args(["-c", &pipeline])
         .stdin(Stdio::null())
@@ -176,30 +203,101 @@ fn install_local(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Run the canonical install.sh on a peer over `giga remote --host`.
-/// We re-invoke this same binary so the remote-exec capability check
-/// (transport must `supports_remote_exec`) is enforced uniformly with
-/// the rest of the `--host` operator commands.
-fn install_remote(config: &std::path::Path, peer: &str, dry_run: bool) -> Result<()> {
-    let cmd = format!("curl -sSfL {INSTALL_URL} | bash");
+fn install_local_windows(dry_run: bool) -> Result<()> {
+    // The canonical Windows one-liner is `iwr -useb <url> | iex`. We
+    // run it under powershell.exe with ExecutionPolicy Bypass + a
+    // pinned TLS protocol so older PowerShell 5.x boxes can still
+    // negotiate HTTPS to github.com. PowerShell 7+ doesn't need the
+    // SecurityProtocol nudge but it's a harmless no-op there.
+    let script = format!(
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         iwr -useb {INSTALL_PS1_URL} | iex"
+    );
     if dry_run {
-        println!("  [dry-run] would: giga remote --host {peer} -- bash -c '{cmd}'");
+        println!("  [dry-run] would: powershell -NoProfile -ExecutionPolicy Bypass -Command \"{script}\"");
         return Ok(());
     }
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new("powershell.exe")
         .args([
-            "remote",
-            "--host",
-            peer,
-            "--config",
-            config
-                .to_str()
-                .ok_or_else(|| anyhow!("non-UTF8 config path"))?,
-            "--",
-            "bash",
-            "-c",
-            &cmd,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
         ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| "running local install.ps1 via powershell.exe")?;
+    if !status.success() {
+        return Err(anyhow!(
+            "local install failed (exit {})",
+            status.code().unwrap_or(-1),
+        ));
+    }
+    Ok(())
+}
+
+/// Run the canonical installer on a peer host over `giga remote
+/// --host`. We re-invoke this same binary so the remote-exec
+/// capability check (transport must `supports_remote_exec`) is
+/// enforced uniformly with the rest of the `--host` operator
+/// commands.
+///
+/// v0.6.12: dispatches by `peer_platform` so Windows peers get
+/// `install.ps1` via `powershell.exe` and Linux/macOS peers get
+/// `install.sh` via `bash`. Platform is inferred from the agents
+/// configured on the peer host (see `infer_host_platform`).
+fn install_remote(
+    config: &std::path::Path,
+    peer: &str,
+    peer_platform: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let (shell_program, shell_args, installer_cmd): (&str, &[&str], String) = if peer_platform
+        == "windows"
+    {
+        (
+            "powershell.exe",
+            &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
+            format!(
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+                 iwr -useb {INSTALL_PS1_URL} | iex"
+            ),
+        )
+    } else {
+        (
+            "bash",
+            &["-c"],
+            format!("curl -sSfL {INSTALL_SH_URL} | bash"),
+        )
+    };
+    if dry_run {
+        println!(
+            "  [dry-run] would: giga remote --host {peer} -- {shell_program} {} '{installer_cmd}'",
+            shell_args.join(" "),
+        );
+        return Ok(());
+    }
+    let mut args: Vec<String> = vec![
+        "remote".into(),
+        "--host".into(),
+        peer.into(),
+        "--config".into(),
+        config
+            .to_str()
+            .ok_or_else(|| anyhow!("non-UTF8 config path"))?
+            .into(),
+        "--".into(),
+        shell_program.into(),
+    ];
+    for a in shell_args {
+        args.push((*a).into());
+    }
+    args.push(installer_cmd);
+    let status = Command::new(std::env::current_exe()?)
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -212,6 +310,24 @@ fn install_remote(config: &std::path::Path, peer: &str, dry_run: bool) -> Result
         ));
     }
     Ok(())
+}
+
+/// Infer a host's platform from the agents configured on it.
+/// Heuristic: if any agent on the host has `platform = "windows"`,
+/// the host is Windows; otherwise it's POSIX (wsl / linux / macos).
+/// Real swarms are platform-homogeneous per host today; mixed-host
+/// scenarios would need a Host.platform field, which we can add when
+/// the case shows up.
+fn infer_host_platform(cfg: &Config, host: &str) -> &'static str {
+    let any_windows = cfg
+        .agents
+        .iter()
+        .any(|a| a.host.as_deref() == Some(host) && a.platform == "windows");
+    if any_windows {
+        "windows"
+    } else {
+        "unix"
+    }
 }
 
 /// Post the canonical "please re-arm your watcher" message to one
@@ -420,12 +536,111 @@ platform = "wsl"
     }
 
     #[test]
-    fn install_url_points_at_this_project_repo() {
+    fn install_urls_point_at_this_project_repo() {
         // Guard against accidental URL drift if someone edits the
-        // constant. install.sh is what the README + REMOTE_QUICKSTART
-        // point at, so changing the URL silently is bad.
-        assert!(INSTALL_URL.contains("mickfixesjunk/giga-harness"));
-        assert!(INSTALL_URL.ends_with("/install.sh"));
-        assert!(INSTALL_URL.contains("/latest/"));
+        // constants. install.sh / install.ps1 are what the README +
+        // REMOTE_QUICKSTART point at, so changing the URL silently
+        // is bad.
+        for url in [INSTALL_SH_URL, INSTALL_PS1_URL] {
+            assert!(url.contains("mickfixesjunk/giga-harness"), "{url}");
+            assert!(url.contains("/latest/"), "{url}");
+        }
+        assert!(INSTALL_SH_URL.ends_with("/install.sh"));
+        assert!(INSTALL_PS1_URL.ends_with("/install.ps1"));
+    }
+
+    /// v0.6.12 regression guard. Mick saw `giga upgrade` on Windows
+    /// run the bash/install.sh path instead of powershell/install.ps1,
+    /// which either failed (no bash on PATH) or — worse — wrote the
+    /// Linux binary into a POSIX path that giga.exe never looks at.
+    /// Helper: write a config + this_host.toml to a tempdir and load.
+    fn load_with_this_host(cfg_text: &str, this_host: &str) -> Config {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        std::fs::write(&cfg_path, cfg_text).unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            format!("this_host = \"{this_host}\"\n"),
+        )
+        .unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        // Hold tempdir for the lifetime of the test via leak — small
+        // and the test process exits right after.
+        std::mem::forget(tmp);
+        cfg
+    }
+
+    #[test]
+    fn infer_host_platform_returns_windows_when_any_agent_is_windows() {
+        let cfg = load_with_this_host(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "trinity"
+tailnet_hostname = "trinity.tail0.ts.net"
+[[hosts]]
+name = "local-wsl"
+tailnet_hostname = "local-wsl.tail0.ts.net"
+[[agents]]
+name = "sdd-testwin"
+workdir = "C:\\sdd-testwin"
+role = "."
+platform = "windows"
+host = "trinity"
+"#,
+            "local-wsl",
+        );
+        assert_eq!(infer_host_platform(&cfg, "trinity"), "windows");
+    }
+
+    #[test]
+    fn infer_host_platform_returns_unix_for_wsl_only_host() {
+        let cfg = load_with_this_host(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "neo-wsl"
+tailnet_hostname = "neo-wsl.tail0.ts.net"
+[[hosts]]
+name = "local-wsl"
+tailnet_hostname = "local-wsl.tail0.ts.net"
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+host = "neo-wsl"
+"#,
+            "local-wsl",
+        );
+        assert_eq!(infer_host_platform(&cfg, "neo-wsl"), "unix");
+    }
+
+    #[test]
+    fn infer_host_platform_returns_unix_when_host_has_no_agents() {
+        // Defensive default — an empty host slot shouldn't make us
+        // try to PowerShell-install. Fall back to bash/install.sh.
+        let cfg = load_with_this_host(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "empty-host"
+tailnet_hostname = "empty.tail0.ts.net"
+[[hosts]]
+name = "local-wsl"
+tailnet_hostname = "local-wsl.tail0.ts.net"
+"#,
+            "local-wsl",
+        );
+        assert_eq!(infer_host_platform(&cfg, "empty-host"), "unix");
     }
 }
