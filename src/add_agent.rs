@@ -170,7 +170,7 @@ pub fn run(args: Args) -> Result<()> {
                 }
             };
             // Remote `giga init` scaffolds the new agent's workdir +
-            // CLAUDE.md on the peer. Init is host-aware (as of v1.1), so
+            // AGENTS.md on the peer. Init is host-aware (as of v1.1), so
             // it only touches workdirs for agents whose `host` matches
             // the peer — won't try to mkdir /home/<other-user>/... on
             // the wrong filesystem. Best-effort: only runs if bootstrap
@@ -179,7 +179,7 @@ pub fn run(args: Args) -> Result<()> {
             if bootstrap_ok {
                 println!("auto-scaffold: running `giga init` on `{host}`...");
                 match sync::run_remote_giga_init(&revalidated, host, &args.config) {
-                    Ok(()) => println!("  + remote init complete — `{}`'s workdir + CLAUDE.md ready on `{host}`", args.name),
+                    Ok(()) => println!("  + remote init complete — `{}`'s workdir + AGENTS.md ready on `{host}`", args.name),
                     Err(e) => {
                         eprintln!("  ! remote giga init failed: {e:#}");
                         eprintln!("    The peer has the TOML; run `giga remote --host {host} init` manually to scaffold.");

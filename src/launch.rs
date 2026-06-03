@@ -25,14 +25,12 @@ pub fn run(
     let cfg = Config::load(config_path)?;
     let session = format!("giga-{}", cfg.project.name);
 
-    // The intro prompt is what each claude session processes the
-    // moment it opens. Generic by design — per-agent behavior lives
-    // in each agent's CLAUDE.md (which the prompt references).
-    let intro = cfg
-        .project
-        .launch_intro_prompt
-        .as_deref()
-        .unwrap_or(DEFAULT_INTRO_PROMPT);
+    // The intro prompt is what each CLI session processes the moment
+    // it opens. Generic by design — per-agent behavior lives in each
+    // agent's AGENTS.md (which the prompt references). A project-level
+    // `launch_intro_prompt` overrides for ALL agents; otherwise we
+    // pick a runtime-appropriate default per agent below.
+    let intro_override = cfg.project.launch_intro_prompt.as_deref();
 
     // If --only was passed, narrow the agent list to that set and
     // error on any name the config doesn't know — typos here are
@@ -99,7 +97,8 @@ pub fn run(
         .flat_map(|a| {
             let runtime = cfg.agent_runtime(a);
             let cwd = a.workdir.to_string_lossy().to_string();
-            let agent_intro = intro_for_agent(intro, a);
+            let base_intro = intro_override.unwrap_or_else(|| runtime.launch_intro_prompt());
+            let agent_intro = intro_for_agent(base_intro, a);
             // Per-agent launch_cmd override wins; otherwise pick a
             // runtime-appropriate default.
             let cmd = a.launch_cmd.clone().unwrap_or_else(|| {
@@ -231,40 +230,15 @@ pub fn run(
     Ok(())
 }
 
-/// Generic opening prompt sent to every claude session. Each
-/// agent's own CLAUDE.md should contain a "Session Start" section
-/// with the concrete actions to take (arm watchers, post intro,
-/// etc.). Project configs can override via
-/// `[project].launch_intro_prompt`.
-///
-/// We always launch with `claude -c`, which resumes the most-recent
-/// session for the agent's cwd if one exists and starts fresh if
-/// not. The prompt has to work in both cases — so it tells the
-/// agent: if you were mid-task, finish it; otherwise do the
-/// Session Start protocol.
-// NOTE: Do NOT put backtick-formatted code spans in any prompt string
-// that ends up on a shell command line — backticks survive single-
-// quoting through the wt.exe → wsl.exe → bash hop and end up being
-// shell-evaluated as command substitution. The launched shell runs
-// whatever's inside the backticks (aws, giga, [slug], paths…) and
-// the substituted output gets baked into the intro that Claude
-// actually receives, corrupting the prompt. Use plain text instead.
-const DEFAULT_INTRO_PROMPT: &str =
-    "Session start. First, if ./HANDOVER.md exists in cwd, read it — it \
-     carries cross-session / cross-machine state (recent decisions, \
-     in-flight work, pickup instructions) that your conversation history \
-     may not include. Then: if you were in the middle of a task in the \
-     previous session (check your most recent assistant message), \
-     continue from where you left off. Otherwise, follow the Session \
-     Start protocol in CLAUDE.md. CRITICAL: arm the inbox watcher using \
-     the Monitor TOOL with persistent:true — copy the invocation from \
-     CLAUDE.md verbatim. Do NOT run giga watch via the Bash tool, even \
-     with run_in_background:true — Bash's stdout never reaches your \
-     conversation, so the watcher will be alive but you'll receive zero \
-     notifications and idle silently. Only Monitor delivers messages into \
-     your context. The watcher auto-replays unread history as the first \
-     batch of notifications — read those, then post a one-line intro on \
-     each channel and standby.";
+// The per-runtime default opening prompt lives on the `Runtime` enum
+// (see `Runtime::launch_intro_prompt`) and is sourced from
+// `templates/runtimes/<runtime>-intro.md` at compile time. Project
+// configs can override via `[project].launch_intro_prompt`.
+//
+// IMPORTANT: those intro files must NOT contain backticks. Backticks
+// survive single-quoting on the wt.exe → wsl.exe → bash hop and end
+// up shell-evaluated as command substitution, corrupting the prompt
+// the agent actually receives. Tests in `runtime.rs` enforce this.
 
 /// True when the launcher should add `giga-sync` + `giga-merger` panes
 /// for this run. Multi-host swarms need them; local-only swarms don't.
@@ -317,7 +291,7 @@ fn should_spawn_daemons_v2(cfg: &crate::config::Config, only: &[String]) -> bool
         return false;
     }
     // Boss on this_host owns the daemons via Monitor entries in its
-    // CLAUDE.md/AGENTS.md → no tmux daemon panes from launch.
+    // AGENTS.md → no tmux daemon panes from launch.
     if let Some(this) = cfg.this_host.as_deref() {
         let has_local_boss = cfg.agents.iter().any(|a| {
             a.swarm_boss && cfg.agent_host(a).map(|h| h == this).unwrap_or(false)
@@ -459,12 +433,13 @@ fn default_cmd_claude(platform: &str, intro: &str, model: &str) -> String {
 ///   3. A code-root note if the agent has one set.
 ///
 /// Extracted from `run()` so the wiring is testable without spawning
-/// terminals. The identity rule is reinforced in CLAUDE.md as well so
+/// terminals. The identity rule is reinforced in AGENTS.md as well so
 /// it survives session restarts — but this is what the agent sees on
-/// the very first turn, before it's read its CLAUDE.md.
+/// the very first turn, before it's read its AGENTS.md.
 pub(crate) fn intro_for_agent(intro: &str, agent: &crate::config::Agent) -> String {
-    // See the note above DEFAULT_INTRO_PROMPT — no backticks in this
-    // string ever. They get shell-evaluated on the wt → wsl → bash hop.
+    // See `Runtime::launch_intro_prompt` — no backticks in any string
+    // that ends up on a shell command line. They get shell-evaluated
+    // on the wt → wsl → bash hop.
     let identity = format!(
         "You are the {slug} agent in this giga-harness swarm. EVERY response \
          you make to the user in this terminal MUST start with [{slug}] so the \

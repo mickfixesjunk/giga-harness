@@ -95,7 +95,7 @@ pub fn run(path: &Path) -> Result<()> {
 /// Cheap heuristic: a giga channel file's first line matches
 /// `# <something> shared inbox`. Lets validate flag genuine orphan
 /// channels without false-positiving on agent workdir files
-/// (CLAUDE.md, HANDOVER.md) that happen to share an inbox dir.
+/// (AGENTS.md, HANDOVER.md) that happen to share an inbox dir.
 fn looks_like_channel(path: &Path) -> bool {
     let Ok(f) = fs::File::open(path) else {
         return false;
@@ -137,9 +137,9 @@ mod tests {
     }
 
     #[test]
-    fn looks_like_channel_rejects_claude_md() {
+    fn looks_like_channel_rejects_agents_md() {
         let tmp = TempDir::new().unwrap();
-        let p = write_file(tmp.path(), "CLAUDE.md", "# alice agent\n\nYou are...\n");
+        let p = write_file(tmp.path(), "AGENTS.md", "# alice agent\n\nYou are...\n");
         assert!(!looks_like_channel(&p));
     }
 

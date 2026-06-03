@@ -1,4 +1,4 @@
-//! Compiled-in agent CLAUDE.md templates.
+//! Compiled-in agent AGENTS.md templates.
 //!
 //! The source `.md` files live in-repo under `templates/` and are baked into
 //! the binary with `include_str!`, so giga has NO runtime dependency on any
@@ -6,7 +6,7 @@
 //!
 //! Shared prose (the Monitor-watcher warning, the message convention) lives in
 //! `templates/partials/` and is reused by both `giga add-agent` (the stub) and
-//! `giga init` (auto-generated CLAUDE.md) so the two never drift apart.
+//! `giga init` (auto-generated AGENTS.md) so the two never drift apart.
 
 /// Full `giga add-agent` stub written to `agents/<name>.md`.
 /// Placeholders: `{{AGENT}}`, `{{ROLE}}`, `{{PEERS}}`, `{{WATCHER}}`, `{{CONVENTION}}`.

@@ -1,8 +1,8 @@
-//! `giga init` — scaffold inbox files and per-agent CLAUDE.md from a config.
+//! `giga init` — scaffold inbox files and per-agent AGENTS.md from a config.
 //!
 //! Idempotent: re-running against an existing config is safe. Inbox
 //! files that already exist keep their content (only the header gets
-//! re-written if missing). CLAUDE.md files are always re-rendered
+//! re-written if missing). AGENTS.md files are always re-rendered
 //! from the template so config changes propagate.
 
 use std::fs;
@@ -38,7 +38,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // Host-aware filtering: when this_host is set (cross-host swarm), only
     // scaffold local-host artifacts — agents whose host matches this_host,
     // and channels with at least one participant on this_host. Without
-    // this we'd try to mkdir + write CLAUDE.md to agent workdirs that
+    // this we'd try to mkdir + write AGENTS.md to agent workdirs that
     // belong on a different physical machine (e.g. /home/neo/... when
     // we're on a box with user `neomatrix`). For legacy local-only
     // swarms (no [[hosts]], no this_host), include everything — today's
@@ -53,7 +53,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     };
     // v0.3.9 Bug 5: name the agents we're NOT scaffolding so the
     // success message reflects reality. Pre-fix: init exited "OK — 4
-    // agent CLAUDE.md files in place" without saying it had skipped
+    // agent AGENTS.md files in place" without saying it had skipped
     // 3 others that live on a peer host.
     let skipped_agents: Vec<&Agent> = if let Some(this) = cfg.this_host.as_deref() {
         cfg.agents
@@ -145,13 +145,13 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         println!("  [skip] {} (lives on `{host}`, not this host)", agent.name);
     }
 
-    // Generate per-agent CLAUDE.md in the agent's workdir. The
+    // Generate per-agent AGENTS.md in the agent's workdir. The
     // workdir comes from the config in its agent-side form (e.g.,
     // `C:\Users\Audio\sdd-testwin` for Windows-platform agents on a
     // Linux/WSL host); translate to a host-FS path before touching
     // the filesystem so we don't end up with literal-backslash dirs.
     //
-    // Also: if the agent has a CLAUDE.md template at
+    // Also: if the agent has an AGENTS.md template at
     // `agents/<name>.md`, look for an optional handover file at
     // `agents/<name>.handover.md` next to it. When present, copy
     // it into the workdir as `HANDOVER.md` on first init only —
@@ -275,13 +275,13 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 
     if skipped_agents.is_empty() {
         println!(
-            "\nginit OK — {} channels + {} agent CLAUDE.md files in place",
+            "\nginit OK — {} channels + {} agent AGENTS.md files in place",
             local_channels.len(),
             local_agents.len(),
         );
     } else {
         println!(
-            "\nginit OK — {} channels + {} local agent CLAUDE.md files in place; {} skipped (live on other hosts)",
+            "\nginit OK — {} channels + {} local agent AGENTS.md files in place; {} skipped (live on other hosts)",
             local_channels.len(),
             local_agents.len(),
             skipped_agents.len(),
@@ -291,7 +291,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     Ok(())
 }
 
-/// Given an agent's CLAUDE.md template path (e.g.,
+/// Given an agent's AGENTS.md template path (e.g.,
 /// `agents/superdeduper.md`), return the sibling handover path
 /// (`agents/superdeduper.handover.md`). The file may or may not
 /// exist; the caller checks before copying.
@@ -354,11 +354,11 @@ fn render_agent_claudemd(
             config_dir.join(tpl)
         };
         let body = fs::read_to_string(&abs)
-            .with_context(|| format!("reading agent CLAUDE.md template {}", abs.display()))?;
+            .with_context(|| format!("reading agent AGENTS.md template {}", abs.display()))?;
         return Ok(prepend_header(&body, agent, cfg, config_path));
     }
 
-    // Auto-generated minimal CLAUDE.md.
+    // Auto-generated minimal AGENTS.md.
     let mut s = String::new();
     s.push_str(&format!("# {} agent\n\n", agent.name));
     s.push_str(&format!("**Role:** {}\n\n", agent.role));
@@ -420,7 +420,7 @@ fn render_agent_claudemd(
 }
 
 /// v0.3.6: render the "Swarm coordination" section that goes into the
-/// CLAUDE.md of an agent with `swarm_boss = true`. The agent's session
+/// AGENTS.md of an agent with `swarm_boss = true`. The agent's session
 /// arms sync + merger Monitors instead of the operator spawning tmux
 /// daemon panes. See SWARM_BOSS_DESIGN.md §3.3.
 fn render_swarm_boss_section(host: &str, config_path: &Path) -> String {
@@ -467,7 +467,7 @@ fn prepend_header(body: &str, agent: &Agent, cfg: &Config, config_path: &Path) -
     ));
     if let Some(cr) = &agent.code_root {
         out.push_str(&format!(
-            "> **Code root:** `{}` \\\n> All code work (edits, builds, tests) happens here. `cd` to this directory before touching project files. Your workdir (`{}`) is only your launch context and CLAUDE.md home.\n\n",
+            "> **Code root:** `{}` \\\n> All code work (edits, builds, tests) happens here. `cd` to this directory before touching project files. Your workdir (`{}`) is only your launch context and AGENTS.md home.\n\n",
             cr.display(),
             agent.workdir.display(),
         ));
@@ -666,7 +666,7 @@ participants = ["alice", "bob"]
 
     #[test]
     fn claudemd_lists_channels_the_agent_participates_in() {
-        // Auto-generated CLAUDE.md (no template) lists the agent's
+        // Auto-generated AGENTS.md (no template) lists the agent's
         // channels so the watcher arming command is self-documenting.
         let body = r#"
 [project]
@@ -699,7 +699,7 @@ participants = ["code", "design"]
         assert!(claudemd.contains("giga watch --as design"));
     }
 
-    /// v0.3.6 S3: when an agent is flagged swarm_boss, its CLAUDE.md
+    /// v0.3.6 S3: when an agent is flagged swarm_boss, its AGENTS.md
     /// includes the Swarm coordination section with sync + merger
     /// Monitor lines. The agent will arm them at session start.
     #[test]
@@ -732,7 +732,7 @@ swarm_boss = true
         let claudemd = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &cfg_path).unwrap();
         assert!(
             claudemd.contains("Swarm coordination"),
-            "swarm_boss section missing from CLAUDE.md"
+            "swarm_boss section missing from AGENTS.md"
         );
         assert!(
             claudemd.contains("giga sync --quiet"),

@@ -142,6 +142,25 @@ impl Runtime {
             Runtime::Agy => include_str!("../templates/runtimes/agy.md"),
         }
     }
+
+    /// Default opening prompt sent to this runtime's CLI on `giga
+    /// launch`. Pulled from `templates/runtimes/<runtime>-intro.md` at
+    /// compile time. Per-project override lives at
+    /// `[project].launch_intro_prompt` in TOML — when set, that wins
+    /// for all agents regardless of runtime.
+    ///
+    /// IMPORTANT: these strings end up single-quoted on a shell command
+    /// line (wt.exe → wsl.exe → bash hop). Backticks in the file would
+    /// survive single-quoting and get shell-evaluated as command
+    /// substitution, corrupting the prompt the agent actually sees.
+    /// Keep the intro files plain prose — no code spans, no fences.
+    pub fn launch_intro_prompt(&self) -> &'static str {
+        match self {
+            Runtime::Claude => include_str!("../templates/runtimes/claude-intro.md"),
+            Runtime::Codex => include_str!("../templates/runtimes/codex-intro.md"),
+            Runtime::Agy => include_str!("../templates/runtimes/agy-intro.md"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +228,46 @@ mod tests {
             assert!(!body.trim().is_empty(), "{} snippet must not be empty", r.as_str());
             assert!(body.contains("{{AGENT}}"), "{} snippet must use {{AGENT}} placeholder", r.as_str());
         }
+    }
+
+    #[test]
+    fn launch_intro_prompt_is_runtime_specific_and_safe() {
+        let claude = Runtime::Claude.launch_intro_prompt();
+        let codex = Runtime::Codex.launch_intro_prompt();
+        let agy = Runtime::Agy.launch_intro_prompt();
+        // Distinct strings — no accidental sharing of file paths.
+        assert_ne!(claude, codex);
+        assert_ne!(claude, agy);
+        assert_ne!(codex, agy);
+        // Filename consolidation (v0.6.0): never CLAUDE.md.
+        for (name, s) in [("claude", claude), ("codex", codex), ("agy", agy)] {
+            assert!(!s.trim().is_empty(), "{name} intro must not be empty");
+            assert!(
+                !s.contains("CLAUDE.md"),
+                "{name} intro references CLAUDE.md (should be AGENTS.md):\n{s}",
+            );
+            assert!(
+                s.contains("AGENTS.md"),
+                "{name} intro should reference AGENTS.md:\n{s}",
+            );
+            // Backticks survive single-quoting on the wt → wsl → bash
+            // hop and get shell-evaluated. Lock this out at the source.
+            assert!(
+                !s.contains('`'),
+                "{name} intro contains a backtick — will be shell-evaluated:\n{s}",
+            );
+        }
+        // Claude-only tools must not leak into other runtimes' intros.
+        assert!(
+            !codex.contains("Monitor TOOL") && !codex.contains("Bash tool"),
+            "codex intro must not reference Claude's Monitor/Bash tools:\n{codex}",
+        );
+        assert!(
+            !agy.contains("Monitor TOOL") && !agy.contains("Bash tool"),
+            "agy intro must not reference Claude's Monitor/Bash tools:\n{agy}",
+        );
+        // Runtime-specific guidance present.
+        assert!(codex.contains("bridge"), "codex intro should mention bridge pane:\n{codex}");
+        assert!(agy.contains("run_command"), "agy intro should mention run_command:\n{agy}");
     }
 }

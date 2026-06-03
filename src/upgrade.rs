@@ -272,7 +272,7 @@ fn post_rearm(config: &std::path::Path, as_agent: &str, channel: &str) -> Result
 fn resolve_default_posting_agent(cfg: &Config, broadcast_channels: &[&str]) -> Option<String> {
     let this_host = cfg.this_host.as_deref();
     // 1. swarm_boss on this_host (if multi-host). The canonical
-    //    orchestrator and the agent whose CLAUDE.md is set up to
+    //    orchestrator and the agent whose AGENTS.md is set up to
     //    react to such operational broadcasts.
     let boss = cfg.agents.iter().find(|a| {
         a.swarm_boss
@@ -313,7 +313,7 @@ fn print_manual_broadcast_command(channels: &[&str]) {
     println!("To prompt agents to re-arm, run one of:");
     for ch in channels {
         println!(
-            "  giga post {ch} --as <participant-slug> \\\n    --subject \"giga upgraded — please re-arm your inbox watcher\" \\\n    --body \"giga has been upgraded; TaskStop your watcher and re-arm from CLAUDE.md.\""
+            "  giga post {ch} --as <participant-slug> \\\n    --subject \"giga upgraded — please re-arm your inbox watcher\" \\\n    --body \"giga has been upgraded; TaskStop your watcher and re-arm from AGENTS.md.\""
         );
     }
 }

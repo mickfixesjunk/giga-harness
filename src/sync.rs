@@ -303,7 +303,7 @@ pub fn compute_sync_plan(
     // 1b) agents/<slug>.md templates to every peer. v0.3.2: per-tick
     //     mirror so templates stay in lockstep when add-agent (without
     //     --host) creates a new template after the initial bootstrap
-    //     push, OR when CLAUDE.md template content is hand-edited.
+    //     push, OR when AGENTS.md template content is hand-edited.
     //     Cheap (KB scale per agent) and idempotent (rsync no-op when
     //     content matches).
     let templates_subdir = "agents";
@@ -500,7 +500,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     //    per-host identity files aren't trampled; excludes workdirs/
     //    so an agent's accumulated session state isn't clobbered. The
     //    remote `giga init` (step 3 from the add-agent caller)
-    //    re-renders workdir CLAUDE.md from the template that this
+    //    re-renders workdir AGENTS.md from the template that this
     //    rsync just delivered. Legacy `this_host.toml` is excluded
     //    explicitly too for swarms that haven't been migrated yet.
     let dir_rsync_status = Command::new("rsync")
@@ -571,7 +571,7 @@ pub(crate) fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `giga init` on the peer to scaffold workdirs + CLAUDE.md for
+/// Run `giga init` on the peer to scaffold workdirs + AGENTS.md for
 /// agents whose host matches the peer (init is host-aware as of v1.1).
 /// Best-effort: callers warn on failure rather than blocking local
 /// success.

@@ -189,7 +189,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          \n\
          Key invariants:\n\
          * `workdir` and `code_root` are DIFFERENT. Workdir is the agent's launch \
-         context (CLAUDE.md lives there); code_root is where they actually edit \
+         context (AGENTS.md lives there); code_root is where they actually edit \
          code. All agents share the same code_root.\n\
          * Channel filenames for bilateral channels: alphabetical, e.g. \
          `code-design.md` (not `design-code.md`).\n\
@@ -197,7 +197,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          * For coordinator topology (the default), only create channels between \
          `design` and each other agent — NOT between `code` and `test` directly.\n\
          \n\
-         Then write one `agents/<slug>.md` per agent — their CLAUDE.md template. \
+         Then write one `agents/<slug>.md` per agent — their AGENTS.md template. \
          For each standard slug, copy the ownership and DOES NOT rules from the \
          role definitions above into a prominent \"## Your responsibilities\" section. \
          Also include:\n\
@@ -233,7 +233,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          ```\n\
          cd {configs}/PROJECT_NAME\n\
          giga validate            # confirms TOML is well-formed\n\
-         giga init                # creates inbox files + per-workdir CLAUDE.md, \
+         giga init                # creates inbox files + per-workdir AGENTS.md, \
          pre-trusts the dirs in ~/.claude.json\n\
          giga launch --terminal CHOSEN_MODE  # opens one terminal per agent (use the mode from question 5)\n\
          ```\n\
@@ -370,7 +370,7 @@ mod tests {
     fn prompt_mentions_code_root_separation() {
         // Bootstrap must scaffold with code_root (workdir != codebase).
         // If this guidance gets dropped the agent will fall back to
-        // the old pattern of dumping CLAUDE.md into the codebase.
+        // the old pattern of dumping AGENTS.md into the codebase.
         let out = sample_prompt();
         assert!(out.contains("code_root"));
         assert!(out.contains("workdir"));

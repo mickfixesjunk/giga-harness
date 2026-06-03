@@ -3,7 +3,7 @@
 //! See README.md for the design. Subcommands:
 //!
 //!   giga validate <config>        — schema + cross-check, no side effects
-//!   giga init     <config>        — scaffold inbox files + per-agent CLAUDE.md
+//!   giga init     <config>        — scaffold inbox files + per-agent AGENTS.md
 //!   giga launch   <config>        — spawn one terminal per agent
 //!   giga sweep    <config>        — show channel state (who owes whom)
 //!   giga post     <channel> ...   — append a properly-formatted message
@@ -99,7 +99,7 @@ enum Command {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
     },
-    /// Create inbox files and per-agent CLAUDE.md from a config.
+    /// Create inbox files and per-agent AGENTS.md from a config.
     Init {
         #[arg(value_name = "CONFIG", default_value = "giga-harness.toml")]
         config: PathBuf,
@@ -119,7 +119,7 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         host: Option<String>,
         /// Skip `giga init` before launching. Use if you've already
-        /// scaffolded and don't want to re-render CLAUDE.md files.
+        /// scaffolded and don't want to re-render AGENTS.md files.
         #[arg(long)]
         skip_init: bool,
         /// Print the launch plan instead of executing it.
@@ -328,7 +328,7 @@ enum Command {
         /// participants (channels whose `file` starts with `_`).
         #[arg(long)]
         no_broadcast: bool,
-        /// Use a custom CLAUDE.md template file instead of the
+        /// Use a custom AGENTS.md template file instead of the
         /// generated minimal stub. The contents are written verbatim
         /// to `agents/<slug>.md`.
         #[arg(long, value_name = "PATH")]
@@ -337,8 +337,8 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// The directory where this agent actually edits code, separate
-        /// from --workdir (the launch context where CLAUDE.md lives).
-        /// When set, giga injects it into the agent's CLAUDE.md and
+        /// from --workdir (the launch context where AGENTS.md lives).
+        /// When set, giga injects it into the agent's AGENTS.md and
         /// the launch intro prompt.
         #[arg(long, value_name = "PATH")]
         code_root: Option<String>,
@@ -511,7 +511,7 @@ enum Command {
         #[arg(long)]
         once: bool,
         /// Suppress startup chatter; only emit on errors. Set by the
-        /// swarm_boss CLAUDE.md Monitor lines so the agent's
+        /// swarm_boss AGENTS.md Monitor lines so the agent's
         /// notification stream doesn't flood.
         #[arg(long)]
         quiet: bool,
@@ -535,7 +535,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Suppress per-tick summary lines; only emit on errors and
-        /// startup. Set by the swarm_boss CLAUDE.md Monitor lines so
+        /// startup. Set by the swarm_boss AGENTS.md Monitor lines so
         /// the agent's notification stream doesn't flood with "tick
         /// complete: N attempted" every 3 seconds.
         #[arg(long)]
