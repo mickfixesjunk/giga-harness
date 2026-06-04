@@ -73,9 +73,121 @@ pub fn run(args: Args) -> Result<()> {
     // exact failure on 2026-06-02 after a 0.4.2 → 0.4.4 upgrade.
     let abs_config = std::fs::canonicalize(&args.config).unwrap_or(args.config.clone());
 
+    // --- 0. resolve broadcast machinery up front so the local +
+    // peer paths can both use it for the Windows disarm/rearm dance.
+    let broadcast_channels: Vec<&str> = cfg
+        .channels
+        .iter()
+        .filter(|c| config::is_broadcast_channel(&c.file))
+        .map(|c| c.file.as_str())
+        .collect();
+    let posting_agent_early = match args.as_agent.clone() {
+        Some(slug) => Some(slug),
+        None => resolve_default_posting_agent(&cfg, &broadcast_channels),
+    };
+
+    // v0.6.14: local Windows agents (co-located on the operator host
+    // via WSL interop — the superdeduper topology where giga.exe
+    // sdd-testwin/benchmarker live on the same physical box as
+    // neo-wsl). They hold giga.exe locked just like remote-peer
+    // Windows agents do, so we need the same disarm/rearm dance.
+    //
+    // For a swarm with no [[hosts]], "local Windows agents" = all
+    // Windows-platform agents (single-host topology, every agent is
+    // co-located with the operator). With [[hosts]], we filter to
+    // this_host.
+    let local_windows_agents: Vec<String> = match cfg.this_host.as_deref() {
+        Some(th) => windows_agents_on_host(&cfg, th),
+        None => cfg
+            .agents
+            .iter()
+            .filter(|a| a.platform == "windows")
+            .map(|a| a.name.clone())
+            .collect(),
+    };
+    let has_local_windows = !local_windows_agents.is_empty();
+    let local_host_label = cfg.this_host.clone().unwrap_or_else(|| "local".to_string());
+
     // --- 1. local install ---------------------------------------------
     println!("==> upgrading giga on local host");
+
+    // 1a. Pre-install disarm for local Windows agents (if any). The
+    //     dance is the same as the cross-host case — disarm/wait so
+    //     the Windows-side install.ps1 can overwrite the locked .exe.
+    if has_local_windows
+        && !broadcast_channels.is_empty()
+        && !args.skip_broadcast
+    {
+        match &posting_agent_early {
+            Some(poster) => {
+                if let Err(e) = windows_pre_install_disarm(
+                    &abs_config,
+                    poster,
+                    &local_host_label,
+                    &local_windows_agents,
+                    &broadcast_channels,
+                    WINDOWS_DISARM_GRACE_SECS,
+                    args.dry_run,
+                ) {
+                    eprintln!(
+                        "  ! local: pre-install disarm post failed ({e:#}) \
+                         — local install.ps1 may fail if Windows watchers \
+                         are still holding giga.exe"
+                    );
+                }
+            }
+            None => eprintln!(
+                "  ! local: no posting agent resolved; skipping \
+                 Windows disarm broadcast — Windows agents may still \
+                 hold giga.exe locked when install.ps1 runs"
+            ),
+        }
+    } else if has_local_windows && args.skip_broadcast {
+        eprintln!(
+            "  ! local: --skip-broadcast set with Windows agents \
+             present; TaskStop their watchers manually before \
+             install.ps1 to avoid sharing-violation"
+        );
+    }
+
     install_local(args.dry_run)?;
+
+    // 1b. From WSL with co-located Windows agents, ALSO run
+    //     install.ps1 via WSL interop so the Windows giga.exe gets
+    //     refreshed alongside the WSL giga binary. On native Windows
+    //     `install_local` already ran install.ps1 (v0.6.12 dispatch);
+    //     on macOS / Linux without Windows agents this is a no-op.
+    if has_local_windows && cfg!(target_os = "linux") {
+        if let Err(e) = install_local_windows_via_wsl_interop(args.dry_run) {
+            eprintln!(
+                "  ! local: install.ps1 via WSL interop failed ({e:#}) \
+                 — Windows-side giga.exe NOT upgraded. Run install.ps1 \
+                 from a Windows shell manually."
+            );
+        }
+    }
+
+    // 1c. Post-install rearm broadcast for local Windows agents.
+    if has_local_windows
+        && !broadcast_channels.is_empty()
+        && !args.skip_broadcast
+    {
+        if let Some(poster) = &posting_agent_early {
+            if let Err(e) = windows_post_install_rearm(
+                &abs_config,
+                poster,
+                &local_host_label,
+                &local_windows_agents,
+                &broadcast_channels,
+                args.dry_run,
+            ) {
+                eprintln!(
+                    "  ! local: post-install rearm post failed ({e:#}) \
+                     — agents can re-arm manually from AGENTS.md"
+                );
+            }
+        }
+    }
 
     // --- 2. peer installs ---------------------------------------------
     let peers: Vec<&str> = if args.skip_peers {
@@ -87,13 +199,87 @@ pub fn run(args: Args) -> Result<()> {
             .map(|h| h.name.as_str())
             .collect()
     };
+    // v0.6.14: cross-host Windows peers get the same disarm/rearm
+    // dance as the local Windows agents handled above. broadcast_channels
+    // + posting_agent_early were resolved in step 0.
     if !peers.is_empty() {
         println!("\n==> upgrading giga on {} peer host(s)", peers.len());
         for peer in &peers {
             let peer_platform = infer_host_platform(&cfg, peer);
+            let windows_agents = windows_agents_on_host(&cfg, peer);
+
+            // Pre-install disarm for Windows peers — only meaningful
+            // when we have agents to address AND a posting agent.
+            if peer_platform == "windows"
+                && !windows_agents.is_empty()
+                && !broadcast_channels.is_empty()
+                && !args.skip_broadcast
+            {
+                match &posting_agent_early {
+                    Some(poster) => {
+                        if let Err(e) = windows_pre_install_disarm(
+                            &abs_config,
+                            poster,
+                            peer,
+                            &windows_agents,
+                            &broadcast_channels,
+                            WINDOWS_DISARM_GRACE_SECS,
+                            args.dry_run,
+                        ) {
+                            eprintln!(
+                                "  ! {peer}: pre-install disarm post failed ({e:#}) \
+                                 — continuing with install but giga.exe lock may block it"
+                            );
+                        }
+                    }
+                    None => eprintln!(
+                        "  ! {peer}: no posting agent resolved; \
+                         skipping Windows pre-install disarm — \
+                         install.ps1 will likely fail if watchers are running"
+                    ),
+                }
+            } else if peer_platform == "windows"
+                && !windows_agents.is_empty()
+                && args.skip_broadcast
+            {
+                eprintln!(
+                    "  ! {peer}: --skip-broadcast set; you must manually \
+                     TaskStop the watchers on Windows agents before install.ps1 \
+                     can succeed (file lock)"
+                );
+            }
+
             match install_remote(&abs_config, peer, peer_platform, args.dry_run) {
                 Ok(()) => println!("  + {peer}: upgraded ({peer_platform})"),
                 Err(e) => eprintln!("  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"),
+            }
+
+            // Post-install re-arm for Windows peers — targeted at
+            // their agents so they pick up the new binary. The
+            // generic final rearm broadcast below ALSO covers them
+            // (silent execve for Linux, redundant text for Windows)
+            // but the targeted message is what actually closes the
+            // loop on Windows.
+            if peer_platform == "windows"
+                && !windows_agents.is_empty()
+                && !broadcast_channels.is_empty()
+                && !args.skip_broadcast
+            {
+                if let Some(poster) = &posting_agent_early {
+                    if let Err(e) = windows_post_install_rearm(
+                        &abs_config,
+                        poster,
+                        peer,
+                        &windows_agents,
+                        &broadcast_channels,
+                        args.dry_run,
+                    ) {
+                        eprintln!(
+                            "  ! {peer}: post-install rearm post failed ({e:#}) \
+                             — agents can re-arm manually from AGENTS.md"
+                        );
+                    }
+                }
             }
         }
     } else if args.skip_peers {
@@ -107,12 +293,6 @@ pub fn run(args: Args) -> Result<()> {
         println!("\n(--skip-broadcast: not posting rearm message)");
         return Ok(());
     }
-    let broadcast_channels: Vec<&str> = cfg
-        .channels
-        .iter()
-        .filter(|c| config::is_broadcast_channel(&c.file))
-        .map(|c| c.file.as_str())
-        .collect();
     if broadcast_channels.is_empty() {
         println!("\n(no broadcast channels found — skipping rearm post)");
         return Ok(());
@@ -127,18 +307,17 @@ pub fn run(args: Args) -> Result<()> {
     //   4. Print the manual command if nothing resolves.
     // Lets `giga upgrade` "just work" without the operator needing
     // to know which slug to pass.
-    let posting_agent = match args.as_agent.clone() {
-        Some(slug) => slug,
-        None => match resolve_default_posting_agent(&cfg, &broadcast_channels) {
-            Some(slug) => {
+    let posting_agent = match posting_agent_early.clone() {
+        Some(slug) => {
+            if args.as_agent.is_none() {
                 println!("\n(auto-detected --as `{slug}` — pass --as explicitly to override)");
-                slug
             }
-            None => {
-                print_manual_broadcast_command(&broadcast_channels);
-                return Ok(());
-            }
-        },
+            slug
+        }
+        None => {
+            print_manual_broadcast_command(&broadcast_channels);
+            return Ok(());
+        }
     };
 
     println!(
@@ -197,6 +376,54 @@ fn install_local_unix(dry_run: bool) -> Result<()> {
     if !status.success() {
         return Err(anyhow!(
             "local install failed (exit {})",
+            status.code().unwrap_or(-1),
+        ));
+    }
+    Ok(())
+}
+
+/// Run install.ps1 on the Windows side from a WSL operator host.
+/// Used when the operator is on WSL (cfg!(target_os = "linux")) AND
+/// there are Windows-platform agents co-located on the same physical
+/// box (the superdeduper topology — Windows agents share neo-wsl's
+/// Windows host via WSL interop).
+///
+/// WSL interop exposes `powershell.exe` on PATH; we invoke it the
+/// same way `install_local_windows` does. The PowerShell process
+/// runs on the Windows side, downloads install.ps1, and installs
+/// giga.exe into the Windows-side install location.
+fn install_local_windows_via_wsl_interop(dry_run: bool) -> Result<()> {
+    let script = format!(
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         iwr -useb {INSTALL_PS1_URL} | iex"
+    );
+    if dry_run {
+        println!(
+            "  [dry-run] would (via WSL interop): powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{script}\""
+        );
+        return Ok(());
+    }
+    println!("  -> running install.ps1 on Windows side via WSL interop (powershell.exe)");
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| {
+            "invoking powershell.exe via WSL interop — is interop enabled? \
+             (check /etc/wsl.conf [interop] generateBinPath=true + \
+             `wsl --shutdown` from Windows)"
+        })?;
+    if !status.success() {
+        return Err(anyhow!(
+            "Windows-side install.ps1 failed (exit {})",
             status.code().unwrap_or(-1),
         ));
     }
@@ -306,6 +533,153 @@ fn install_remote(
     if !status.success() {
         return Err(anyhow!(
             "remote install on {peer} failed (exit {})",
+            status.code().unwrap_or(-1),
+        ));
+    }
+    Ok(())
+}
+
+/// v0.6.14: how long the operator waits after posting the
+/// pre-install disarm broadcast for Windows agents to TaskStop their
+/// watchers + release the giga.exe file lock. Sized for "next agent
+/// turn fires + agent acts" round-trip. If install.ps1 still fails
+/// with a sharing violation, the agent didn't act in time — the
+/// operator can retry or extend.
+const WINDOWS_DISARM_GRACE_SECS: u64 = 60;
+
+/// List the agent slugs configured on `host` whose platform is
+/// `windows`. Drives the [ack: ...] addressing for the pre-install
+/// disarm + post-install rearm targeted broadcasts.
+fn windows_agents_on_host(cfg: &Config, host: &str) -> Vec<String> {
+    cfg.agents
+        .iter()
+        .filter(|a| a.host.as_deref() == Some(host) && a.platform == "windows")
+        .map(|a| a.name.clone())
+        .collect()
+}
+
+/// Post a targeted `[ack: <windows-slugs>]` broadcast asking the
+/// Windows agents on `peer` to TaskStop their watchers + stand by
+/// while install.ps1 runs. Then sleep `grace_secs` operator-side to
+/// give them a chance to act. The `[ack:]` prefix already filters
+/// fanout in the watcher (see watch.rs:347) so non-Windows agents on
+/// the same channel are unaffected.
+#[allow(clippy::too_many_arguments)]
+fn windows_pre_install_disarm(
+    config: &std::path::Path,
+    posting_agent: &str,
+    peer: &str,
+    windows_agents: &[String],
+    broadcast_channels: &[&str],
+    grace_secs: u64,
+    dry_run: bool,
+) -> Result<()> {
+    let ack_list = windows_agents.join(",");
+    let subject = format!(
+        "[ack: {ack_list}] giga upgrade incoming on `{peer}` — TaskStop your watcher and stand by"
+    );
+    let body = format!(
+        "giga.exe on host `{peer}` is about to be upgraded via install.ps1, \
+         which requires the binary to be unlocked (Windows file-locks running \
+         exes). Please TaskStop your giga inbox watcher and stand by for \
+         ~{grace_secs} seconds. After install completes you'll get an [ack: ...] \
+         re-arm message; until then no need to do anything else. \
+         (Non-Windows agents on this channel can ignore this — the [ack:] \
+         prefix targets only the Windows slugs listed.)"
+    );
+    println!(
+        "  -> Windows pre-install disarm: targeting agents [{ack_list}] on {} channel(s)",
+        broadcast_channels.len(),
+    );
+    for ch in broadcast_channels {
+        if dry_run {
+            println!("    [dry-run] would post disarm to {ch}");
+            continue;
+        }
+        if let Err(e) = post_with_subject_body(config, posting_agent, ch, &subject, &body) {
+            eprintln!("    ! disarm post to {ch} failed ({e:#})");
+        }
+    }
+    if dry_run {
+        println!("    [dry-run] would sleep {grace_secs}s for watchers to release lock");
+    } else {
+        println!("  -> sleeping {grace_secs}s for watchers to TaskStop + release giga.exe lock");
+        std::thread::sleep(std::time::Duration::from_secs(grace_secs));
+    }
+    Ok(())
+}
+
+/// Post the matching `[ack: <windows-slugs>]` re-arm message after
+/// install.ps1 finishes on `peer`. The Windows agents see this on
+/// their next turn and re-Monitor with the freshly-installed giga.exe.
+fn windows_post_install_rearm(
+    config: &std::path::Path,
+    posting_agent: &str,
+    peer: &str,
+    windows_agents: &[String],
+    broadcast_channels: &[&str],
+    dry_run: bool,
+) -> Result<()> {
+    let ack_list = windows_agents.join(",");
+    let subject = format!(
+        "[ack: {ack_list}] giga.exe upgraded on `{peer}` — please re-arm your watcher"
+    );
+    let body = format!(
+        "install.ps1 completed on host `{peer}`. Please re-arm your inbox \
+         watcher with the standard Monitor invocation from your AGENTS.md — \
+         it will load the freshly-installed giga.exe. Confirm with \
+         `giga --version` if you want to verify the new build."
+    );
+    println!(
+        "  -> Windows post-install rearm: notifying agents [{ack_list}] on {} channel(s)",
+        broadcast_channels.len(),
+    );
+    for ch in broadcast_channels {
+        if dry_run {
+            println!("    [dry-run] would post rearm to {ch}");
+            continue;
+        }
+        if let Err(e) = post_with_subject_body(config, posting_agent, ch, &subject, &body) {
+            eprintln!("    ! rearm post to {ch} failed ({e:#})");
+        }
+    }
+    Ok(())
+}
+
+/// Re-invoke giga post with a custom subject + body. Used by the
+/// Windows disarm/rearm pair (post_rearm above hard-codes the
+/// `[giga-rearm]` silent-execve subject; these messages need
+/// different subjects and bodies).
+fn post_with_subject_body(
+    config: &std::path::Path,
+    as_agent: &str,
+    channel: &str,
+    subject: &str,
+    body: &str,
+) -> Result<()> {
+    let status = Command::new(std::env::current_exe()?)
+        .args([
+            "post",
+            channel,
+            "--as",
+            as_agent,
+            "--subject",
+            subject,
+            "--body",
+            body,
+            "--config",
+            config
+                .to_str()
+                .ok_or_else(|| anyhow!("non-UTF8 config path"))?,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("invoking giga post on {channel}"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "giga post on {channel} failed (exit {})",
             status.code().unwrap_or(-1),
         ));
     }
@@ -620,6 +994,53 @@ host = "neo-wsl"
             "local-wsl",
         );
         assert_eq!(infer_host_platform(&cfg, "neo-wsl"), "unix");
+    }
+
+    #[test]
+    fn windows_agents_on_host_filters_by_host_and_platform() {
+        let cfg = load_with_this_host(
+            r#"
+[project]
+name = "t"
+[paths]
+wsl_inbox = "/tmp/i"
+[[hosts]]
+name = "trinity"
+tailnet_hostname = "trinity.tail0.ts.net"
+[[hosts]]
+name = "neo-wsl"
+tailnet_hostname = "neo-wsl.tail0.ts.net"
+[[hosts]]
+name = "local"
+tailnet_hostname = "local.tail0.ts.net"
+[[agents]]
+name = "sdd-testwin"
+workdir = "C:\\sdd-testwin"
+role = "."
+platform = "windows"
+host = "trinity"
+[[agents]]
+name = "benchmarker"
+workdir = "C:\\benchmarker"
+role = "."
+platform = "windows"
+host = "trinity"
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+host = "neo-wsl"
+"#,
+            "local",
+        );
+        let mut trinity = windows_agents_on_host(&cfg, "trinity");
+        trinity.sort();
+        assert_eq!(trinity, vec!["benchmarker".to_string(), "sdd-testwin".to_string()]);
+        // neo-wsl is not Windows → empty.
+        assert!(windows_agents_on_host(&cfg, "neo-wsl").is_empty());
+        // local host with no agents at all → empty.
+        assert!(windows_agents_on_host(&cfg, "local").is_empty());
     }
 
     #[test]
