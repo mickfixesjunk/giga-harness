@@ -97,11 +97,11 @@ fn default_launch_model() -> String {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Paths {
-    /// Where WSL-side inbox files live (e.g. `/home/neo/projects/inbox`).
+    /// Where WSL-side inbox files live (e.g. `/home/alice/projects/inbox`).
     /// Optional — only required if any channel has `side = "wsl"`.
     #[serde(default)]
     pub wsl_inbox: Option<PathBuf>,
-    /// Where Windows-side inbox files live (e.g. `C:/Users/Audio` —
+    /// Where Windows-side inbox files live (e.g. `C:/Users/Alice` —
     /// note forward slashes for cross-platform parsing). Optional —
     /// only required if any channel has `side = "windows"`.
     #[serde(default)]
@@ -145,14 +145,14 @@ pub struct GitTransportConfig {
 /// `ssh_user` is the OS user account on this host. Defaults to the
 /// caller's `$USER` if omitted — the common case when the same user
 /// runs on every box. Set explicitly when hosts have different users
-/// (e.g. `neomatrix` on box A, `neo` on box B).
+/// (e.g. `alice` on box A, `bob` on box B).
 ///
 /// `remote_config_dir` and `remote_inbox_dir` are absolute paths on
 /// THIS host (the one the [[hosts]] entry describes) — used by other
 /// hosts when they push to this one. Both default to the local
 /// caller's matching path, which works for homogeneous-user setups.
-/// Set explicitly when paths differ (e.g. `/home/neomatrix/...` on
-/// box A vs `/home/neo/...` on box B).
+/// Set explicitly when paths differ (e.g. `/home/alice/...` on
+/// box A vs `/home/bob/...` on box B).
 #[derive(Debug, Deserialize, Clone)]
 pub struct Host {
     pub name: String,
@@ -167,13 +167,13 @@ pub struct Host {
     /// for THIS host's local operations (init, channel_path) AND for
     /// sync targets pushing to it. Use when peers have asymmetric paths
     /// (different `$HOME`, different Windows user, etc.) — added in
-    /// v0.3.2 after morpheus-wsl exposed the homogeneous-path assumption.
+    /// v0.3.2 after a peer host exposed the homogeneous-path assumption.
     ///
     /// TOML form:
     ///   [[hosts]]
-    ///   name = "morpheus-wsl"
-    ///   paths.wsl_inbox = "/home/neo/projects/inbox"
-    ///   paths.windows_inbox = "/mnt/c/Users/audio/projects/inbox"
+    ///   name = "host-b"
+    ///   paths.wsl_inbox = "/home/alice/projects/inbox"
+    ///   paths.windows_inbox = "/mnt/c/Users/Alice/projects/inbox"
     #[serde(default)]
     pub paths: Option<Paths>,
 }
@@ -1563,17 +1563,17 @@ tailnet_hostname = "wsl-a.tail0000.ts.net""#,
             r#"[[hosts]]
 name = "wsl-a"
 tailnet_hostname = "wsl-a.tail0000.ts.net"
-ssh_user = "neomatrix""#,
+ssh_user = "alice""#,
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
         cfg.validate().unwrap();
-        assert_eq!(cfg.hosts[0].ssh_user.as_deref(), Some("neomatrix"));
+        assert_eq!(cfg.hosts[0].ssh_user.as_deref(), Some("alice"));
         assert_eq!(cfg.hosts[1].ssh_user, None); // omitted defaults to None
     }
 
     // -------------------------------------------------------------------
-    // v0.3.2: per-host [paths] override (quality finding 1 — morpheus-wsl
+    // v0.3.2: per-host [paths] override (quality finding 1 — a peer host
     // had different $HOME than operator, init failed on literal path).
     // -------------------------------------------------------------------
 
@@ -1589,7 +1589,7 @@ tailnet_hostname = "wsl-a.tail0.ts.net"
 [[hosts]]
 name = "wsl-b"
 tailnet_hostname = "wsl-b.tail0.ts.net"
-paths.wsl_inbox = "/home/neo/projects/inbox"
+paths.wsl_inbox = "/home/alice/projects/inbox"
 "#,
             minimal().replace(
                 "platform = \"wsl\"\n\n[[agents]]",
@@ -1610,7 +1610,7 @@ paths.wsl_inbox = "/home/neo/projects/inbox"
         // wsl-b has per-host override → uses that
         assert_eq!(
             cfg.inbox_for_host_side(Some("wsl-b"), "wsl"),
-            Some(PathBuf::from("/home/neo/projects/inbox"))
+            Some(PathBuf::from("/home/alice/projects/inbox"))
         );
     }
 
@@ -1676,7 +1676,7 @@ tailnet_hostname = "a.tail0.ts.net"
 [[hosts]]
 name = "wsl-b"
 tailnet_hostname = "b.tail0.ts.net"
-paths.wsl_inbox = "/home/neo/projects/inbox"
+paths.wsl_inbox = "/home/alice/projects/inbox"
 
 [[channels]]
 file = "alice-bob.md"
@@ -1700,7 +1700,7 @@ participants = ["a", "b"]
         let ch = cfg.channels.iter().find(|c| c.file == "alice-bob.md").unwrap();
         let path = cfg.channel_path(ch).unwrap();
         assert!(
-            path.starts_with("/home/neo/projects/inbox"),
+            path.starts_with("/home/alice/projects/inbox"),
             "channel_path on wsl-b should use wsl-b's override, got {}",
             path.display()
         );
@@ -1750,7 +1750,7 @@ participants = ["a", "b"]
 
     #[test]
     fn parse_broadcast_prefix_recognizes_fyi() {
-        assert_eq!(parse_broadcast_prefix("[fyi] morpheus came online"), Some(BroadcastPrefix::Fyi));
+        assert_eq!(parse_broadcast_prefix("[fyi] host-c came online"), Some(BroadcastPrefix::Fyi));
         assert_eq!(parse_broadcast_prefix("[FYI] case insensitive"), Some(BroadcastPrefix::Fyi));
         assert_eq!(parse_broadcast_prefix("  [ fyi ]  whitespace tolerant"), Some(BroadcastPrefix::Fyi));
     }

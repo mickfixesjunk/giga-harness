@@ -183,8 +183,8 @@ pub(crate) fn locate_session_file(runtime: Runtime, workdir: &Path) -> Option<Pa
 /// Claude Code stores sessions under `~/.claude/projects/<encoded>/`
 /// where `<encoded>` is the workdir absolute path with BOTH `/` and
 /// `.` replaced by `-` (verified empirically against
-/// `/home/neomatrix/.giga/configs/.../giga`, which Claude encodes as
-/// `-home-neomatrix--giga-configs-...-giga` — the leading `/` becomes
+/// `/home/alice/.giga/configs/.../giga`, which Claude encodes as
+/// `-home-alice--giga-configs-...-giga` — the leading `/` becomes
 /// a leading `-`, and the `.` in `.giga` becomes the second `-` of
 /// the `--giga` sequence). Each session is one `<uuid>.jsonl`. We
 /// return the most-recently-modified file under that dir.

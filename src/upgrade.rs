@@ -23,7 +23,7 @@
 //!   the new inode). On Windows the in-place overwrite of a running
 //!   `giga.exe` fails with sharing-violation — agents holding the
 //!   binary (watchers, daemons) need to be TaskStop'd before upgrade,
-//!   as the sdd-testwin flow already does.
+//!   as the disarm/rearm flow handles automatically (v0.6.14+).
 //! * Bootstrap post-failure (peer install failed; broadcast failed) is
 //!   non-fatal — local install already succeeded, peers/agents can be
 //!   re-prodded manually.
@@ -87,10 +87,10 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     // v0.6.14: local Windows agents (co-located on the operator host
-    // via WSL interop — the superdeduper topology where giga.exe
-    // sdd-testwin/benchmarker live on the same physical box as
-    // neo-wsl). They hold giga.exe locked just like remote-peer
-    // Windows agents do, so we need the same disarm/rearm dance.
+    // via WSL interop — the single-host topology where Windows
+    // agents live on the same physical box as the WSL operator).
+    // They hold giga.exe locked just like remote-peer Windows
+    // agents do, so we need the same disarm/rearm dance.
     //
     // For a swarm with no [[hosts]], "local Windows agents" = all
     // Windows-platform agents (single-host topology, every agent is
@@ -345,8 +345,8 @@ pub fn run(args: Args) -> Result<()> {
 /// Pre-fix, `giga upgrade` on Windows ran `bash -c "curl ... | bash"`
 /// which either failed outright (no bash on PATH) or — worse — found
 /// Git Bash and ran the Linux install.sh, writing giga into a POSIX
-/// path that the Windows giga.exe launcher never looks at. Mick saw
-/// this on 2026-06-03 after upgrading TRINITY to v0.6.11.
+/// path that the Windows giga.exe launcher never looks at. Reported
+/// on 2026-06-03 after a Windows-host upgrade to v0.6.11.
 ///
 /// Linux/macOS keep the bash + curl + install.sh path unchanged.
 ///
@@ -385,8 +385,8 @@ fn install_local_unix(dry_run: bool) -> Result<()> {
 /// Run install.ps1 on the Windows side from a WSL operator host.
 /// Used when the operator is on WSL (cfg!(target_os = "linux")) AND
 /// there are Windows-platform agents co-located on the same physical
-/// box (the superdeduper topology — Windows agents share neo-wsl's
-/// Windows host via WSL interop).
+/// box (a single-host topology where Windows agents share the WSL
+/// host's physical machine via WSL interop).
 ///
 /// WSL interop exposes `powershell.exe` on PATH; we invoke it the
 /// same way `install_local_windows` does. The PowerShell process
@@ -923,7 +923,7 @@ platform = "wsl"
         assert!(INSTALL_PS1_URL.ends_with("/install.ps1"));
     }
 
-    /// v0.6.12 regression guard. Mick saw `giga upgrade` on Windows
+    /// v0.6.12 regression guard. Pre-fix `giga upgrade` on Windows
     /// run the bash/install.sh path instead of powershell/install.ps1,
     /// which either failed (no bash on PATH) or — worse — wrote the
     /// Linux binary into a POSIX path that giga.exe never looks at.
@@ -953,21 +953,21 @@ name = "t"
 [paths]
 wsl_inbox = "/tmp/i"
 [[hosts]]
-name = "trinity"
-tailnet_hostname = "trinity.tail0.ts.net"
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
 [[hosts]]
 name = "local-wsl"
 tailnet_hostname = "local-wsl.tail0.ts.net"
 [[agents]]
-name = "sdd-testwin"
-workdir = "C:\\sdd-testwin"
+name = "win-agent-1"
+workdir = "C:\\win-agent-1"
 role = "."
 platform = "windows"
-host = "trinity"
+host = "host-b"
 "#,
             "local-wsl",
         );
-        assert_eq!(infer_host_platform(&cfg, "trinity"), "windows");
+        assert_eq!(infer_host_platform(&cfg, "host-b"), "windows");
     }
 
     #[test]
@@ -979,8 +979,8 @@ name = "t"
 [paths]
 wsl_inbox = "/tmp/i"
 [[hosts]]
-name = "neo-wsl"
-tailnet_hostname = "neo-wsl.tail0.ts.net"
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
 [[hosts]]
 name = "local-wsl"
 tailnet_hostname = "local-wsl.tail0.ts.net"
@@ -989,11 +989,11 @@ name = "design"
 workdir = "/h/design"
 role = "."
 platform = "wsl"
-host = "neo-wsl"
+host = "host-a"
 "#,
             "local-wsl",
         );
-        assert_eq!(infer_host_platform(&cfg, "neo-wsl"), "unix");
+        assert_eq!(infer_host_platform(&cfg, "host-a"), "unix");
     }
 
     #[test]
@@ -1005,40 +1005,40 @@ name = "t"
 [paths]
 wsl_inbox = "/tmp/i"
 [[hosts]]
-name = "trinity"
-tailnet_hostname = "trinity.tail0.ts.net"
+name = "host-b"
+tailnet_hostname = "host-b.tail0.ts.net"
 [[hosts]]
-name = "neo-wsl"
-tailnet_hostname = "neo-wsl.tail0.ts.net"
+name = "host-a"
+tailnet_hostname = "host-a.tail0.ts.net"
 [[hosts]]
 name = "local"
 tailnet_hostname = "local.tail0.ts.net"
 [[agents]]
-name = "sdd-testwin"
-workdir = "C:\\sdd-testwin"
+name = "win-agent-1"
+workdir = "C:\\win-agent-1"
 role = "."
 platform = "windows"
-host = "trinity"
+host = "host-b"
 [[agents]]
-name = "benchmarker"
-workdir = "C:\\benchmarker"
+name = "win-agent-2"
+workdir = "C:\\win-agent-2"
 role = "."
 platform = "windows"
-host = "trinity"
+host = "host-b"
 [[agents]]
 name = "design"
 workdir = "/h/design"
 role = "."
 platform = "wsl"
-host = "neo-wsl"
+host = "host-a"
 "#,
             "local",
         );
-        let mut trinity = windows_agents_on_host(&cfg, "trinity");
-        trinity.sort();
-        assert_eq!(trinity, vec!["benchmarker".to_string(), "sdd-testwin".to_string()]);
-        // neo-wsl is not Windows → empty.
-        assert!(windows_agents_on_host(&cfg, "neo-wsl").is_empty());
+        let mut windows_hosts = windows_agents_on_host(&cfg, "host-b");
+        windows_hosts.sort();
+        assert_eq!(windows_hosts, vec!["win-agent-1".to_string(), "win-agent-2".to_string()]);
+        // host-a is not Windows → empty.
+        assert!(windows_agents_on_host(&cfg, "host-a").is_empty());
         // local host with no agents at all → empty.
         assert!(windows_agents_on_host(&cfg, "local").is_empty());
     }

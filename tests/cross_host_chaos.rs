@@ -1,5 +1,5 @@
-//! Cross-host swarm-chaos tests (R1-R3 from the test plan agreed with
-//! Mick 2026-05-31). Companion to tests/swarm_chaos.rs (local-only) and
+//! Cross-host swarm-chaos tests (R1-R3 from the cross-host test
+//! plan). Companion to tests/swarm_chaos.rs (local-only) and
 //! tests/cross_host_e2e.rs (sequential cross-host).
 //!
 //! Pattern: simulate 2 hosts via 2 inbox dirs on the local filesystem,

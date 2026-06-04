@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn body_line_addressing_recipient_is_rejected() {
         // This is the echo-bug trigger: agent body opens with [recipient] —
-        assert!(!is_header_line("[web] — Mick's explicit GO for the new feature"));
-        assert!(!is_header_line("[superdeduper] — first: v0.2.29 bench results"));
+        assert!(!is_header_line("[web] — explicit GO for the new feature"));
+        assert!(!is_header_line("[alice] — first: v0.2.29 bench results"));
     }
 
     #[test]
@@ -657,7 +657,7 @@ mod tests {
         // boundary fell inside a multibyte char (em-dash). A body line ending with
         // em-dashes near the tail must be rejected WITHOUT panicking.
         assert!(!is_header_line(
-            "[superdeduper] — relocate the FULL stack (NOT a feature — fits the freeze)."
+            "[alice] — relocate the FULL stack (NOT a feature — fits the freeze)."
         ));
         // Em-dash exactly straddling the 20-from-end boundary.
         assert!(!is_header_line("[design] aaaaaaaaaaaaaaaa — bbbbbbbbbbbbbbbb"));

@@ -1,7 +1,7 @@
 //! `giga setup --remote-node` — bootstrap a bare WSL host to join an
 //! existing giga-harness swarm as a remote peer.
 //!
-//! The full UX (per Mick, 2026-05-31):
+//! The full UX:
 //!
 //!   1. On the NEW node (bare WSL with nothing installed):
 //!        curl -fsSL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash

@@ -60,11 +60,11 @@ pub fn run(
 
     // v0.6.6: host-aware filter. Skip agents whose `host` doesn't
     // match this_host so launch on a multi-host swarm only spawns
-    // panes for agents that actually live here. Pre-fix: Mick saw
-    // `giga launch` on TRINITY spawn WT panes for all 4 morpheus
-    // agents alongside the 4 trinity agents — they failed because
-    // the workdirs only exist on the peer. Same class as init's
-    // v0.3.4 F9 fix (which filtered scaffolding but launch didn't).
+    // panes for agents that actually live here. Pre-fix: `giga
+    // launch` on a Windows host spawned WT panes for the peer-host
+    // agents alongside the local ones — they failed because the
+    // workdirs only exist on the peer. Same class as init's v0.3.4
+    // F9 fix (which filtered scaffolding but launch didn't).
     //
     // For legacy local-only swarms (no this_host) → no filter.
     // Collect into Vec rather than chaining iterators so cfg can be
@@ -166,7 +166,7 @@ pub fn run(
     // single agent to an existing session — and if this is the FIRST
     // agent on this host (no prior full launch happened here), the
     // daemons never start and the named agent is isolated. Quality's
-    // repro: morpheus-wsl had no prior `giga launch` (init was broken
+    // repro: a peer host had no prior `giga launch` (init was broken
     // by a different finding), they ran `--only performance`, and
     // sync/merger were silently missing.
     //
@@ -179,8 +179,8 @@ pub fn run(
         // v0.6.4-class fix: derive swarm_dir from CANONICALIZED config
         // path so the daemon panes get the actual swarm dir as cwd
         // even when launch was invoked via a workdir-side symlink.
-        // Pre-fix Mick saw "bash: cd: null directory" because the
-        // symlink resolved to a workdir parent that produced empty/null.
+        // Pre-fix the operator saw "bash: cd: null directory" because
+        // the symlink resolved to a workdir parent producing empty/null.
         let canonical = config_path
             .canonicalize()
             .unwrap_or_else(|_| config_path.to_path_buf());
@@ -260,7 +260,7 @@ fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool
     should_spawn_daemons_v2(cfg, &[])
 }
 
-/// v0.6.5: refined daemon-spawn rule (per Mick 2026-06-02). Daemons
+/// v0.6.5: refined daemon-spawn rule. Daemons
 /// are needed only when there's actual cross-host work to coordinate.
 /// Per-rule decision:
 ///
@@ -272,7 +272,7 @@ fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool
 /// | Peers + no boss + full launch (no --only)   | YES (last-resort bootstrap)   |
 /// | Peers + no boss + --only set                | NO  (operator knows; daemons should already be running) |
 ///
-/// Last row is Mick's complaint: `giga launch --only codex-review`
+/// Last row is the reported case: `giga launch --only <some-agent>`
 /// on a swarm with no boss was spawning daemons unnecessarily —
 /// the operator wasn't bootstrapping, just adding an agent. The
 /// daemons either already exist (run them manually OR via boss) or
@@ -309,8 +309,8 @@ fn should_spawn_daemons_v2(cfg: &crate::config::Config, only: &[String]) -> bool
 }
 
 /// Build a multiplexer pane for one of the per-host background daemons
-/// (sync / merger). Always WSL-platform in v1 (Mick's hosts are all
-/// WSL/Linux); cwd is the swarm config dir so the daemon picks up the
+/// (sync / merger). Always WSL-platform in v1 (in-tree topologies
+/// run hosts on WSL/Linux); cwd is the swarm config dir so the daemon picks up the
 /// right giga-harness.toml via the default resolution. No claude
 /// involvement — these tabs just run the daemon and show its logs.
 fn daemon_pane(title: &str, cmd: &str, swarm_dir: &str) -> Pane {
@@ -739,7 +739,7 @@ swarm_boss = true
 
     /// v0.6.5: should_spawn_daemons_v2 returns false when [[hosts]]
     /// is populated but has no peers (single-host swarm with
-    /// [[hosts]] declared). Mick's superdeduper case.
+    /// [[hosts]] declared). The single-host-with-hosts edge case.
     #[test]
     fn daemons_suppressed_when_no_peers() {
         let tmp = tempfile::TempDir::new().unwrap();

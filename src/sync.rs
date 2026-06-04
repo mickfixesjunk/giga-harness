@@ -56,7 +56,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// sync daemon so a dead tailnet returns Err in ~10s instead of
 /// wedging for the OS-default TCP timeout (~2min/attempt). Operator
 /// symptom pre-fix: "the daemons just seemed to wedge or die"
-/// (Mick, 2026-06-03) — they weren't dying, they were stuck for 2min
+/// (reported 2026-06-03) — they weren't dying, they were stuck for 2min
 /// per tick while SSH negotiated a hopeless connection.
 ///
 /// - ConnectTimeout=10: fail fast on initial TCP handshake
@@ -707,8 +707,8 @@ fn execute(cmd: &SyncCommand) -> Result<()> {
     // channel from this host yet" state — pre-fix, rsync fired
     // anyway, failed with exit 23 ("No such file or directory"),
     // and the loop logged a `push failed` warning every tick. The
-    // research agent's report (morpheus, 2026-06-02) tied a Monitor-
-    // reported daemon exit (exit 144) to this cascade. Silent
+    // A field report (2026-06-02) tied a Monitor-reported daemon
+    // exit (exit 144) to this cascade. Silent
     // no-op until the source file materializes is the right shape:
     // sync's contract is "push what exists", not "complain about
     // what doesn't".
@@ -871,12 +871,12 @@ wsl_inbox = '{inbox}'
 [[hosts]]
 name = "wsl-a"
 tailnet_hostname = "wsl-a.tail0.ts.net"
-ssh_user = "neomatrix"
+ssh_user = "alice"
 
 [[hosts]]
 name = "wsl-b"
 tailnet_hostname = "wsl-b.tail0.ts.net"
-ssh_user = "neomatrix"
+ssh_user = "alice"
 
 [[agents]]
 name = "alice"

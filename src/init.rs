@@ -39,8 +39,8 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // scaffold local-host artifacts — agents whose host matches this_host,
     // and channels with at least one participant on this_host. Without
     // this we'd try to mkdir + write AGENTS.md to agent workdirs that
-    // belong on a different physical machine (e.g. /home/neo/... when
-    // we're on a box with user `neomatrix`). For legacy local-only
+    // belong on a different physical machine (e.g. /home/bob/... when
+    // we're on a box with user `alice`). For legacy local-only
     // swarms (no [[hosts]], no this_host), include everything — today's
     // behavior, unchanged.
     let local_agents: Vec<&Agent> = if cfg.this_host.is_some() {
@@ -109,7 +109,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     // actually local to this host. Before this, a wsl-only peer would
     // try to mkdir `windows_inbox` (e.g. /mnt/c/Users/.../something)
     // even though no local agents have side=windows channels. On
-    // morpheus-wsl this manifested as init failing on a Windows path
+    // a peer host this manifested as init failing on a Windows path
     // belonging to a different user on the operator's box. For the
     // legacy local-only case (no this_host, no [[hosts]]) all sides
     // are still in scope — preserves today's behavior.
@@ -147,7 +147,7 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 
     // Generate per-agent AGENTS.md in the agent's workdir. The
     // workdir comes from the config in its agent-side form (e.g.,
-    // `C:\Users\Audio\sdd-testwin` for Windows-platform agents on a
+    // `C:\Users\Alice\win-agent` for Windows-platform agents on a
     // Linux/WSL host); translate to a host-FS path before touching
     // the filesystem so we don't end up with literal-backslash dirs.
     //
@@ -292,8 +292,8 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
 }
 
 /// Given an agent's AGENTS.md template path (e.g.,
-/// `agents/superdeduper.md`), return the sibling handover path
-/// (`agents/superdeduper.handover.md`). The file may or may not
+/// `agents/alice.md`), return the sibling handover path
+/// (`agents/alice.handover.md`). The file may or may not
 /// exist; the caller checks before copying.
 fn handover_template_for(claudemd: &Path) -> PathBuf {
     let stem = claudemd
@@ -601,7 +601,7 @@ claudemd_template = "agents/design.md"
     /// to mkdir the global `paths.windows_inbox` when no local channel
     /// has `side = "windows"`. Pre-fix: init scaffolded BOTH wsl and
     /// windows inbox dirs unconditionally if either was set in [paths].
-    /// Repro: morpheus-wsl had a windows_inbox path pointing at the
+    /// Repro: a peer host had a windows_inbox path pointing at the
     /// operator's box (different Windows user); init failed mkdir.
     #[test]
     fn init_skips_windows_inbox_when_no_local_windows_channel() {

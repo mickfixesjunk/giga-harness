@@ -29,12 +29,12 @@ This is what the canonical reference setup uses (`giga-harness-configs`). Best w
 ~/projects/<org>/giga-harness-configs/        # one git repo per org/user
   .gitignore                                  # ignore generated files
   README.md
-  superdeduper/                               # one subdir per project/ecosystem
+  my-project/                               # one subdir per project/ecosystem
     README.md                                 # docs the agent layout + history
     giga-harness.toml                         # canonical config (commit this)
     setup-<host>.sh                           # one per host (commit these)
     agents/                                   # canonical templates (commit these)
-      superdeduper.md
+      my-project.md
       design.md
       ...
     giga-harness.<host>.toml                  # generated, GITIGNORED
@@ -56,7 +56,7 @@ This is what the canonical reference setup uses (`giga-harness-configs`). Best w
 - Clones any source repos this ecosystem needs (the agents' workdirs)
 - Installs giga (Linux side via install.sh, Windows side via install.ps1)
 - Auto-detects machine-specific values (Windows username, $HOME)
-- Localizes `giga-harness.toml` → `giga-harness.<host>.toml`, substituting canonical paths (e.g. `/home/neo/` → real `$HOME`, `C:\Users\Audio\` → `C:\Users\<actual-user>\...`)
+- Localizes `giga-harness.toml` → `giga-harness.<host>.toml`, substituting canonical paths (e.g. `/home/alice/` → real `$HOME`, `C:\Users\Alice\` → `C:\Users\<actual-user>\...`)
 - Same substitution applied to each `agents/<slug>.md` → `agents.<host>/<slug>.md`
 - Drops a `giga-harness.toml` symlink (WSL) or copy (Windows) into each agent's workdir
 - Merges `bypassPermissions` into the Windows-side claude settings
@@ -122,7 +122,7 @@ Once layout is chosen, scaffold the new project dir:
    - At least one `[[channels]]` entry per pair of agents that talk
    - `[bench_protocol]` if any agent does heavy work
 3. **Create `agents/`** with one `<slug>.md` per agent. Use the `giga-add-agent` skill to scaffold each — it ensures all three artifacts (TOML, template, channels) stay in sync.
-4. **Write `setup-<host>.sh`** if going with layout A. The reference `superdeduper/setup-neo.sh` is the template. Don't write it from scratch — copy it and adjust the localization substitutions for your project's path conventions.
+4. **Write `setup-<host>.sh`** if going with layout A. Copy from an existing example and adjust the localization substitutions for your project's path conventions.
 5. **Run `giga validate <config>`** before init. Catches typos in channel participants, missing inbox dirs, multiple bench schedulers, etc.
 6. **Run `giga init <config>` then `giga launch <config>`**. Init is idempotent; safe to re-run.
 
@@ -130,7 +130,7 @@ Once layout is chosen, scaffold the new project dir:
 
 - **Project dir name**: kebab-case, matches `[project].name` in TOML.
 - **Channel filenames**: `<participant-a>-<participant-b>.md`, alphabetical or activity-flow order (look at existing entries in the repo for the local convention).
-- **Agent slugs**: kebab-case, short, role-focused (`engine`, `web`, `deploy`), not platform-focused (avoid `linux-tester` if `testrunner` says what it does without coupling to the OS).
+- **Agent slugs**: kebab-case, short, role-focused (`engine`, `web`, `deploy`), not platform-focused (avoid `linux-tester` if a name like `tests` says what it does without coupling to the OS).
 - **Per-host setup script**: `setup-<hostname>.sh` if you have a few well-known hosts; `setup.sh` if there's just one canonical bring-up. The script's substitution table is the actual per-host config — the filename is just a label.
 
 ## What NOT to do

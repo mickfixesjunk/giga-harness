@@ -330,8 +330,8 @@ enum Command {
         #[arg(long, value_name = "SLUG")]
         name: String,
         /// Absolute workdir on the agent's target OS. Use the canonical
-        /// author's path form (e.g. `/home/neo/...` or
-        /// `C:\Users\Audio\...`); per-host localizers substitute.
+        /// author's path form (e.g. `/home/alice/...` or
+        /// `C:\Users\Alice\...`); per-host localizers substitute.
         #[arg(long)]
         workdir: String,
         /// One-line role description; goes in `[[agents]] role = "..."`

@@ -205,9 +205,9 @@ pub fn run_available(config_path: &Path) -> Result<()> {
 /// One node in the tailnet roster (parsed from `tailscale status --json`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TailnetNode {
-    /// FQDN (trailing dot stripped). E.g. `morpheus-1.taild35482.ts.net`.
+    /// FQDN (trailing dot stripped). E.g. `host-a.tail0000.ts.net`.
     dns_name: String,
-    /// Short name (e.g. `morpheus-1`).
+    /// Short name (e.g. `host-a`).
     host_name: String,
     /// OS hint: `linux` | `windows` | `macOS` | etc.
     os: String,
@@ -310,8 +310,8 @@ mod tests {
   },
   "Peer": {
     "abc123": {
-      "DNSName": "morpheus-1.tail0000.ts.net.",
-      "HostName": "morpheus-1",
+      "DNSName": "host-a.tail0000.ts.net.",
+      "HostName": "host-a",
       "OS": "linux"
     },
     "def456": {
@@ -327,7 +327,7 @@ mod tests {
         let names: std::collections::HashSet<&str> =
             nodes.iter().map(|n| n.dns_name.as_str()).collect();
         assert!(names.contains("neo.tail0000.ts.net"));
-        assert!(names.contains("morpheus-1.tail0000.ts.net"));
+        assert!(names.contains("host-a.tail0000.ts.net"));
         assert!(names.contains("trinity.tail0000.ts.net"));
         // Trailing dot stripped:
         for n in &nodes {

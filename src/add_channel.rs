@@ -1,7 +1,7 @@
 //! `giga add-channel --participants alice,bob` — append a new
 //! bilateral channel to the canonical TOML.
 //!
-//! Per REMOTE_DESIGN.md §3.2: when Mick wants to connect an existing
+//! When the operator wants to connect an existing
 //! local agent to an existing remote agent via a new bilateral, this
 //! is the subcommand. It's a TOML edit; the `giga sync` daemon (step 5)
 //! propagates the updated TOML to peers; the merger + watcher pick up

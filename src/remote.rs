@@ -1,6 +1,6 @@
 //! `giga remote --host <host> <subcommand>` — SSH passthrough primitive.
 //!
-//! The operator UX (per REMOTE_DESIGN.md §3.2) lets Mick drive everything
+//! The operator UX lets the operator drive everything
 //! from a single host. `giga remote` is the underlying primitive: it looks
 //! up the named host in `[[hosts]]`, shells out to `ssh <user>@<tailnet_hostname>`,
 //! invokes `giga <args>` on the remote side from the same canonical config
@@ -189,12 +189,12 @@ mod tests {
     #[test]
     fn build_remote_command_quotes_paths_and_args() {
         let cmd = build_remote_command(
-            Path::new("/home/neomatrix/.giga/configs/remote-test"),
+            Path::new("/home/alice/.giga/configs/remote-test"),
             &["sweep".to_string(), "--owed-by".to_string(), "test-a".to_string()],
         );
         // Basic shape: cd <quoted-path> && giga sweep --owed-by test-a
         assert!(cmd.starts_with("cd "));
-        assert!(cmd.contains("/home/neomatrix/.giga/configs/remote-test"));
+        assert!(cmd.contains("/home/alice/.giga/configs/remote-test"));
         assert!(cmd.contains(" && giga sweep --owed-by test-a"));
     }
 
@@ -220,11 +220,11 @@ mod tests {
     #[test]
     fn build_remote_command_handles_path_with_spaces() {
         let cmd = build_remote_command(
-            Path::new("/home/neo/my swarms/test"),
+            Path::new("/home/alice/my swarms/test"),
             &["sweep".to_string()],
         );
         assert!(
-            cmd.contains("'/home/neo/my swarms/test'"),
+            cmd.contains("'/home/alice/my swarms/test'"),
             "expected single-quoted path in: {cmd}",
         );
     }

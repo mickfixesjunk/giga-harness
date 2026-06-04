@@ -242,7 +242,7 @@ mod tests {
         //   2. `run_command("...", background=true)` — Agy's actual
         //      run_command tool doesn't take a `background` parameter;
         //      detachment is via `WaitMsBeforeAsync`.
-        // Mick's coder agent caught both bugs on first session.
+        // An operator's coder agent caught both bugs on first session.
         let body = Runtime::Agy.session_start_snippet();
         assert!(
             !body.contains("sweep --as"),

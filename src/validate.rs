@@ -180,12 +180,12 @@ mod tests {
 
     #[test]
     fn looks_like_channel_accepts_handoff_txt_style() {
-        // handoff.txt (legacy benchmarker channel) uses the same header.
+        // handoff.txt (legacy channel naming) uses the same header.
         let tmp = TempDir::new().unwrap();
         let p = write_file(
             tmp.path(),
             "handoff.txt",
-            "# benchmarker ↔ superdeduper shared inbox\n",
+            "# alice ↔ bob shared inbox\n",
         );
         assert!(looks_like_channel(&p));
     }

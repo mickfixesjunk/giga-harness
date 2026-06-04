@@ -1,6 +1,6 @@
 //! Swarm-chaos tests — simulate N concurrent agent-shaped writers + a
 //! watcher, then assert correctness invariants at the end. Per the test
-//! plan agreed with Mick 2026-05-31: build first, then triage findings.
+//! plan: build first, then triage findings.
 //!
 //! Existing test coverage runs everything single-threaded; the watcher's
 //! `len > last_size` invariant + `OpenOptions::append(true)` atomicity

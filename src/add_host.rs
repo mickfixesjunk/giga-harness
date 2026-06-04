@@ -18,8 +18,8 @@
 //!   # On operator: register the peer in the swarm + push the TOML to it
 //!   giga add-host --name wsl-b \
 //!                 --tailnet-hostname wsl-b.tail0.ts.net \
-//!                 --ssh-user neo \
-//!                 --remote-config-dir /home/neo/.giga/configs/<swarm>
+//!                 --ssh-user alice \
+//!                 --remote-config-dir /home/alice/.giga/configs/<swarm>
 //!
 //!   # Then add agents on it:
 //!   giga add-agent --host wsl-b --name foo --peer bar

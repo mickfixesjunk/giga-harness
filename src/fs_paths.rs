@@ -2,8 +2,8 @@
 //!
 //! Configs are shared between sides of a multi-host setup. Whoever
 //! authored the file picked one form per path — e.g.,
-//! `C:\Users\Audio\sdd-testwin` for a Windows-platform agent's
-//! workdir, or `/mnt/c/Users/Audio` for the windows_inbox path used
+//! `C:\Users\Alice\windows-agent` for a Windows-platform agent's
+//! workdir, or `/mnt/c/Users/Alice` for the windows_inbox path used
 //! by both sides. That string is meaningful in its authored form,
 //! but a process running on the *other* side can't open it via the
 //! filesystem without translation. Linux syscalls treat `\` as a
@@ -86,8 +86,8 @@ mod tests {
     #[test]
     fn translates_windows_path() {
         assert_eq!(
-            windows_to_wsl("C:\\Users\\Audio\\sdd-testwin").as_deref(),
-            Some("/mnt/c/Users/Audio/sdd-testwin"),
+            windows_to_wsl("C:\\Users\\Alice\\windows-agent").as_deref(),
+            Some("/mnt/c/Users/Alice/windows-agent"),
         );
     }
 
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn passes_linux_path_through() {
-        assert_eq!(windows_to_wsl("/home/neo/x"), None);
+        assert_eq!(windows_to_wsl("/home/alice/x"), None);
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn rejects_non_mount_unix_path() {
-        assert!(wsl_to_windows("/home/neo/x").is_none());
+        assert!(wsl_to_windows("/home/alice/x").is_none());
         assert!(wsl_to_windows("/mnt/").is_none());
         assert!(wsl_to_windows("/mnt").is_none());
     }
@@ -182,13 +182,13 @@ mod tests {
     #[test]
     fn to_host_fs_passes_through_on_unrecognized() {
         use std::path::Path;
-        let p = Path::new("/home/neo/something");
+        let p = Path::new("/home/alice/something");
         // On Unix this returns the same; on Windows it would translate.
         // Either way we don't crash and don't mangle non-matching paths.
         let out = to_host_fs(p);
         // No mnt-prefix garbage was inserted:
         assert!(
-            out.to_string_lossy().starts_with("/home/neo/")
+            out.to_string_lossy().starts_with("/home/alice/")
                 || out.to_string_lossy().starts_with("\\\\")
         );
     }

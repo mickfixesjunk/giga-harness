@@ -840,7 +840,7 @@ participants = ["alice", "bob"]
         run(Args {
             channel: "_broadcast.md".into(),
             me: "alice".into(),
-            subject: "morpheus online".into(),
+            subject: "host-c online".into(),
             body: Some("FYI".into()),
             waiting_on: None,
             needs: None,
@@ -852,7 +852,7 @@ participants = ["alice", "bob"]
 
         let body = std::fs::read_to_string(inbox.join("_broadcast.md")).unwrap();
         assert!(
-            body.contains("[fyi] morpheus online"),
+            body.contains("[fyi] host-c online"),
             "subject must carry the fyi-prefix:\n{body}"
         );
     }

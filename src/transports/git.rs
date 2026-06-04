@@ -334,8 +334,8 @@ impl Transport for GitTransport {
     }
 
     fn bootstrap_peer(&self, cfg: &Config, _peer: &str, _config_path: &Path) -> Result<()> {
-        // Per TRANSPORT_DESIGN.md §7 Q3 (Mick GO): the peer
-        // bootstraps itself by running `giga setup --remote-node
+        // For the git transport, the peer bootstraps itself by
+        // running `giga setup --remote-node
         // --transport git --repo <url>`. From this side we just
         // ensure the latest canonical TOML is committed, so the
         // peer's next git pull sees the operator's recent edits.

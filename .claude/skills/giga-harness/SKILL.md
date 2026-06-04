@@ -37,7 +37,7 @@ All commands default to `--config giga-harness.toml` in the current directory. T
   agents.<host>/             # generated, gitignored — DO NOT edit
 ```
 
-The canonical config and templates use the original author's machine-conventional paths (e.g. `/home/neo/...`, `C:\Users\Audio\...`). The per-host `setup-*.sh` substitutes these for the local user when generating the localized variants.
+The canonical config and templates use placeholder paths (e.g. `/home/alice/...`, `C:\Users\Alice\...`). The per-host `setup-*.sh` substitutes these for the local user when generating the localized variants.
 
 ## Channel-file convention
 
