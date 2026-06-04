@@ -43,6 +43,65 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// silently disappear from the push set.
 const RELOAD_EVERY_N_TICKS: u64 = 5;
 
+/// v0.6.15: cap for the exponential backoff sleep when sync ticks are
+/// failing consecutively (network down, peer offline, etc.). The
+/// daemon sleeps `POLL_INTERVAL * 2^min(consecutive_failures-1, k)`
+/// per failure with k chosen so the cap below kicks in around 4
+/// failures (3s → 6s → 12s → 24s → 48s → capped at 60s). Resets to
+/// POLL_INTERVAL on first successful tick. Matters when tailscale
+/// goes down: pre-fix we hammered every 3s for hours.
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+/// v0.6.15: SSH options applied to every rsync/ssh invocation in the
+/// sync daemon so a dead tailnet returns Err in ~10s instead of
+/// wedging for the OS-default TCP timeout (~2min/attempt). Operator
+/// symptom pre-fix: "the daemons just seemed to wedge or die"
+/// (Mick, 2026-06-03) — they weren't dying, they were stuck for 2min
+/// per tick while SSH negotiated a hopeless connection.
+///
+/// - ConnectTimeout=10: fail fast on initial TCP handshake
+/// - ServerAliveInterval=10 + CountMax=3: drop a stalled connection
+///   after ~30s of silence rather than letting it hang forever
+const SSH_TIMEOUT_OPTS: &[&str] = &[
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "ServerAliveInterval=10",
+    "-o",
+    "ServerAliveCountMax=3",
+];
+
+/// Render the `-e ssh ...` string that rsync uses to invoke ssh,
+/// embedding the timeout options. rsync's `-e` takes a single
+/// space-separated string.
+fn rsync_ssh_e_arg() -> String {
+    let mut s = String::from("ssh");
+    for opt in SSH_TIMEOUT_OPTS {
+        s.push(' ');
+        s.push_str(opt);
+    }
+    s
+}
+
+/// Compute the daemon sleep duration for the next tick given how
+/// many consecutive failures we've seen. Pure fn — tested in
+/// isolation so the curve is easy to verify and tweak.
+///
+/// 0 failures → POLL_INTERVAL (3s). 1+ failures → exponential
+/// backoff capped at MAX_BACKOFF (60s).
+pub(crate) fn backoff_for(consecutive_failures: u32, base: Duration, cap: Duration) -> Duration {
+    if consecutive_failures == 0 {
+        return base;
+    }
+    // 2^n factor: 1 fail = 2× base, 2 fails = 4× base, ... .
+    // Clamp the shift so we don't overflow on a billion-failure
+    // counter run (would still saturate at `cap`, but cheap to bound).
+    let shift = consecutive_failures.min(20);
+    let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let scaled = base.checked_mul(factor as u32).unwrap_or(cap);
+    scaled.min(cap)
+}
+
 pub struct Args {
     pub config: PathBuf,
     /// Run one sync tick then exit. Useful for `giga sync --once` in
@@ -125,14 +184,44 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let mut tick: u64 = 0;
+    // v0.6.15: consecutive failure counter drives the exponential
+    // backoff sleep so we don't hammer a downed tailnet every 3s.
+    let mut consecutive_failures: u32 = 0;
     loop {
-        if let Err(e) = transport.tick(&cfg, &this_host, args.dry_run) {
-            eprintln!("sync: {} tick failed ({e}) — will retry next tick", transport.name());
+        match transport.tick(&cfg, &this_host, args.dry_run) {
+            Ok(()) => {
+                if consecutive_failures > 0 {
+                    // Errors always emit even under --quiet — recovery
+                    // from a backoff window is operator-relevant.
+                    eprintln!(
+                        "sync: recovered after {consecutive_failures} consecutive failed tick(s) — back to normal cadence"
+                    );
+                }
+                consecutive_failures = 0;
+            }
+            Err(e) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                eprintln!(
+                    "sync: {} tick failed ({e}) — will retry next tick (consecutive failures: {})",
+                    transport.name(),
+                    consecutive_failures,
+                );
+            }
         }
         if args.once {
             return Ok(());
         }
-        thread::sleep(POLL_INTERVAL);
+        let sleep_for = backoff_for(consecutive_failures, POLL_INTERVAL, MAX_BACKOFF);
+        if consecutive_failures >= 3 && sleep_for > POLL_INTERVAL {
+            // Surface the backoff once it's actually slowing things
+            // down — gives the operator a visible signal that the
+            // daemon noticed the persistent failure and is throttling.
+            eprintln!(
+                "sync: backing off (failures={consecutive_failures}, next try in {}s)",
+                sleep_for.as_secs(),
+            );
+        }
+        thread::sleep(sleep_for);
         tick = tick.wrapping_add(1);
         // v0.4.2 Bug 11 fix: re-read the config every RELOAD_EVERY_N_TICKS.
         // Without this, `giga add-agent` / `giga add-channel` after the
@@ -503,9 +592,12 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     //    re-renders workdir AGENTS.md from the template that this
     //    rsync just delivered. Legacy `this_host.toml` is excluded
     //    explicitly too for swarms that haven't been migrated yet.
+    let ssh_e = rsync_ssh_e_arg();
     let dir_rsync_status = Command::new("rsync")
         .args([
             "-avz",
+            "-e",
+            &ssh_e,
             "--exclude",
             "*.local.toml",
             "--exclude",
@@ -555,6 +647,7 @@ pub(crate) fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd))
     );
     let status = Command::new("ssh")
+        .args(SSH_TIMEOUT_OPTS)
         .arg(ssh_target)
         .arg(&wrapped)
         .stdin(Stdio::null())
@@ -628,6 +721,11 @@ fn execute(cmd: &SyncCommand) -> Result<()> {
     // doesn't corrupt the destination — rsync writes to a temp + renames.
     let mut c = Command::new("rsync");
     c.arg("-avz");
+    // v0.6.15: bound rsync's SSH so a dead tailnet returns Err in
+    // ~10s instead of wedging the tick for minutes.
+    let ssh_e = rsync_ssh_e_arg();
+    c.arg("-e");
+    c.arg(&ssh_e);
     if cmd.use_append_verify {
         c.arg("--append-verify");
     }
@@ -664,6 +762,59 @@ mod tests {
             remote_config_dir: None,
             remote_inbox_dir: None,
             paths: None,
+        }
+    }
+
+    /// v0.6.15 regression guard. backoff_for is a pure function;
+    /// these tests pin the curve so future tuning is intentional.
+    #[test]
+    fn backoff_for_zero_failures_returns_base() {
+        let base = Duration::from_secs(3);
+        let cap = Duration::from_secs(60);
+        assert_eq!(backoff_for(0, base, cap), base);
+    }
+
+    #[test]
+    fn backoff_for_grows_exponentially_until_cap() {
+        let base = Duration::from_secs(3);
+        let cap = Duration::from_secs(60);
+        // 1 fail → 2× base = 6s
+        assert_eq!(backoff_for(1, base, cap), Duration::from_secs(6));
+        // 2 fails → 4× = 12s
+        assert_eq!(backoff_for(2, base, cap), Duration::from_secs(12));
+        // 3 fails → 8× = 24s
+        assert_eq!(backoff_for(3, base, cap), Duration::from_secs(24));
+        // 4 fails → 16× = 48s (still under cap)
+        assert_eq!(backoff_for(4, base, cap), Duration::from_secs(48));
+        // 5 fails → 32× = 96s, but cap kicks in
+        assert_eq!(backoff_for(5, base, cap), cap);
+        // Many fails → still cap, never overflow.
+        assert_eq!(backoff_for(50, base, cap), cap);
+        assert_eq!(backoff_for(u32::MAX, base, cap), cap);
+    }
+
+    /// SSH timeout options must include a ConnectTimeout — without it
+    /// a dead tailnet wedges the rsync invocation for the OS-default
+    /// TCP timeout (~2min/attempt). That was the original symptom.
+    #[test]
+    fn rsync_ssh_e_arg_includes_connect_timeout() {
+        let arg = rsync_ssh_e_arg();
+        assert!(arg.contains("ConnectTimeout"), "missing ConnectTimeout: {arg}");
+        assert!(arg.contains("ServerAliveInterval"), "missing ServerAliveInterval: {arg}");
+        // First token must be `ssh` because rsync's -e parses this as
+        // a command line; the rest are flags for that command.
+        assert!(arg.starts_with("ssh "), "must start with `ssh`: {arg}");
+    }
+
+    #[test]
+    fn ssh_timeout_opts_are_paired_o_form() {
+        // ssh requires options as `-o key=value` pairs; verify the
+        // shape so a refactor that drops the `-o` doesn't silently
+        // produce an unusable argv.
+        assert_eq!(SSH_TIMEOUT_OPTS.len() % 2, 0, "must be pairs");
+        for chunk in SSH_TIMEOUT_OPTS.chunks(2) {
+            assert_eq!(chunk[0], "-o", "expected -o flag: {chunk:?}");
+            assert!(chunk[1].contains('='), "expected key=value: {}", chunk[1]);
         }
     }
 
