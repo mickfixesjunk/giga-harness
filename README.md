@@ -359,3 +359,5 @@ For codex agents specifically, `giga init` scaffolds `<workdir>/codex-channel/{i
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+<!-- README updated by Gemini CLI -->
