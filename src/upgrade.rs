@@ -152,7 +152,8 @@ pub fn run(args: Args) -> Result<()> {
                     &local_host_label,
                     &local_windows_agents,
                     &broadcast_channels,
-                    WINDOWS_DISARM_GRACE_SECS,
+                    WINDOWS_OPERATOR_WAIT_SECS,
+                    WINDOWS_AGENT_REARM_DELAY_SECS,
                     args.dry_run,
                 ) {
                     eprintln!(
@@ -289,7 +290,8 @@ pub fn run(args: Args) -> Result<()> {
                             peer,
                             &windows_agents,
                             &broadcast_channels,
-                            WINDOWS_DISARM_GRACE_SECS,
+                            WINDOWS_OPERATOR_WAIT_SECS,
+                            WINDOWS_AGENT_REARM_DELAY_SECS,
                             args.dry_run,
                         ) {
                             eprintln!(
@@ -607,13 +609,28 @@ fn install_remote(
     Ok(())
 }
 
-/// v0.6.14: how long the operator waits after posting the
-/// pre-install disarm broadcast for Windows agents to TaskStop their
-/// watchers + release the giga.exe file lock. Sized for "next agent
-/// turn fires + agent acts" round-trip. If install.ps1 still fails
-/// with a sharing violation, the agent didn't act in time — the
-/// operator can retry or extend.
-const WINDOWS_DISARM_GRACE_SECS: u64 = 60;
+/// v0.6.14 + v0.6.23: how long the operator waits after posting
+/// the pre-install disarm broadcast, before running install.ps1.
+/// Sized for "Windows agent's next turn fires from Monitor + agent
+/// TaskStops their watcher" round-trip. Field-validated at 15s as
+/// of v0.6.23 (original v0.6.14 estimate of 60s was conservative).
+/// If install.ps1 fails with a sharing violation, the agent didn't
+/// act in time — extend via re-run or by hand-disarming first.
+const WINDOWS_OPERATOR_WAIT_SECS: u64 = 15;
+
+/// v0.6.23: how long the agent should wait (per the disarm
+/// broadcast instructions) before re-arming their watcher.
+///
+/// Must exceed WINDOWS_OPERATOR_WAIT_SECS + estimated install
+/// duration + buffer. If the agent re-arms while install.ps1 is
+/// still writing giga.exe, the new watcher loads a half-written
+/// binary and fails.
+///
+/// Sized at 60s: gives ~45s of headroom on top of the operator
+/// wait (15s operator wait + ~30s install + 15s slack). install.ps1
+/// downloads the binary from GitHub Releases — most of the time
+/// budget is the download, which varies by connection.
+const WINDOWS_AGENT_REARM_DELAY_SECS: u64 = 60;
 
 /// List the agent slugs configured on `host` whose platform is
 /// `windows`. Drives the [ack: ...] addressing for the pre-install
@@ -627,11 +644,19 @@ fn windows_agents_on_host(cfg: &Config, host: &str) -> Vec<String> {
 }
 
 /// Post a targeted `[ack: <windows-slugs>]` broadcast asking the
-/// Windows agents on `peer` to TaskStop their watchers + stand by
-/// while install.ps1 runs. Then sleep `grace_secs` operator-side to
-/// give them a chance to act. The `[ack:]` prefix already filters
-/// fanout in the watcher (see watch.rs:347) so non-Windows agents on
-/// the same channel are unaffected.
+/// Windows agents on `peer` to TaskStop their watchers + schedule a
+/// re-arm. Then sleep `operator_wait_secs` operator-side to give them
+/// a chance to act before running install.ps1. The `[ack:]` prefix
+/// already filters fanout in the watcher (see watch.rs:347) so
+/// non-Windows agents on the same channel are unaffected.
+///
+/// v0.6.23: operator-side wait and agent-side rearm delay are now
+/// SEPARATE values. Pre-v0.6.23 they were conflated as a single
+/// 60s constant, which had two problems: (a) the operator wait was
+/// longer than needed (~15s field-validated), bloating the
+/// end-to-end upgrade time, and (b) the agent's rearm delay must
+/// EXCEED operator wait + install duration to avoid the new watcher
+/// loading a half-written giga.exe.
 #[allow(clippy::too_many_arguments)]
 fn windows_pre_install_disarm(
     giga_exe: &std::path::Path,
@@ -640,26 +665,14 @@ fn windows_pre_install_disarm(
     peer: &str,
     windows_agents: &[String],
     broadcast_channels: &[&str],
-    grace_secs: u64,
+    operator_wait_secs: u64,
+    agent_rearm_delay_secs: u64,
     dry_run: bool,
 ) -> Result<()> {
     let ack_list = windows_agents.join(",");
     let subject = format!(
-        "[ack: {ack_list}] giga upgrade incoming on `{peer}` — disarm your watcher and rearm it in {grace_secs}s"
+        "[ack: {ack_list}] giga upgrade incoming on `{peer}` — disarm your watcher and rearm it in {agent_rearm_delay_secs}s"
     );
-    // v0.6.22: explicit re-arm instruction. Pre-v0.6.22 message said
-    // "stand by for ~60 seconds" which agents read as passive wait —
-    // they'd TaskStop their watcher then go idle, and the rearm
-    // broadcast (posted by giga upgrade at the operator's 60s mark)
-    // would land in the channel file with no live watcher to surface
-    // it. Result: agents stayed deaf indefinitely.
-    //
-    // The fix mirrors the operator-driven phrasing that's been
-    // shown to work in practice ("disarm your watcher and rearm it
-    // in 60s. giga is being upgraded"): tell the agent EXPLICITLY
-    // to schedule the re-arm before going idle. Their freshly-armed
-    // watcher will auto-replay any messages that landed during the
-    // deaf window, including the post-install rearm broadcast.
     let body = format!(
         "giga.exe on host `{peer}` is about to be upgraded via install.ps1, \
          which requires the binary to be unlocked (Windows file-locks running \
@@ -668,16 +681,20 @@ fn windows_pre_install_disarm(
          1. TaskStop your giga inbox watcher (release the giga.exe file lock).\n\
          \n\
          2. BEFORE going idle, schedule yourself to re-arm the watcher in \
-         {grace_secs} seconds using your runtime's scheduler (Claude Code: \
-         CronCreate; agy: schedule). Without this scheduled re-arm you will \
-         stay deaf to inbox events until manually nudged — the rearm \
-         broadcast lands in the channel during the deaf window and your \
-         dead watcher can't surface it.\n\
+         {agent_rearm_delay_secs} seconds using your runtime's scheduler \
+         (Claude Code: CronCreate; agy: schedule). Without this scheduled \
+         re-arm you will stay deaf to inbox events until manually nudged — \
+         the rearm broadcast lands in the channel during the deaf window \
+         and your dead watcher can't surface it.\n\
          \n\
-         When you re-arm after the {grace_secs}s delay, your new watcher \
-         loads the freshly-installed giga.exe and auto-replays any messages \
-         that landed during the deaf window (including the operator's \
-         post-install rearm broadcast). No other action needed.\n\
+         The {agent_rearm_delay_secs}s delay covers the operator's wait \
+         (~{operator_wait_secs}s for you to TaskStop) PLUS the install.ps1 \
+         download + write time PLUS a safety buffer. Re-arming sooner risks \
+         loading a half-written giga.exe. When you re-arm after the full \
+         delay, your new watcher loads the freshly-installed giga.exe and \
+         auto-replays any messages that landed during the deaf window \
+         (including the operator's post-install rearm broadcast). No other \
+         action needed.\n\
          \n\
          (Non-Windows agents on this channel can ignore this — the [ack:] \
          prefix targets only the Windows slugs listed.)"
@@ -696,10 +713,10 @@ fn windows_pre_install_disarm(
         }
     }
     if dry_run {
-        println!("    [dry-run] would sleep {grace_secs}s for watchers to release lock");
+        println!("    [dry-run] would sleep {operator_wait_secs}s for watchers to TaskStop (then run install)");
     } else {
-        println!("  -> sleeping {grace_secs}s for watchers to TaskStop + release giga.exe lock");
-        std::thread::sleep(std::time::Duration::from_secs(grace_secs));
+        println!("  -> sleeping {operator_wait_secs}s for watchers to TaskStop + release giga.exe lock");
+        std::thread::sleep(std::time::Duration::from_secs(operator_wait_secs));
     }
     Ok(())
 }
