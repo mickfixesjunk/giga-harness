@@ -147,6 +147,13 @@ enum Command {
         /// `tmux`, `wt`, `print`.
         #[arg(long, value_name = "MODE", default_value = "auto")]
         terminal: String,
+        /// Sleep this many seconds between starting each agent's CLI.
+        /// 0 (default) = launch all at once. For 10+ agent swarms, pass
+        /// 5-15s to avoid the TPM-limit storm from N simultaneous
+        /// `claude` first turns. The total launch time becomes
+        /// roughly `(N-1) * stagger` seconds.
+        #[arg(long, value_name = "SECONDS", default_value_t = 0)]
+        stagger_per_agent_seconds: u64,
     },
     /// Move an agent from one host to another in the tailnet.
     ///
@@ -671,6 +678,7 @@ fn main() -> Result<()> {
             only,
             new_window,
             terminal,
+            stagger_per_agent_seconds,
         } => {
             let config = registry::resolve_config(config)?;
             if let Some(host) = host {
@@ -690,6 +698,10 @@ fn main() -> Result<()> {
                 }
                 remote_args.push("--terminal".to_string());
                 remote_args.push(terminal);
+                if stagger_per_agent_seconds > 0 {
+                    remote_args.push("--stagger-per-agent-seconds".to_string());
+                    remote_args.push(stagger_per_agent_seconds.to_string());
+                }
                 let code = remote::run(remote::Args {
                     host,
                     config,
@@ -697,7 +709,15 @@ fn main() -> Result<()> {
                 })?;
                 std::process::exit(code);
             }
-            launch::run(&config, skip_init, dry_run, &only, new_window, &terminal)
+            launch::run(
+                &config,
+                skip_init,
+                dry_run,
+                &only,
+                new_window,
+                &terminal,
+                stagger_per_agent_seconds,
+            )
         }
         Command::Hosts { config, available } => {
             // When the user didn't override --config and we can't resolve

@@ -87,6 +87,10 @@ giga launch     # one terminal per agent
                 # macOS:   add --terminal mac-terminal for one native window per agent
                 # Linux:   defaults to tmux (one session, N windows)
                 # WSL/Win: defaults to Windows Terminal (one window, N tabs)
+                #
+                # 10+ agent swarm? Add --stagger-per-agent-seconds 10 to spread
+                # CLI starts and avoid TPM-limit storms from N simultaneous
+                # `claude` first turns hitting Anthropic at once.
 ```
 
 That's it. Each terminal opens in the agent's workdir with `claude` already running. Each agent reads its CLAUDE.md, arms its watcher, posts its intro, waits for the other side to talk. Each window's title is set to the agent's slug; every reply they make is prefixed `[slug]` so you always know which agent is talking.
@@ -239,6 +243,7 @@ The inbox files for the deleted channels stay on disk as historical records. `gi
 | Goal | Command |
 |------|---------|
 | Cold start a fresh project | `giga validate && giga init && giga launch` |
+| Cold start a 10+ agent swarm (avoid TPM-limit storm) | `giga launch --stagger-per-agent-seconds 10` |
 | Validate a config edit | `giga validate <config>` |
 | See open WAITING ON tags | `giga sweep <config>` |
 | Scaffold a new agent | `giga add-agent --name <slug> --workdir <path> --role "..." --peer <existing>` |

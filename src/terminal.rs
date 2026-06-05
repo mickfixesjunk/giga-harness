@@ -70,6 +70,7 @@ pub fn launch(
     session_name: &str,
     incremental: bool,
     new_window: bool,
+    stagger_seconds: u64,
 ) -> Result<()> {
     match mux {
         // wt.exe's `--window <name>` flag already does the right thing
@@ -80,10 +81,23 @@ pub fn launch(
         // (tabs dragged into separate windows) and the name no longer
         // points anywhere useful. The incremental distinction only
         // matters for tmux.
-        Multiplexer::WindowsTerminal => launch_wt(panes, session_name, new_window),
-        Multiplexer::Tmux => launch_tmux(panes, session_name, incremental),
-        Multiplexer::MacTerminal => launch_mac_terminal(panes, session_name),
+        //
+        // v0.6.19: `stagger_seconds` paces per-pane spawning so a
+        // large swarm doesn't trigger 17 simultaneous `claude` first
+        // turns → TPM-limit storm. Default 0 (current behavior); pass
+        // 5-15s for 10+ agent swarms.
+        Multiplexer::WindowsTerminal => launch_wt(panes, session_name, new_window, stagger_seconds),
+        Multiplexer::Tmux => launch_tmux(panes, session_name, incremental, stagger_seconds),
+        Multiplexer::MacTerminal => launch_mac_terminal(panes, session_name, stagger_seconds),
         Multiplexer::None => launch_print(panes),
+    }
+}
+
+/// v0.6.19: sleep `seconds` if non-zero. Pulled out so each
+/// multiplexer doesn't reimplement the "skip if zero" guard.
+fn stagger_sleep(seconds: u64) {
+    if seconds > 0 {
+        std::thread::sleep(std::time::Duration::from_secs(seconds));
     }
 }
 
@@ -103,7 +117,7 @@ fn escape_wt_semicolons(s: &str) -> String {
     out
 }
 
-fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()> {
+fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool, stagger_seconds: u64) -> Result<()> {
     // Compose wt.exe invocations — one tab per agent.
     //
     // Admin panes get a SEPARATE wt.exe call with `-w new`. This is
@@ -137,44 +151,50 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
     let admin: Vec<&Pane> = panes.iter().filter(|p| p.admin).collect();
 
     // Regular (non-admin) panes: attach to or create the named window.
+    //
+    // v0.6.19: when stagger_seconds > 0, issue ONE wt.exe call per
+    // pane (always with `--window <session>` so they all land in the
+    // same window) with a sleep between calls. This staggers when
+    // each `claude` first turn fires, avoiding the TPM-limit storm
+    // for large swarms. When stagger_seconds == 0 (default), keep
+    // the single big invocation — preserves the snappier UX for
+    // small swarms.
     if !regular.is_empty() {
-        let mut cmd = Command::new(exe);
-        if new_window {
-            cmd.arg("-w").arg("new");
-        } else {
-            cmd.arg("--window").arg(session_name);
-        }
-        for (i, pane) in regular.iter().enumerate() {
-            if i > 0 {
-                cmd.arg(";");
+        if stagger_seconds == 0 {
+            let mut cmd = Command::new(exe);
+            if new_window {
+                cmd.arg("-w").arg("new");
+            } else {
+                cmd.arg("--window").arg(session_name);
             }
-            append_tab_args(&mut cmd, pane, &tmpdir)?;
-        }
-        // v0.6.5: when `wt.exe` exec fails with ENOEXEC (Exec format
-        // error / os error 8), the WindowsApps AppExecutionAlias stub
-        // for wt.exe is probably broken or absent — common on
-        // freshly-installed WSL distros where Windows Terminal isn't
-        // installed but the alias stub exists with zero bytes.
-        // Surface the fallback before the cryptic os-error reaches
-        // the operator.
-        let status = match cmd.status() {
-            Ok(s) => s,
-            Err(e) => {
-                if e.raw_os_error() == Some(8) {
-                    return Err(anyhow::anyhow!(
-                        "wt.exe spawn failed with ENOEXEC (os error 8) — \
-                         the Windows Terminal alias stub at /mnt/c/Users/.../WindowsApps/wt.exe \
-                         is likely a 0-byte AppExecutionAlias that isn't a real binary. \
-                         Either install Windows Terminal from the Microsoft Store, OR run \
-                         `giga launch --terminal tmux` to bypass wt entirely."
-                    ));
+            for (i, pane) in regular.iter().enumerate() {
+                if i > 0 {
+                    cmd.arg(";");
                 }
-                return Err(anyhow::Error::new(e)
-                    .context("spawning Windows Terminal (regular tabs)"));
+                append_tab_args(&mut cmd, pane, &tmpdir)?;
             }
-        };
-        if !status.success() {
-            anyhow::bail!("wt.exe exited with status {status}");
+            wt_spawn_or_explain(cmd)?;
+        } else {
+            // Per-pane invocations. First call may use `-w new`, but
+            // we need a stable window name for subsequent calls to
+            // attach to — so even in new_window mode we name the
+            // window after `session_name-stagger-<pid>` and use that
+            // for ALL calls. `--window <name>` creates if absent,
+            // attaches if present.
+            let window_name = if new_window {
+                format!("{session_name}-stagger-{}", std::process::id())
+            } else {
+                session_name.to_string()
+            };
+            for (i, pane) in regular.iter().enumerate() {
+                if i > 0 {
+                    stagger_sleep(stagger_seconds);
+                }
+                let mut cmd = Command::new(exe);
+                cmd.arg("--window").arg(&window_name);
+                append_tab_args(&mut cmd, pane, &tmpdir)?;
+                wt_spawn_or_explain(cmd)?;
+            }
         }
     }
 
@@ -199,6 +219,38 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool) -> Result<()>
         }
     }
 
+    Ok(())
+}
+
+// v0.6.5: when `wt.exe` exec fails with ENOEXEC (Exec format
+// error / os error 8), the WindowsApps AppExecutionAlias stub for
+// wt.exe is probably broken or absent — common on freshly-installed
+// WSL distros where Windows Terminal isn't installed but the alias
+// stub exists with zero bytes. Surface the fallback before the
+// cryptic os-error reaches the operator.
+//
+// v0.6.19: extracted as a helper so the single-invocation path and
+// the per-pane staggered path both use the same friendly error
+// handling.
+fn wt_spawn_or_explain(mut cmd: Command) -> Result<()> {
+    let status = match cmd.status() {
+        Ok(s) => s,
+        Err(e) => {
+            if e.raw_os_error() == Some(8) {
+                return Err(anyhow::anyhow!(
+                    "wt.exe spawn failed with ENOEXEC (os error 8) — \
+                     the Windows Terminal alias stub at /mnt/c/Users/.../WindowsApps/wt.exe \
+                     is likely a 0-byte AppExecutionAlias that isn't a real binary. \
+                     Either install Windows Terminal from the Microsoft Store, OR run \
+                     `giga launch --terminal tmux` to bypass wt entirely."
+                ));
+            }
+            return Err(anyhow::Error::new(e).context("spawning Windows Terminal"));
+        }
+    };
+    if !status.success() {
+        anyhow::bail!("wt.exe exited with status {status}");
+    }
     Ok(())
 }
 
@@ -262,7 +314,7 @@ fn append_windows_tab_cmd(cmd: &mut Command, pane: &Pane) {
         .arg(escape_wt_semicolons(&spawn));
 }
 
-fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<()> {
+fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool, stagger_seconds: u64) -> Result<()> {
     // When incremental (--only), attach to an existing session if one
     // is alive and add windows to it; otherwise create a new session.
     // When not incremental (full launch), preserve the historical
@@ -281,7 +333,10 @@ fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool) -> Result<
 
     let mut create_session = !incremental || !session_alive;
 
-    for pane in panes.iter() {
+    for (i, pane) in panes.iter().enumerate() {
+        if i > 0 {
+            stagger_sleep(stagger_seconds);
+        }
         // OSC 0 sets the terminal window title to the agent name.
         // tmux will pass it through to the outer terminal when
         // `set-titles on` (enabled below for new sessions), so the
@@ -363,7 +418,7 @@ fn launch_print(panes: &[Pane]) -> Result<()> {
 /// the file indirection sidesteps every layer of AppleScript+shell
 /// quoting that would otherwise have to escape the intro prompt's
 /// apostrophes, semicolons, and so on.
-fn launch_mac_terminal(panes: &[Pane], session_name: &str) -> Result<()> {
+fn launch_mac_terminal(panes: &[Pane], session_name: &str, stagger_seconds: u64) -> Result<()> {
     if which("osascript").is_err() {
         anyhow::bail!("--terminal mac-terminal requires `osascript` (only available on macOS)");
     }
@@ -380,7 +435,10 @@ fn launch_mac_terminal(panes: &[Pane], session_name: &str) -> Result<()> {
 
     println!("opening {} Terminal.app window(s)...", panes.len());
 
-    for pane in panes {
+    for (i, pane) in panes.iter().enumerate() {
+        if i > 0 {
+            stagger_sleep(stagger_seconds);
+        }
         let script_path = tmpdir.join(format!("{}.sh", sanitize_for_filename(&pane.title)));
         // OSC 0 escape sequence sets the window title in Terminal.app
         // (and any other xterm-compatible terminal). The title persists
@@ -451,6 +509,34 @@ fn chmod_executable(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.6.19: stagger_sleep is a no-op when seconds=0 (returns
+    /// immediately). The actual sleep behavior at seconds>0 is
+    /// trusted to the stdlib; we just verify the fast-path.
+    #[test]
+    fn stagger_sleep_is_immediate_when_zero() {
+        let start = std::time::Instant::now();
+        stagger_sleep(0);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "stagger_sleep(0) should return immediately, took {elapsed:?}",
+        );
+    }
+
+    /// v0.6.19: at seconds=1 there IS a measurable sleep. Confirms
+    /// the non-zero path actually sleeps (so a refactor that drops
+    /// the call gets caught).
+    #[test]
+    fn stagger_sleep_actually_sleeps_when_nonzero() {
+        let start = std::time::Instant::now();
+        stagger_sleep(1);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "stagger_sleep(1) should sleep ~1s, took {elapsed:?}",
+        );
+    }
 
     #[test]
     fn parse_override_accepts_canonical_names() {

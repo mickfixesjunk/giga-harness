@@ -16,6 +16,7 @@ pub fn run(
     only: &[String],
     new_window: bool,
     terminal: &str,
+    stagger_per_agent_seconds: u64,
 ) -> Result<()> {
     if !skip_init {
         init::run(config_path)?;
@@ -217,6 +218,24 @@ pub fn run(
         println!("  - {} ({}) — cwd={}", p.title, p.platform, p.cwd);
     }
 
+    // v0.6.19: warn when a swarm is large enough to risk a TPM-limit
+    // storm AND stagger is off. Doesn't force the operator's hand
+    // (some accounts are on tiers that absorb the burst fine), but
+    // they shouldn't be surprised when 17 simultaneous `claude` first
+    // turns hit a 429.
+    if stagger_per_agent_seconds > 0 {
+        let total = stagger_per_agent_seconds * panes.len().saturating_sub(1) as u64;
+        println!(
+            "stagger:     {stagger_per_agent_seconds}s per agent (~{total}s total spread)"
+        );
+    } else if panes.len() >= 8 {
+        println!(
+            "  HINT: {} panes will start nearly simultaneously. For large swarms, \
+             pass --stagger-per-agent-seconds 5 (or higher) to avoid TPM-limit storms.",
+            panes.len(),
+        );
+    }
+
     if dry_run {
         println!("\n(dry-run — not spawning)");
         return Ok(());
@@ -226,7 +245,7 @@ pub fn run(
         eprintln!("\nwarning: no multiplexer available — printing commands instead");
     }
 
-    terminal::launch(mux, &panes, &session, incremental, new_window)?;
+    terminal::launch(mux, &panes, &session, incremental, new_window, stagger_per_agent_seconds)?;
     Ok(())
 }
 
