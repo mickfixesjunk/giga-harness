@@ -645,14 +645,40 @@ fn windows_pre_install_disarm(
 ) -> Result<()> {
     let ack_list = windows_agents.join(",");
     let subject = format!(
-        "[ack: {ack_list}] giga upgrade incoming on `{peer}` — TaskStop your watcher and stand by"
+        "[ack: {ack_list}] giga upgrade incoming on `{peer}` — disarm your watcher and rearm it in {grace_secs}s"
     );
+    // v0.6.22: explicit re-arm instruction. Pre-v0.6.22 message said
+    // "stand by for ~60 seconds" which agents read as passive wait —
+    // they'd TaskStop their watcher then go idle, and the rearm
+    // broadcast (posted by giga upgrade at the operator's 60s mark)
+    // would land in the channel file with no live watcher to surface
+    // it. Result: agents stayed deaf indefinitely.
+    //
+    // The fix mirrors the operator-driven phrasing that's been
+    // shown to work in practice ("disarm your watcher and rearm it
+    // in 60s. giga is being upgraded"): tell the agent EXPLICITLY
+    // to schedule the re-arm before going idle. Their freshly-armed
+    // watcher will auto-replay any messages that landed during the
+    // deaf window, including the post-install rearm broadcast.
     let body = format!(
         "giga.exe on host `{peer}` is about to be upgraded via install.ps1, \
          which requires the binary to be unlocked (Windows file-locks running \
-         exes). Please TaskStop your giga inbox watcher and stand by for \
-         ~{grace_secs} seconds. After install completes you'll get an [ack: ...] \
-         re-arm message; until then no need to do anything else. \
+         exes). Please do BOTH of these now, in order:\n\
+         \n\
+         1. TaskStop your giga inbox watcher (release the giga.exe file lock).\n\
+         \n\
+         2. BEFORE going idle, schedule yourself to re-arm the watcher in \
+         {grace_secs} seconds using your runtime's scheduler (Claude Code: \
+         CronCreate; agy: schedule). Without this scheduled re-arm you will \
+         stay deaf to inbox events until manually nudged — the rearm \
+         broadcast lands in the channel during the deaf window and your \
+         dead watcher can't surface it.\n\
+         \n\
+         When you re-arm after the {grace_secs}s delay, your new watcher \
+         loads the freshly-installed giga.exe and auto-replays any messages \
+         that landed during the deaf window (including the operator's \
+         post-install rearm broadcast). No other action needed.\n\
+         \n\
          (Non-Windows agents on this channel can ignore this — the [ack:] \
          prefix targets only the Windows slugs listed.)"
     );
