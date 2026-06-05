@@ -31,6 +31,7 @@ mod registry;
 mod remote;
 mod setup;
 mod setup_remote_node;
+mod set_swarm_boss;
 mod stale_wait;
 mod sweep;
 mod sync;
@@ -209,6 +210,24 @@ enum Command {
         #[arg(long, default_value = "giga-harness.toml")]
         config: PathBuf,
     },
+    /// Promote an existing agent to `swarm_boss` (or demote with
+    /// `--unset`). At most one swarm_boss per host; promotion
+    /// requires platform=wsl. After the TOML write, re-runs `giga
+    /// init` to regenerate AGENTS.md so the boss section is fresh.
+    SetSwarmBoss {
+        /// Agent slug to promote (or demote with `--unset`).
+        slug: String,
+        /// Demote: clear the swarm_boss flag on this agent.
+        #[arg(long)]
+        unset: bool,
+        /// Don't re-run `giga init` after the TOML write. Useful when
+        /// chaining commands or inspecting the TOML before scaffold
+        /// regeneration.
+        #[arg(long)]
+        no_init: bool,
+        #[arg(long, default_value = "giga-harness.toml")]
+        config: PathBuf,
+    },
     /// Install the latest giga binary on this host (and optionally on
     /// every peer), then post a "please re-arm your watcher" broadcast
     /// to all `_*.md` channels so agents pick up the new binary.
@@ -352,6 +371,12 @@ enum Command {
         /// agent already holds the role.
         #[arg(long)]
         bench_scheduler: bool,
+        /// Set this agent as the swarm_boss. At most one per host;
+        /// must be platform=wsl (sync + merger are POSIX-only). The
+        /// swarm_boss runs sync + merger Monitors and (when smart-
+        /// compaction is enabled) supervises worker agent compaction.
+        #[arg(long)]
+        swarm_boss: bool,
         /// Skip auto-appending the new slug to broadcast-channel
         /// participants (channels whose `file` starts with `_`).
         #[arg(long)]
@@ -742,6 +767,20 @@ fn main() -> Result<()> {
                 dry_run,
             })
         }
+        Command::SetSwarmBoss {
+            slug,
+            unset,
+            no_init,
+            config,
+        } => {
+            let config = registry::resolve_config(config)?;
+            set_swarm_boss::run(set_swarm_boss::Args {
+                config,
+                slug,
+                unset,
+                no_init,
+            })
+        }
         Command::Sweep {
             config,
             owed_by,
@@ -809,6 +848,7 @@ fn main() -> Result<()> {
             platform,
             peer,
             bench_scheduler,
+            swarm_boss,
             no_broadcast,
             template,
             dry_run,
@@ -823,6 +863,7 @@ fn main() -> Result<()> {
             platform,
             peers: peer,
             bench_scheduler,
+            swarm_boss,
             no_broadcast,
             template,
             dry_run,

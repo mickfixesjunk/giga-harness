@@ -80,9 +80,9 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          the README one-liner: \
          https://github.com/mickfixesjunk/giga-harness#install\n\
          \n\
-         ## Step 2 — ask the user 5 questions\n\
+         ## Step 2 — ask the user 6 questions\n\
          \n\
-         Use AskUserQuestion (one tool call, all five at once):\n\
+         Use AskUserQuestion (one tool call, all six at once):\n\
          \n\
          1. **Project name** (kebab-case slug, e.g. `my-saas-side-project`). \
          Becomes the config dir name and the tmux session label.\n\
@@ -111,6 +111,14 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          * `auto` — let giga pick (wt → tmux → print).\n\
          Default the recommended option to whichever matches the platform \
          detected above.\n\
+         6. **Which agent should be the swarm_boss?** Present the agent slugs from \
+         question 2 as options (filter to wsl-platform agents only — the boss must \
+         be POSIX). The swarm_boss runs sync + merger Monitors (load-bearing on \
+         multi-host swarms) and supervises worker-agent compaction. Recommend \
+         `design` (or whichever agent owns coordination) as the default. Add a \
+         \"None — set it later with `giga set-swarm-boss <slug>`\" option for users \
+         who want to defer. Set `swarm_boss = true` on the chosen agent in the \
+         generated TOML.\n\
          \n\
          ## Standard agent role definitions\n\
          \n\
@@ -333,9 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_references_all_five_questions() {
+    fn prompt_references_all_six_questions() {
         let out = sample_prompt();
-        // The bootstrap flow hinges on these five questions being
+        // The bootstrap flow hinges on these six questions being
         // mentioned. If a future edit accidentally drops one, this
         // test catches it.
         assert!(out.contains("Project name"));
@@ -343,6 +351,29 @@ mod tests {
         assert!(out.contains("project code lives"));
         assert!(out.contains("Topology"));
         assert!(out.contains("launch the agents"));
+        assert!(
+            out.contains("swarm_boss"),
+            "Q6 (swarm_boss) missing from bootstrap prompt",
+        );
+    }
+
+    /// v0.6.18: setup must steer the bootstrap agent toward writing
+    /// the swarm_boss flag into the generated TOML — without it the
+    /// new swarm has no boss, supervision never starts, and the
+    /// operator has to run `giga set-swarm-boss` post hoc.
+    #[test]
+    fn prompt_directs_bootstrap_agent_to_set_swarm_boss_flag() {
+        let out = sample_prompt();
+        assert!(
+            out.contains("swarm_boss = true"),
+            "bootstrap prompt must instruct setting `swarm_boss = true` in TOML",
+        );
+        // The fallback "skip for now" path should also be mentioned so
+        // users can defer the decision.
+        assert!(
+            out.contains("set-swarm-boss"),
+            "bootstrap prompt should mention the post-hoc command for deferred setup",
+        );
     }
 
     #[test]

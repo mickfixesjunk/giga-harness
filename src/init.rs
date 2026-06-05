@@ -288,6 +288,29 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
         );
     }
     println!("next: `giga launch <config>` to open the terminals");
+
+    // v0.6.18: warn if no swarm_boss is flagged. The boss runs sync +
+    // merger Monitors and (with smart-compaction enabled) supervises
+    // worker-agent compaction. Without one, a multi-host swarm needs
+    // operator-spawned daemon panes, and compaction supervision is
+    // never activated even when configured.
+    let has_boss = cfg.agents.iter().any(|a| a.swarm_boss);
+    if !has_boss && !cfg.agents.is_empty() {
+        println!();
+        println!(
+            "  NOTE: no swarm_boss flagged. The boss runs sync + merger Monitors and"
+        );
+        println!(
+            "        supervises worker-agent compaction. Promote one with:"
+        );
+        println!(
+            "          giga set-swarm-boss <slug>"
+        );
+        println!(
+            "        (any wsl-platform agent works; design / coordinator agents are typical choices)"
+        );
+    }
+
     Ok(())
 }
 

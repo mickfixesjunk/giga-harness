@@ -42,6 +42,11 @@ pub struct Args {
     /// (or `giga remote --host <peer> launch --only <new-agent>`) to
     /// actually bring up the terminal on the peer.
     pub host: Option<String>,
+    /// v0.6.18: flag the new agent as the swarm_boss. At most one
+    /// swarm_boss per host is allowed (config validation enforces);
+    /// preflight rejects up front if there's already a boss on the
+    /// same host the new agent will live on.
+    pub swarm_boss: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -286,6 +291,32 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
             ));
         }
     }
+    if args.swarm_boss {
+        if args.platform != "wsl" {
+            return Err(anyhow!(
+                "--swarm-boss requires --platform=wsl (sync + merger are POSIX-only)",
+            ));
+        }
+        // At most one swarm_boss per host. Host of the new agent is
+        // either args.host (multi-host setup) or None (local-only).
+        let new_host = args.host.as_deref();
+        let collision = cfg.agents.iter().find(|a| {
+            a.swarm_boss && match (a.host.as_deref(), new_host) {
+                (Some(h1), Some(h2)) => h1 == h2,
+                (None, None) => true,
+                _ => false,
+            }
+        });
+        if let Some(other) = collision {
+            return Err(anyhow!(
+                "host `{}` already has a swarm_boss (`{}`). At most one per host — \
+                 demote with `giga set-swarm-boss {} --unset` first.",
+                new_host.unwrap_or("<local>"),
+                other.name,
+                other.name,
+            ));
+        }
+    }
     let known: HashSet<&str> = cfg.agents.iter().map(|a| a.name.as_str()).collect();
     for peer in &args.peers {
         if peer == &args.name {
@@ -407,6 +438,9 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     }
     if args.bench_scheduler {
         block["bench_scheduler"] = value(true);
+    }
+    if args.swarm_boss {
+        block["swarm_boss"] = value(true);
     }
     if let Some(cr) = &args.code_root {
         block["code_root"] = value(cr.as_str());
@@ -595,6 +629,7 @@ purpose = "All-hands."
             platform: "wsl".into(),
             peers: vec!["alice".into()],
             bench_scheduler: false,
+            swarm_boss: false,
             no_broadcast: false,
             template: None,
             dry_run: false,
@@ -748,6 +783,73 @@ bench_scheduler = true"#,
         let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
         let args = base_args(PathBuf::new());
         preflight(&cfg, &args).unwrap();
+    }
+
+    /// v0.6.18: --swarm-boss + --platform=windows is rejected. The
+    /// boss runs sync + merger which are POSIX-only.
+    #[test]
+    fn preflight_rejects_swarm_boss_with_windows_platform() {
+        let cfg = Config::load_str_for_test(minimal_config_text()).unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.swarm_boss = true;
+        args.platform = "windows".into();
+        let err = preflight(&cfg, &args).unwrap_err();
+        assert!(
+            err.to_string().contains("platform=wsl"),
+            "error should explain the wsl requirement, got: {err}",
+        );
+    }
+
+    /// v0.6.18: --swarm-boss when another agent on the same host (or
+    /// same local-only swarm) is already boss → rejected with a
+    /// helpful demote hint.
+    #[test]
+    fn preflight_rejects_swarm_boss_when_one_already_exists() {
+        // Inject swarm_boss=true on alice in the minimal fixture.
+        let body = minimal_config_text().replace(
+            r#"name = "alice""#,
+            r#"name = "alice"
+swarm_boss = true"#,
+        );
+        let cfg: Config = Config::load_str_for_test(&body).unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.swarm_boss = true;
+        let err = preflight(&cfg, &args).unwrap_err();
+        assert!(
+            err.to_string().contains("already has a swarm_boss"),
+            "error should call out the collision, got: {err}",
+        );
+        assert!(
+            err.to_string().contains("set-swarm-boss"),
+            "error should suggest the demote command, got: {err}",
+        );
+    }
+
+    /// v0.6.18: --swarm-boss with --platform=wsl and no existing boss
+    /// is accepted; the generated TOML carries `swarm_boss = true`.
+    #[test]
+    fn append_agent_with_swarm_boss_sets_field() {
+        let mut doc: DocumentMut = minimal_config_text().parse().unwrap();
+        let mut args = base_args(PathBuf::new());
+        args.swarm_boss = true;
+        append_agent(&mut doc, &args).unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains("swarm_boss = true"),
+            "expected swarm_boss = true in TOML, got:\n{out}",
+        );
+    }
+
+    #[test]
+    fn append_agent_without_swarm_boss_omits_field() {
+        let mut doc: DocumentMut = minimal_config_text().parse().unwrap();
+        let args = base_args(PathBuf::new());
+        append_agent(&mut doc, &args).unwrap();
+        let out = doc.to_string();
+        // Find charlie's section and check no swarm_boss line.
+        let charlie_section = out.split(r#"name = "charlie""#).nth(1).unwrap();
+        let cut = charlie_section.find("[[").unwrap_or(charlie_section.len());
+        assert!(!charlie_section[..cut].contains("swarm_boss"));
     }
 
     /// v0.3.9 Bug 3: when a stray `agents/<slug>.md` exists from a
@@ -1038,6 +1140,7 @@ windows_inbox = "/tmp/inbox_win""#,
             platform: "wsl".into(),
             peers: vec!["alice".into()],
             bench_scheduler: false,
+            swarm_boss: false,
             no_broadcast: false,
             template: None,
             dry_run: false,
@@ -1077,6 +1180,7 @@ windows_inbox = "/tmp/inbox_win""#,
             platform: "wsl".into(),
             peers: vec!["alice".into()],
             bench_scheduler: false,
+            swarm_boss: false,
             no_broadcast: false,
             template: None,
             dry_run: true,
@@ -1104,6 +1208,7 @@ windows_inbox = "/tmp/inbox_win""#,
             platform: "wsl".into(),
             peers: vec!["alice".into()],
             bench_scheduler: false,
+            swarm_boss: false,
             no_broadcast: false,
             template: None,
             dry_run: false,
@@ -1129,6 +1234,7 @@ windows_inbox = "/tmp/inbox_win""#,
             platform: "wsl".into(),
             peers: vec!["alice".into()],
             bench_scheduler: false,
+            swarm_boss: false,
             no_broadcast: true,
             template: None,
             dry_run: false,
