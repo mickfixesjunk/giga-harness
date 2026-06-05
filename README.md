@@ -109,6 +109,9 @@ When you want to add another agent, ask one of them: "please add a `<role>` agen
 | `giga watch --as <agent>` | Long-running watcher — auto-tracks every channel where the agent participates. Run under Claude Code's `Monitor` tool. |
 | `giga switch --runtime claude [<account>]` | Multi-account credential manager. See [§ Multi-account switching](#multi-account-switching). |
 
+For the full command surface (21 commands with examples + flag breakdowns + a quick-lookup-by-goal table), see [**COMMAND_REFERENCE.md**](COMMAND_REFERENCE.md). The table above covers ~half the commands; the reference covers all of them including `giga teleport`, `giga takeover`, `giga set-swarm-boss`, `giga upgrade`, `giga hosts`, `giga remote`, the daemons (`sync`, `merger`, `watch`), and the bootstrap helpers (`giga setup --remote-node`, `giga add-host`, `giga claude-operator`).
+
+
 ### Multi-host (cross-host channels)
 
 | Command | What it does |

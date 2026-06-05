@@ -6,6 +6,8 @@ Three flows: bootstrap a new project, add an agent to a running one, stand an ag
 
 > **Multi-host swarms** (agents across two or more machines on a tailnet): this doc covers the single-host case. For adding a remote host, see [REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md). The multi-host swarm is a strict superset: every command here still works; you also gain `add-host`, `setup --remote-node`, and `--host` flags on add-agent/sweep/launch.
 
+> **Full command reference:** [COMMAND_REFERENCE.md](COMMAND_REFERENCE.md) — every command, every flag, common usage patterns, and a quick-lookup-by-goal table.
+
 ## 1. Bootstrap a new project
 
 A "project" is one TOML file + a folder of agent templates. The canonical location is `~/.giga/configs/<project>/`. From zero to N agents talking:
