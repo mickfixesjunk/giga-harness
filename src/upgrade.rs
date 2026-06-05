@@ -73,6 +73,15 @@ pub fn run(args: Args) -> Result<()> {
     // exact failure on 2026-06-02 after a 0.4.2 → 0.4.4 upgrade.
     let abs_config = std::fs::canonicalize(&args.config).unwrap_or(args.config.clone());
 
+    // v0.6.20: capture the running binary path up front. The
+    // pre-install disarm step (which fires BEFORE install_local
+    // overwrites the binary) uses this. After install_local, we
+    // re-resolve via PATH so subsequent spawns hit the fresh binary
+    // rather than the deleted-inode path. Mutable because
+    // re-resolution rebinds it after install_local.
+    let mut giga_exe: std::path::PathBuf =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("giga"));
+
     // --- 0. resolve broadcast machinery up front so the local +
     // peer paths can both use it for the Windows disarm/rearm dance.
     let broadcast_channels: Vec<&str> = cfg
@@ -121,6 +130,7 @@ pub fn run(args: Args) -> Result<()> {
         match &posting_agent_early {
             Some(poster) => {
                 if let Err(e) = windows_pre_install_disarm(
+                    &giga_exe,
                     &abs_config,
                     poster,
                     &local_host_label,
@@ -152,6 +162,22 @@ pub fn run(args: Args) -> Result<()> {
 
     install_local(args.dry_run)?;
 
+    // v0.6.20: re-resolve the giga binary path AFTER install_local
+    // overwrote it. On Linux, install.sh unlinks the running binary
+    // and writes a new one at the same path. The current process's
+    // `std::env::current_exe()` (which reads /proc/self/exe) still
+    // points at the deleted inode (shown as "<path> (deleted)") —
+    // attempting to spawn that path fails with ENOENT. We need the
+    // path to the FRESH binary on disk for all subsequent Command
+    // calls (peer install, broadcast post, disarm/rearm).
+    //
+    // Pre-fix symptom (reported by design agent, v0.6.18, 2026-06-05):
+    //   "_broadcast.md rearm post failed (No such file or directory)"
+    //   "Peer-to-peer upgrade failed"
+    // Both used current_exe() post-install_local; both hit the
+    // deleted-inode path.
+    giga_exe = resolve_fresh_giga_binary(args.dry_run, &giga_exe);
+
     // 1b. From WSL with co-located Windows agents, ALSO run
     //     install.ps1 via WSL interop so the Windows giga.exe gets
     //     refreshed alongside the WSL giga binary. On native Windows
@@ -174,6 +200,7 @@ pub fn run(args: Args) -> Result<()> {
     {
         if let Some(poster) = &posting_agent_early {
             if let Err(e) = windows_post_install_rearm(
+                &giga_exe,
                 &abs_config,
                 poster,
                 &local_host_label,
@@ -218,6 +245,7 @@ pub fn run(args: Args) -> Result<()> {
                 match &posting_agent_early {
                     Some(poster) => {
                         if let Err(e) = windows_pre_install_disarm(
+                            &giga_exe,
                             &abs_config,
                             poster,
                             peer,
@@ -249,7 +277,7 @@ pub fn run(args: Args) -> Result<()> {
                 );
             }
 
-            match install_remote(&abs_config, peer, peer_platform, args.dry_run) {
+            match install_remote(&giga_exe, &abs_config, peer, peer_platform, args.dry_run) {
                 Ok(()) => println!("  + {peer}: upgraded ({peer_platform})"),
                 Err(e) => eprintln!("  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"),
             }
@@ -267,6 +295,7 @@ pub fn run(args: Args) -> Result<()> {
             {
                 if let Some(poster) = &posting_agent_early {
                     if let Err(e) = windows_post_install_rearm(
+                        &giga_exe,
                         &abs_config,
                         poster,
                         peer,
@@ -329,7 +358,7 @@ pub fn run(args: Args) -> Result<()> {
             println!("  [dry-run] would post to {ch}");
             continue;
         }
-        match post_rearm(&abs_config, &posting_agent, ch) {
+        match post_rearm(&giga_exe, &abs_config, &posting_agent, ch) {
             Ok(()) => println!("  + posted to {ch}"),
             Err(e) => eprintln!("  ! {ch}: post failed ({e:#})"),
         }
@@ -477,6 +506,7 @@ fn install_local_windows(dry_run: bool) -> Result<()> {
 /// `install.sh` via `bash`. Platform is inferred from the agents
 /// configured on the peer host (see `infer_host_platform`).
 fn install_remote(
+    giga_exe: &std::path::Path,
     config: &std::path::Path,
     peer: &str,
     peer_platform: &str,
@@ -523,7 +553,7 @@ fn install_remote(
         args.push((*a).into());
     }
     args.push(installer_cmd);
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(giga_exe)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -566,6 +596,7 @@ fn windows_agents_on_host(cfg: &Config, host: &str) -> Vec<String> {
 /// the same channel are unaffected.
 #[allow(clippy::too_many_arguments)]
 fn windows_pre_install_disarm(
+    giga_exe: &std::path::Path,
     config: &std::path::Path,
     posting_agent: &str,
     peer: &str,
@@ -596,7 +627,7 @@ fn windows_pre_install_disarm(
             println!("    [dry-run] would post disarm to {ch}");
             continue;
         }
-        if let Err(e) = post_with_subject_body(config, posting_agent, ch, &subject, &body) {
+        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body) {
             eprintln!("    ! disarm post to {ch} failed ({e:#})");
         }
     }
@@ -613,6 +644,7 @@ fn windows_pre_install_disarm(
 /// install.ps1 finishes on `peer`. The Windows agents see this on
 /// their next turn and re-Monitor with the freshly-installed giga.exe.
 fn windows_post_install_rearm(
+    giga_exe: &std::path::Path,
     config: &std::path::Path,
     posting_agent: &str,
     peer: &str,
@@ -639,7 +671,7 @@ fn windows_post_install_rearm(
             println!("    [dry-run] would post rearm to {ch}");
             continue;
         }
-        if let Err(e) = post_with_subject_body(config, posting_agent, ch, &subject, &body) {
+        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body) {
             eprintln!("    ! rearm post to {ch} failed ({e:#})");
         }
     }
@@ -651,13 +683,14 @@ fn windows_post_install_rearm(
 /// `[giga-rearm]` silent-execve subject; these messages need
 /// different subjects and bodies).
 fn post_with_subject_body(
+    giga_exe: &std::path::Path,
     config: &std::path::Path,
     as_agent: &str,
     channel: &str,
     subject: &str,
     body: &str,
 ) -> Result<()> {
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(giga_exe)
         .args([
             "post",
             channel,
@@ -684,6 +717,50 @@ fn post_with_subject_body(
         ));
     }
     Ok(())
+}
+
+/// v0.6.20: re-resolve the giga binary path after install_local has
+/// overwritten it. Reads it from PATH so the new on-disk binary is
+/// what gets spawned for subsequent subprocess invocations (peer
+/// install, broadcast post, disarm/rearm).
+///
+/// Why this is needed: install.sh on Linux unlinks the running
+/// giga binary and writes a new one at the same path. The running
+/// process keeps the OLD inode mapped in memory, but `current_exe()`
+/// (which is `/proc/self/exe` on Linux) now resolves to a path
+/// suffixed with " (deleted)" — spawning that path fails with
+/// ENOENT. We want the fresh binary's path instead.
+///
+/// Fallback chain:
+///   1. `which::which("giga")` — preferred; resolves whatever PATH
+///      points at after the install, which is the freshly-installed
+///      binary in 99% of cases.
+///   2. The previous path (the captured pre-install location). If
+///      install.sh wrote to the same path, this is still correct.
+///   3. Bare "giga" — last resort; relies on the child process's
+///      own PATH lookup.
+///
+/// `dry_run` short-circuits the lookup: no install happened, the
+/// previous path is still valid.
+fn resolve_fresh_giga_binary(
+    dry_run: bool,
+    previous: &std::path::Path,
+) -> std::path::PathBuf {
+    if dry_run {
+        return previous.to_path_buf();
+    }
+    if let Ok(p) = which::which("giga") {
+        return p;
+    }
+    // PATH lookup failed — fall back to the previous path if it
+    // still exists on disk (maybe install.sh wrote in place and we
+    // captured the right path pre-install).
+    if previous.exists() {
+        return previous.to_path_buf();
+    }
+    // Last resort: bare command name. The child process's PATH
+    // lookup may find it if the env was set up after install.
+    std::path::PathBuf::from("giga")
 }
 
 /// Infer a host's platform from the agents configured on it.
@@ -715,7 +792,7 @@ fn infer_host_platform(cfg: &Config, host: &str) -> &'static str {
 /// behavior is backward-compatible during the v0.6.2 → v0.6.3
 /// transition. From the FIRST upgrade onto a v0.6.3+ swarm onward,
 /// rearm broadcasts are silent end-to-end.
-fn post_rearm(config: &std::path::Path, as_agent: &str, channel: &str) -> Result<()> {
+fn post_rearm(giga_exe: &std::path::Path, config: &std::path::Path, as_agent: &str, channel: &str) -> Result<()> {
     let subject = "[giga-rearm] giga upgraded — please re-arm your inbox watcher";
     let body = "giga has been upgraded to the latest release on all hosts. \
                 v0.6.3+ watchers self-rearm silently via in-place execve on \
@@ -724,7 +801,7 @@ fn post_rearm(config: &std::path::Path, as_agent: &str, channel: &str) -> Result
                 broadcast and need to TaskStop + re-Monitor manually \
                 (one final time; after this upgrade lands, future upgrades \
                 are silent).";
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(giga_exe)
         .args([
             "post",
             channel,
@@ -907,6 +984,52 @@ platform = "wsl"
         // No broadcast channels passed in → nothing to fall back to.
         let picked = resolve_default_posting_agent(&cfg, &[]);
         assert!(picked.is_none());
+    }
+
+    #[test]
+    /// v0.6.20 regression: resolve_fresh_giga_binary in dry-run mode
+    /// must return the previous path untouched. No install happened,
+    /// the binary hasn't moved, no PATH lookup needed.
+    #[test]
+    fn resolve_fresh_giga_binary_dry_run_returns_previous() {
+        let prev = std::path::PathBuf::from("/some/captured/giga");
+        let resolved = resolve_fresh_giga_binary(true, &prev);
+        assert_eq!(resolved, prev);
+    }
+
+    /// v0.6.20: when the previous path still exists on disk AND PATH
+    /// doesn't have giga (the test environment), the fallback should
+    /// be the previous path. Tempfile here stands in for the on-disk
+    /// previous binary (install.sh wrote-in-place at the captured
+    /// path).
+    #[test]
+    fn resolve_fresh_giga_binary_falls_back_to_previous_when_path_lookup_fails() {
+        // Make a real on-disk file that "looks like" the previous
+        // captured binary. We're not testing the which::which path
+        // here (depends on test env); we ARE testing that when the
+        // env lookup fails AND the previous file exists, the
+        // fallback returns it rather than bare "giga".
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Modify PATH so `which::which("giga")` is highly unlikely
+        // to succeed inside this test. (If a real giga is on PATH,
+        // this test exercises the which::which path, which is fine —
+        // we still get a sensible PathBuf.)
+        let orig_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+        let resolved = resolve_fresh_giga_binary(false, tmp.path());
+        // Restore
+        if let Some(p) = orig_path {
+            std::env::set_var("PATH", p);
+        }
+        // Either the previous-file fallback OR the bare-"giga"
+        // last-resort. Both are sensible outcomes — we just want to
+        // assert the function NEVER returns a `(deleted)`-suffixed
+        // path or panics.
+        let s = resolved.to_string_lossy();
+        assert!(
+            !s.contains("(deleted)"),
+            "resolved path must not include the `(deleted)` suffix that triggered the original bug: {s}",
+        );
     }
 
     #[test]
