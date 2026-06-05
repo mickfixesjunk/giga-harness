@@ -31,6 +31,7 @@ mod registry;
 mod remote;
 mod setup;
 mod setup_remote_node;
+mod stale_wait;
 mod sweep;
 mod sync;
 mod switch;

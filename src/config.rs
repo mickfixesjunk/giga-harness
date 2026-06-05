@@ -44,6 +44,10 @@ pub struct Config {
     /// recipients). See BROADCAST_FANOUT_DESIGN.md.
     #[serde(default)]
     pub broadcast: BroadcastConfig,
+    /// v0.6.16: configuration for the watcher's stale-wait detection.
+    /// When absent, defaults apply (30min threshold, scan at arm time).
+    #[serde(default)]
+    pub watch: WatchConfig,
     /// The host name (matching one of `[[hosts]].name`) that identifies
     /// THIS machine within the swarm. Loaded at `Config::load` time from
     /// a sibling `this_host.toml` next to the canonical config (so rsync
@@ -251,6 +255,15 @@ pub struct Channel {
     pub participants: Vec<String>,
     #[serde(default)]
     pub purpose: Option<String>,
+    /// v0.6.16: per-channel override for the stale-wait threshold.
+    /// When set, this channel's pending WAITING ON: <me> tags are
+    /// surfaced at arm time only if older than this many minutes.
+    /// When unset, falls back to `[watch].stale_wait_threshold_minutes`.
+    /// Use for channels with bursty/short-fuse traffic (low override)
+    /// or batch-style channels where 30min isn't long enough yet
+    /// (high override).
+    #[serde(default)]
+    pub stale_wait_threshold_minutes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,6 +326,36 @@ fn default_broadcast_stagger() -> u64 {
 
 fn default_broadcast_recipients() -> String {
     "all".to_string()
+}
+
+/// v0.6.16: watcher behavior config — currently houses the stale-wait
+/// detection threshold (see `src/stale_wait.rs`). When the watcher
+/// arms, it scans each tracked channel for unresolved `WAITING ON:
+/// <me>` tags older than `stale_wait_threshold_minutes` and emits one
+/// notification per finding. This turns the silent-wedge failure mode
+/// (sender posts, receiver compacts/misses, both stay quiet by
+/// protocol) into a self-healing event stream.
+#[derive(Debug, Deserialize, Clone)]
+pub struct WatchConfig {
+    /// How many minutes old an unresolved `WAITING ON: <me>` tag must
+    /// be before the watcher surfaces it at arm time. Per-channel
+    /// override via `[[channels]].stale_wait_threshold_minutes`.
+    /// Default 30 minutes — chosen as the floor where a missed reply
+    /// stops being "they're typing" and starts being "they wedged".
+    #[serde(default = "default_stale_wait_threshold")]
+    pub stale_wait_threshold_minutes: u64,
+}
+
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            stale_wait_threshold_minutes: default_stale_wait_threshold(),
+        }
+    }
+}
+
+fn default_stale_wait_threshold() -> u64 {
+    30
 }
 
 /// v0.4.0: parsed shape of a broadcast subject's leading prefix. Used

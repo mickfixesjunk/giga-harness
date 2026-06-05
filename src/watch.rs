@@ -265,6 +265,46 @@ pub fn run_multi(
             "watch: broadcast `{name}` → this agent's slot delay = {delay}s ({total} participants)",
         );
     }
+
+    // v0.6.16: stale-wait scan at arm time. Re-derives unresolved
+    // `WAITING ON: <me>` tags from each tracked channel's content so
+    // a compaction-loss or missed-wakeup case surfaces as an
+    // immediate notification instead of staying silently wedged.
+    // Falls back gracefully on config-load failure so a transient
+    // TOML problem doesn't kill the watcher.
+    if let Ok(cfg) = Config::load(config_path) {
+        let global_threshold = cfg.watch.stale_wait_threshold_minutes;
+        let now = chrono::Utc::now();
+        let mut per_channel_threshold: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for ch in &cfg.channels {
+            if let Some(t) = ch.stale_wait_threshold_minutes {
+                per_channel_threshold.insert(ch.file.clone(), t);
+            }
+        }
+        let mut total_stale = 0usize;
+        // Deterministic order so re-arms don't shuffle the list.
+        let mut names: Vec<&str> = tracked.keys().map(|s| s.as_str()).collect();
+        names.sort();
+        for name in names {
+            let Some(state) = tracked.get(name) else { continue };
+            let threshold = per_channel_threshold
+                .get(name)
+                .copied()
+                .unwrap_or(global_threshold);
+            let waits = crate::stale_wait::scan_file(&state.path, me, now, threshold);
+            for w in &waits {
+                eprintln!("{}", crate::stale_wait::format_notification(name, w));
+                total_stale += 1;
+            }
+        }
+        if total_stale > 0 {
+            eprintln!(
+                "watch: {total_stale} stale wait(s) surfaced above (threshold {global_threshold}m default; per-channel overrides applied where set)"
+            );
+        }
+    }
+
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
