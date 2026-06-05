@@ -338,24 +338,43 @@ fn default_broadcast_recipients() -> String {
 #[derive(Debug, Deserialize, Clone)]
 pub struct WatchConfig {
     /// How many minutes old an unresolved `WAITING ON: <me>` tag must
-    /// be before the watcher surfaces it at arm time. Per-channel
-    /// override via `[[channels]].stale_wait_threshold_minutes`.
-    /// Default 30 minutes — chosen as the floor where a missed reply
-    /// stops being "they're typing" and starts being "they wedged".
+    /// be before the watcher surfaces it. Per-channel override via
+    /// `[[channels]].stale_wait_threshold_minutes`. Default 30 minutes —
+    /// chosen as the floor where a missed reply stops being "they're
+    /// typing" and starts being "they wedged".
     #[serde(default = "default_stale_wait_threshold")]
     pub stale_wait_threshold_minutes: u64,
+    /// v0.6.17: how often the watcher RE-scans for stale waits after
+    /// the initial arm-time scan. Cheap (local file read + parse per
+    /// channel) so a tight cadence is fine. The watcher dedupes by
+    /// (channel, sender, tag-timestamp) so a single stale wait fires
+    /// at most ONE Monitor notification per supersede — zero LLM-
+    /// turn cost beyond first detection. Set to 0 to disable
+    /// periodic re-scan (arm-time scan still runs).
+    ///
+    /// Default 60s — catches the "agent alive but missed the
+    /// original Monitor notification" + "agent restarted after a
+    /// mid-turn API kill" cases without flooding the operator's
+    /// stderr.
+    #[serde(default = "default_stale_wait_recheck")]
+    pub stale_wait_recheck_seconds: u64,
 }
 
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
             stale_wait_threshold_minutes: default_stale_wait_threshold(),
+            stale_wait_recheck_seconds: default_stale_wait_recheck(),
         }
     }
 }
 
 fn default_stale_wait_threshold() -> u64 {
     30
+}
+
+fn default_stale_wait_recheck() -> u64 {
+    60
 }
 
 /// v0.4.0: parsed shape of a broadcast subject's leading prefix. Used

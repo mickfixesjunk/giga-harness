@@ -270,46 +270,49 @@ pub fn run_multi(
     // `WAITING ON: <me>` tags from each tracked channel's content so
     // a compaction-loss or missed-wakeup case surfaces as an
     // immediate notification instead of staying silently wedged.
-    // Falls back gracefully on config-load failure so a transient
-    // TOML problem doesn't kill the watcher.
-    if let Ok(cfg) = Config::load(config_path) {
-        let global_threshold = cfg.watch.stale_wait_threshold_minutes;
-        let now = chrono::Utc::now();
-        let mut per_channel_threshold: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        for ch in &cfg.channels {
-            if let Some(t) = ch.stale_wait_threshold_minutes {
-                per_channel_threshold.insert(ch.file.clone(), t);
-            }
-        }
-        let mut total_stale = 0usize;
-        // Deterministic order so re-arms don't shuffle the list.
-        let mut names: Vec<&str> = tracked.keys().map(|s| s.as_str()).collect();
-        names.sort();
-        for name in names {
-            let Some(state) = tracked.get(name) else { continue };
-            let threshold = per_channel_threshold
-                .get(name)
-                .copied()
-                .unwrap_or(global_threshold);
-            let waits = crate::stale_wait::scan_file(&state.path, me, now, threshold);
-            for w in &waits {
-                eprintln!("{}", crate::stale_wait::format_notification(name, w));
-                total_stale += 1;
-            }
-        }
-        if total_stale > 0 {
-            eprintln!(
-                "watch: {total_stale} stale wait(s) surfaced above (threshold {global_threshold}m default; per-channel overrides applied where set)"
-            );
-        }
-    }
+    //
+    // v0.6.17: dedup state shared with the periodic re-scan inside
+    // the loop below. Keyed by (channel, sender, tag_timestamp) so
+    // the same stale wait fires at most one Monitor notification per
+    // supersede — zero LLM cost beyond first detection.
+    let mut surfaced_waits: std::collections::HashSet<(String, String, chrono::DateTime<chrono::Utc>)> =
+        std::collections::HashSet::new();
+    let rescan_seconds = run_stale_wait_scan(
+        config_path,
+        me,
+        &tracked,
+        &mut surfaced_waits,
+        /* announce_recheck = */ true,
+    );
+    // Convert the rescan cadence into a per-tick interval (POLL_INTERVAL = 3s).
+    let rescan_every_n_ticks: u64 = if rescan_seconds == 0 {
+        0 // disabled
+    } else {
+        std::cmp::max(1, rescan_seconds / POLL_INTERVAL.as_secs())
+    };
 
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
         if tick % RELOAD_EVERY_N_TICKS == 0 {
             refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
+        }
+        // v0.6.17: periodic stale-wait re-scan. Cheap (local file I/O,
+        // no LLM cost) and dedup'd via `surfaced_waits` so a stale
+        // wait fires at most one Monitor notification per supersede.
+        // Catches the cases the arm-time scan can't: agent alive but
+        // missed the original Monitor (busy turn, compaction mid-
+        // session), a wait that crossed the threshold AFTER arm time,
+        // and a mid-turn API kill where the agent restarted into a
+        // new watcher session.
+        if rescan_every_n_ticks > 0 && tick % rescan_every_n_ticks == 0 {
+            run_stale_wait_scan(
+                config_path,
+                me,
+                &tracked,
+                &mut surfaced_waits,
+                /* announce_recheck = */ false,
+            );
         }
         // Phase 1 — read new content into each channel's pending buffer.
         // We advance the in-memory read position (last_size) as we consume
@@ -873,6 +876,94 @@ fn append_fyi_archive(giga_home: &Path, agent: &str, channel: &str, header: &str
 /// WAITING ON line. Tolerates surrounding punctuation. Multi-target
 /// "WAITING ON: a, b" is treated as "waiting on a" (good enough for
 /// v1; refinement deferred to multi-target spec if it ships).
+/// v0.6.16 (arm-time) + v0.6.17 (periodic re-scan): run a stale-wait
+/// scan across every tracked channel and emit one Monitor-shaped
+/// notification per UNSEEN unresolved `WAITING ON: <me>` past
+/// threshold. `surfaced_waits` is mutated in place to:
+///   - skip re-emission of waits already surfaced this session
+///     (keyed by channel + sender + tag_timestamp, so a supersede
+///     with a new timestamp DOES re-fire — that's the desired
+///     behavior, sender posted again)
+///   - drop stale entries no longer in the scan results (resolution
+///     happened) so the set doesn't grow unbounded
+///
+/// Returns the watcher's recheck-cadence in seconds so the caller
+/// can compute the per-tick interval. Returns 0 on config-load
+/// failure (caller treats as "disabled"). When `announce_recheck`
+/// is true, the cadence line is printed alongside the standard
+/// arm-time summary; when false (in-loop calls), only the actual
+/// stale waits are printed.
+fn run_stale_wait_scan(
+    config_path: &Path,
+    me: &str,
+    tracked: &HashMap<String, ChannelState>,
+    surfaced_waits: &mut std::collections::HashSet<(String, String, chrono::DateTime<chrono::Utc>)>,
+    announce_recheck: bool,
+) -> u64 {
+    let Ok(cfg) = Config::load(config_path) else {
+        return 0;
+    };
+    let global_threshold = cfg.watch.stale_wait_threshold_minutes;
+    let recheck_seconds = cfg.watch.stale_wait_recheck_seconds;
+    let now = chrono::Utc::now();
+
+    let mut per_channel_threshold: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+    for ch in &cfg.channels {
+        if let Some(t) = ch.stale_wait_threshold_minutes {
+            per_channel_threshold.insert(ch.file.clone(), t);
+        }
+    }
+
+    let mut total_new = 0usize;
+    let mut current_keys: std::collections::HashSet<(String, String, chrono::DateTime<chrono::Utc>)> =
+        std::collections::HashSet::new();
+    // Deterministic order so emission is stable across re-arms.
+    let mut names: Vec<&str> = tracked.keys().map(|s| s.as_str()).collect();
+    names.sort();
+    for name in names {
+        let Some(state) = tracked.get(name) else { continue };
+        let threshold = per_channel_threshold
+            .get(name)
+            .copied()
+            .unwrap_or(global_threshold);
+        let waits = crate::stale_wait::scan_file(&state.path, me, now, threshold);
+        for w in &waits {
+            let key = (name.to_string(), w.sender.clone(), w.tag_timestamp);
+            current_keys.insert(key.clone());
+            if surfaced_waits.insert(key) {
+                eprintln!("{}", crate::stale_wait::format_notification(name, w));
+                total_new += 1;
+            }
+        }
+    }
+    // Drop resolved waits from the dedup set so a future SUPERSEDE
+    // (same sender posts a new WAITING ON: me at a new timestamp)
+    // would re-emit. The (channel, sender, ts) key already enforces
+    // supersede-on-new-ts semantics, but we still want to bound the
+    // set's memory growth over a long watcher lifetime.
+    surfaced_waits.retain(|k| current_keys.contains(k));
+
+    if announce_recheck {
+        if recheck_seconds == 0 {
+            eprintln!(
+                "watch: stale-wait re-scan disabled (`[watch].stale_wait_recheck_seconds = 0`); arm-time scan only"
+            );
+        } else {
+            eprintln!(
+                "watch: stale-wait re-scan every {recheck_seconds}s (threshold {global_threshold}m default; per-channel overrides applied where set)"
+            );
+        }
+        if total_new > 0 {
+            eprintln!(
+                "watch: {total_new} stale wait(s) surfaced above"
+            );
+        }
+    }
+
+    recheck_seconds
+}
+
 fn is_waiting_on_me(path: &Path, me: &str) -> bool {
     let Ok(body) = fs::read_to_string(path) else {
         return false;
