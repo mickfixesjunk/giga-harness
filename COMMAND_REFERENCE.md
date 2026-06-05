@@ -425,6 +425,8 @@ Install the latest giga binary on this host + on every peer + post the rearm bro
 giga upgrade                           # local + all peers + broadcast
 giga upgrade --skip-peers              # local only
 giga upgrade --skip-broadcast          # local + peers but no announce
+giga upgrade --skip-windows            # POSIX side only — skip WSL→Windows interop install.ps1,
+                                       # skip Windows-agent disarm/rearm, skip Windows peer hosts
 giga upgrade --as <agent>              # post broadcast as a specific agent
 giga upgrade --dry-run                 # preview the install + broadcast plan
 ```
@@ -507,6 +509,7 @@ Most operators never run this directly — the codex bridge pane (spawned by `gi
 | **Maintenance** | |
 | Upgrade local + peers + announce | `giga upgrade` |
 | Upgrade local only | `giga upgrade --skip-peers` |
+| Upgrade only the POSIX side (skip Windows clients) | `giga upgrade --skip-windows` |
 | Re-run init quietly | `giga init --no-trust` |
 | Preview an upgrade plan | `giga upgrade --dry-run` |
 

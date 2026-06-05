@@ -58,6 +58,19 @@ pub struct Args {
     /// Skip the rearm broadcast. Use when you've already prodded
     /// agents another way, or want a silent operator-only update.
     pub skip_broadcast: bool,
+    /// v0.6.21: skip all Windows-related upgrade work. Suppresses:
+    ///   - the WSL→Windows interop install.ps1 call (local
+    ///     co-located Windows agents on a WSL operator)
+    ///   - targeted disarm/rearm broadcasts for Windows agents
+    ///     (local + per-peer)
+    ///   - the install_remote step on Windows peer hosts (Linux
+    ///     peers still upgrade normally)
+    ///
+    /// Use when you want to upgrade only the POSIX side of a mixed-
+    /// platform swarm — for example when Windows agents are pinned
+    /// to a known-good version or you're staging the Windows
+    /// rollout separately.
+    pub skip_windows: bool,
     /// Print what would happen; don't run install or post.
     pub dry_run: bool,
 }
@@ -123,9 +136,12 @@ pub fn run(args: Args) -> Result<()> {
     // 1a. Pre-install disarm for local Windows agents (if any). The
     //     dance is the same as the cross-host case — disarm/wait so
     //     the Windows-side install.ps1 can overwrite the locked .exe.
+    //     Skipped entirely when --skip-windows is set (no
+    //     Windows-side install means nothing to disarm for).
     if has_local_windows
         && !broadcast_channels.is_empty()
         && !args.skip_broadcast
+        && !args.skip_windows
     {
         match &posting_agent_early {
             Some(poster) => {
@@ -183,7 +199,8 @@ pub fn run(args: Args) -> Result<()> {
     //     refreshed alongside the WSL giga binary. On native Windows
     //     `install_local` already ran install.ps1 (v0.6.12 dispatch);
     //     on macOS / Linux without Windows agents this is a no-op.
-    if has_local_windows && cfg!(target_os = "linux") {
+    //     Skipped when --skip-windows is set.
+    if has_local_windows && cfg!(target_os = "linux") && !args.skip_windows {
         if let Err(e) = install_local_windows_via_wsl_interop(args.dry_run) {
             eprintln!(
                 "  ! local: install.ps1 via WSL interop failed ({e:#}) \
@@ -191,12 +208,23 @@ pub fn run(args: Args) -> Result<()> {
                  from a Windows shell manually."
             );
         }
+    } else if has_local_windows
+        && cfg!(target_os = "linux")
+        && args.skip_windows
+    {
+        println!(
+            "  (--skip-windows: skipping WSL→Windows interop install.ps1; \
+             Windows-side giga.exe NOT upgraded)"
+        );
     }
 
     // 1c. Post-install rearm broadcast for local Windows agents.
+    //     Skipped when --skip-windows (no install means nothing to
+    //     re-arm to).
     if has_local_windows
         && !broadcast_channels.is_empty()
         && !args.skip_broadcast
+        && !args.skip_windows
     {
         if let Some(poster) = &posting_agent_early {
             if let Err(e) = windows_post_install_rearm(
@@ -234,6 +262,16 @@ pub fn run(args: Args) -> Result<()> {
         for peer in &peers {
             let peer_platform = infer_host_platform(&cfg, peer);
             let windows_agents = windows_agents_on_host(&cfg, peer);
+
+            // v0.6.21: --skip-windows skips Windows peers entirely
+            // (disarm + install + rearm all skipped). Linux peers
+            // are unaffected.
+            if peer_platform == "windows" && args.skip_windows {
+                println!(
+                    "  (--skip-windows: skipping `{peer}` (Windows peer))"
+                );
+                continue;
+            }
 
             // Pre-install disarm for Windows peers — only meaningful
             // when we have agents to address AND a posting agent.

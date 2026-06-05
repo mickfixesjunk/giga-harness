@@ -258,6 +258,14 @@ enum Command {
         /// Don't post the rearm broadcast after upgrade.
         #[arg(long)]
         skip_broadcast: bool,
+        /// Skip all Windows-related upgrade work. Suppresses the
+        /// WSL→Windows interop install.ps1 call (local co-located
+        /// Windows agents), targeted disarm/rearm broadcasts for
+        /// Windows agents, and install on Windows peer hosts. Linux
+        /// peers + the POSIX-side install proceed normally. Use when
+        /// upgrading only the POSIX side of a mixed-platform swarm.
+        #[arg(long)]
+        skip_windows: bool,
         /// Print what would happen; don't run install or post.
         #[arg(long)]
         dry_run: bool,
@@ -739,6 +747,7 @@ fn main() -> Result<()> {
             r#as,
             skip_peers,
             skip_broadcast,
+            skip_windows,
             dry_run,
         } => {
             let config = registry::resolve_config(config)?;
@@ -747,6 +756,7 @@ fn main() -> Result<()> {
                 as_agent: r#as,
                 skip_peers,
                 skip_broadcast,
+                skip_windows,
                 dry_run,
             })
         }
