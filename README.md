@@ -265,7 +265,7 @@ name = "wsl-b"
 tailnet_hostname = "wsl-b.tail0000.ts.net"
 ssh_user = "neo"                                       # optional; defaults to $USER
 remote_config_dir = "/home/neo/.giga/configs/<swarm>"  # optional; defaults to local path
-remote_inbox_dir  = "/tmp/<swarm>-inbox"               # optional; defaults to paths.wsl_inbox
+remote_inbox_dir  = "/tmp/<swarm>-inbox"               # optional; defaults to paths.wsl_inbox (which itself defaults to <config_dir>/inbox/ as of v0.6.24)
 
 [[hosts.paths]]                                        # per-host inbox override
 wsl_inbox = "/home/<their-user>/projects/inbox"

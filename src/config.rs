@@ -26,6 +26,11 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub project: Project,
+    /// v0.6.24: optional now. When omitted, inbox paths auto-default
+    /// via `apply_path_defaults` — wsl_inbox → `<config_dir>/inbox`,
+    /// windows_inbox → `<USERPROFILE>\.giga\configs\<project>\inbox`
+    /// (resolved at load time). Explicit values still win.
+    #[serde(default)]
     pub paths: Paths,
     #[serde(default)]
     pub hosts: Vec<Host>,
@@ -99,15 +104,20 @@ fn default_launch_model() -> String {
     "claude-opus-4-7".to_string()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct Paths {
     /// Where WSL-side inbox files live (e.g. `/home/alice/projects/inbox`).
     /// Optional — only required if any channel has `side = "wsl"`.
+    /// v0.6.24: auto-defaults to `<config_dir>/inbox` at load time
+    /// when omitted (see apply_path_defaults).
     #[serde(default)]
     pub wsl_inbox: Option<PathBuf>,
     /// Where Windows-side inbox files live (e.g. `C:/Users/Alice` —
     /// note forward slashes for cross-platform parsing). Optional —
     /// only required if any channel has `side = "windows"`.
+    /// v0.6.24: auto-defaults to `<USERPROFILE>\.giga\configs\<project>\inbox`
+    /// at load time when omitted (resolved via cmd.exe interop on WSL
+    /// or USERPROFILE env on native Windows).
     #[serde(default)]
     pub windows_inbox: Option<PathBuf>,
 }
@@ -544,6 +554,86 @@ fn load_this_host(config_path: &Path) -> Result<Option<String>> {
     Ok(Some(parsed.this_host))
 }
 
+/// v0.6.24: when the swarm config omits explicit `paths.wsl_inbox`
+/// or `paths.windows_inbox`, fill in sensible per-host defaults so
+/// the common case doesn't need an explicit `[paths]` block at all.
+///
+/// Defaults:
+///   * `wsl_inbox`    → `<config_dir>/inbox`
+///   * `windows_inbox` → `<USERPROFILE>\.giga\configs\<project>\inbox`
+///     (resolved via cmd.exe interop on WSL, or `%USERPROFILE%`
+///     env-var on native Windows)
+///
+/// Per-host overrides via `[[hosts]].paths` still win when set.
+/// Explicit values in the top-level `[paths]` block also still win;
+/// this fn only fills in MISSING values.
+fn apply_path_defaults(cfg: &mut Config, canonical_config_path: &std::path::Path) {
+    let config_dir = match canonical_config_path.parent() {
+        Some(p) => p,
+        None => return, // pathological: config has no parent, can't compute defaults
+    };
+    if cfg.paths.wsl_inbox.is_none() {
+        cfg.paths.wsl_inbox = Some(config_dir.join("inbox"));
+    }
+    if cfg.paths.windows_inbox.is_none() {
+        if let Some(profile_win) = resolve_windows_userprofile() {
+            // Build the Windows-form path first, then translate to
+            // WSL-form (/mnt/c/...) so the stored canonical matches
+            // existing-swarm convention. On a native-Windows host,
+            // fs_paths::to_host_fs translates back at access sites.
+            let win_path = format!(
+                "{profile_win}\\.giga\\configs\\{project}\\inbox",
+                project = cfg.project.name,
+            );
+            // On WSL, store the /mnt/c/... form so init's mkdir +
+            // the sync rsync paths work without further translation.
+            // On native Windows, store the Windows-form (no
+            // translation needed; fs_paths handles cross-FS use).
+            if cfg!(target_os = "windows") {
+                cfg.paths.windows_inbox = Some(PathBuf::from(win_path));
+            } else if let Some(wsl_form) = crate::fs_paths::windows_to_wsl(&win_path) {
+                cfg.paths.windows_inbox = Some(PathBuf::from(wsl_form));
+            }
+        }
+        // If we can't resolve a Windows userprofile (e.g., pure Linux
+        // without WSL interop), leave windows_inbox as None. Pure
+        // WSL-only swarms don't need it; mixed-platform swarms on
+        // Linux/macOS without interop should set it explicitly.
+    }
+}
+
+/// Resolve the Windows-side `%USERPROFILE%` path (e.g.,
+/// `C:\Users\Alice`) without assuming the host platform.
+///
+/// On native Windows: reads `USERPROFILE` env var directly.
+/// On WSL: shells out to `cmd.exe /c echo %USERPROFILE%` via interop
+/// and parses the result, trimming trailing CR/LF that Windows tools
+/// add. Returns None if interop is unavailable or fails.
+fn resolve_windows_userprofile() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        return std::env::var("USERPROFILE").ok();
+    }
+    // WSL path: cmd.exe is on PATH when interop is enabled (the
+    // default). Run it; trim CRLF.
+    let out = std::process::Command::new("cmd.exe")
+        .args(["/c", "echo %USERPROFILE%"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim();
+    if s.is_empty() || s == "%USERPROFILE%" {
+        // cmd.exe echoes the literal `%USERPROFILE%` when the var is
+        // unset — guard against that becoming a literal path.
+        return None;
+    }
+    Some(s.to_string())
+}
+
 impl Config {
     /// Read a config from disk and validate it semantically.
     pub fn load(path: &std::path::Path) -> Result<Self> {
@@ -559,7 +649,13 @@ impl Config {
         // "no this_host" with a confusing 0-channels-tracked watcher.
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         cfg.this_host = load_this_host(&canonical)?;
-        cfg.source_path = Some(canonical);
+        cfg.source_path = Some(canonical.clone());
+        // v0.6.24: auto-default `paths.wsl_inbox` and `paths.windows_inbox`
+        // when omitted. Lets new swarms drop the explicit `[paths]` block
+        // entirely; both default to a swarm-config-relative location.
+        // Existing swarms with explicit values are unchanged (the
+        // explicit value wins).
+        apply_path_defaults(&mut cfg, &canonical);
         cfg.validate()?;
         Ok(cfg)
     }
@@ -1081,6 +1177,83 @@ host = "host-x"
     /// canonical case for agents whose workdir contains a symlink to
     /// the swarm-dir TOML), this_host.toml MUST be found relative to
     /// the symlink's TARGET, not its parent. Pre-fix: agents armed
+    /// v0.6.24: when [paths].wsl_inbox is omitted, default to
+    /// <config_dir>/inbox so new swarms can drop the [paths] block
+    /// entirely.
+    #[test]
+    fn load_defaults_wsl_inbox_to_config_dir_inbox_when_omitted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        // NOTE: no [paths] block at all.
+        let body = r#"
+[project]
+name = "t"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#;
+        std::fs::write(&cfg_path, body).unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        let expected = tmp.path().canonicalize().unwrap().join("inbox");
+        assert_eq!(cfg.paths.wsl_inbox.as_ref().unwrap(), &expected);
+    }
+
+    /// v0.6.24: explicit [paths].wsl_inbox always wins over the default.
+    /// Critical for existing swarms — they shouldn't get silently
+    /// migrated to a new inbox location on first load.
+    #[test]
+    fn load_explicit_wsl_inbox_overrides_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("giga-harness.toml");
+        let explicit = "/some/explicit/inbox/path";
+        let body = format!(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "{explicit}"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+
+[[channels]]
+file = "alice-bob.md"
+side = "wsl"
+participants = ["alice", "bob"]
+"#,
+        );
+        std::fs::write(&cfg_path, body).unwrap();
+        let cfg = Config::load(&cfg_path).unwrap();
+        assert_eq!(
+            cfg.paths.wsl_inbox.as_ref().unwrap(),
+            std::path::Path::new(explicit),
+        );
+    }
+
     /// `giga watch` from their workdir, config reload silently failed
     /// because workdir/this_host.toml didn't exist, watcher tracked 0
     /// channels, looked alive in Monitor but produced no events.

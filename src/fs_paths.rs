@@ -36,7 +36,7 @@ pub fn to_host_fs(p: &Path) -> PathBuf {
 
 /// If `s` looks like a Windows drive path (`X:\...` or `X:/...`),
 /// return the `/mnt/<x>/...` form. Otherwise return None.
-fn windows_to_wsl(s: &str) -> Option<String> {
+pub(crate) fn windows_to_wsl(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     if bytes.len() < 3 {
         return None;

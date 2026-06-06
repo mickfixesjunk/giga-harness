@@ -169,8 +169,10 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          [project]\n\
          name = \"PROJECT_NAME\"\n\
          \n\
-         [paths]\n\
-         wsl_inbox = \"{configs}/PROJECT_NAME/inbox\"\n\
+         # No [paths] block needed for new swarms (v0.6.24+).\n\
+         # wsl_inbox auto-defaults to <config_dir>/inbox/\n\
+         # windows_inbox auto-defaults to <USERPROFILE>\\.giga\\configs\\<project>\\inbox\\\n\
+         # Add [paths] only if you want non-default locations.\n\
          \n\
          [[agents]]\n\
          name = \"design\"\n\
