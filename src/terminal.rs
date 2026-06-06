@@ -28,11 +28,29 @@ pub enum Multiplexer {
 }
 
 pub fn detect() -> Multiplexer {
+    let in_tmux = std::env::var("TMUX").is_ok();
+    let tmux_avail = which("tmux").is_ok();
     // Inside WSL, `wt.exe` is on PATH via Windows interop.
-    if which("wt.exe").is_ok() || which("wt").is_ok() {
+    let wt_avail = which("wt.exe").is_ok() || which("wt").is_ok();
+    decide_multiplexer(in_tmux, tmux_avail, wt_avail)
+}
+
+/// Pure precedence logic for `detect()`. Extracted for testing.
+///
+/// v0.6.25: if `$TMUX` is set the operator is running giga from
+/// inside a tmux session; spawning into wt.exe in that case
+/// surprises them with a fresh Windows Terminal window instead of
+/// adding agents to their current tmux session. Treat `$TMUX` as a
+/// strong hint and prefer tmux when it's available, even if wt.exe
+/// is on PATH (which it always is in WSL).
+fn decide_multiplexer(in_tmux: bool, tmux_avail: bool, wt_avail: bool) -> Multiplexer {
+    if in_tmux && tmux_avail {
+        return Multiplexer::Tmux;
+    }
+    if wt_avail {
         return Multiplexer::WindowsTerminal;
     }
-    if which("tmux").is_ok() {
+    if tmux_avail {
         return Multiplexer::Tmux;
     }
     Multiplexer::None
@@ -560,6 +578,56 @@ mod tests {
         assert_eq!(parse_override("mac"), Some(Multiplexer::MacTerminal));
         // `none` is the alias for `print`.
         assert_eq!(parse_override("none"), Some(Multiplexer::None));
+    }
+
+    #[test]
+    fn decide_multiplexer_prefers_tmux_when_inside_tmux_session() {
+        // Operator launched giga from inside an active tmux session:
+        // even though wt.exe is on PATH (always true in WSL), they
+        // want new panes added to their current tmux session, not a
+        // surprise wt window.
+        assert_eq!(
+            decide_multiplexer(true, true, true),
+            Multiplexer::Tmux,
+            "in-tmux should beat wt.exe"
+        );
+    }
+
+    #[test]
+    fn decide_multiplexer_prefers_wt_when_not_inside_tmux() {
+        // No TMUX env: WSL default — wt.exe wins (historical
+        // behavior).
+        assert_eq!(
+            decide_multiplexer(false, true, true),
+            Multiplexer::WindowsTerminal,
+        );
+    }
+
+    #[test]
+    fn decide_multiplexer_falls_through_to_tmux_without_wt() {
+        // Pure-Linux host: no wt.exe, tmux installed.
+        assert_eq!(
+            decide_multiplexer(false, true, false),
+            Multiplexer::Tmux,
+        );
+    }
+
+    #[test]
+    fn decide_multiplexer_returns_none_when_neither_available() {
+        assert_eq!(
+            decide_multiplexer(false, false, false),
+            Multiplexer::None,
+        );
+    }
+
+    #[test]
+    fn decide_multiplexer_ignores_in_tmux_when_tmux_missing() {
+        // Pathological: TMUX env set but tmux binary not on PATH.
+        // Fall through to wt.exe if present.
+        assert_eq!(
+            decide_multiplexer(true, false, true),
+            Multiplexer::WindowsTerminal,
+        );
     }
 
     #[test]
