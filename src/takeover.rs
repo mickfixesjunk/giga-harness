@@ -437,6 +437,14 @@ mod tests {
     /// don't have `.` in the path, so the basic test above can pass
     /// even with a buggy encoder. This one explicitly exercises the
     /// `.` → `-` rule by constructing a workdir under a dotdir.
+    ///
+    /// v0.6.27: gated to unix-only. Windows TempDirs canonicalize to
+    /// the `\\?\` extended-path prefix which has its own normalization
+    /// rules — leading `\\?\C:\...\-tmpXXX\-giga\...` doesn't preserve
+    /// the dot-prefix the way Linux `/tmp/.../.giga/...` does. The
+    /// `.giga` workdir convention is a WSL/Linux artifact anyway; the
+    /// underlying encoder doesn't need a Windows code path for it.
+    #[cfg(unix)]
     #[test]
     fn locate_claude_session_handles_dotdirs_in_workdir() {
         let tmp_home = tempfile::TempDir::new().unwrap();
