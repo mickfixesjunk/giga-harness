@@ -119,6 +119,36 @@ pub fn run(
             if runtime.needs_bridge_pane() {
                 let bridge_dir = a.workdir.join("codex-channel");
                 let bridge_dir_unix = bridge_dir.display().to_string();
+                // v0.6.26: claude/agy receive their session-start intro
+                // via `claude -c <intro>` / `agy -i <intro>`. codex
+                // launches plain — historically the intro string was
+                // built and then discarded, so codex agents booted
+                // blank and sat idle until some unrelated channel
+                // message happened to fire. Deliver the same intro
+                // as a synthetic first envelope in the codex inbox so
+                // codex sees it on its first tick and runs through
+                // Session Start (post `online`, read recent messages,
+                // arm watcher, etc.) the same way claude/agy do.
+                let inbox_dir = bridge_dir.join("inbox");
+                if let Err(e) = std::fs::create_dir_all(&inbox_dir) {
+                    eprintln!(
+                        "launch: codex intro envelope skipped for `{}` — could not create {}: {e}",
+                        a.name,
+                        inbox_dir.display(),
+                    );
+                } else if let Err(e) = crate::codex_channel::write_envelope(
+                    &inbox_dir,
+                    &cfg.project.name,
+                    &a.name,
+                    "session-start",
+                    0,
+                    &agent_intro,
+                ) {
+                    eprintln!(
+                        "launch: codex intro envelope write failed for `{}`: {e:#}",
+                        a.name,
+                    );
+                }
                 let bridge_cmd = format!(
                     "CODEX_CHANNEL_DIR={} giga watch --as {} --codex",
                     shell_escape::unix::escape(std::borrow::Cow::Borrowed(bridge_dir_unix.as_str())),
