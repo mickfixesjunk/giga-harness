@@ -313,4 +313,26 @@ mod tests {
             );
         }
     }
+
+    /// v0.6.28 regression guard for the VM-reboot Monitor revival
+    /// hole: a WSL VM reboot kills every Monitor process but Claude
+    /// Code preserves the agent's conversation history, so the agent
+    /// boots looking mid-task and skips Session Start, never re-arming
+    /// Monitor and idling silently. Claude's intro must instruct the
+    /// agent to call TaskList BEFORE deciding to resume — if no
+    /// Monitor entries surface, every Monitor is dead and must be
+    /// re-armed silently before any other work.
+    #[test]
+    fn claude_intro_guards_vm_reboot_monitor_revival() {
+        let claude = Runtime::Claude.launch_intro_prompt();
+        assert!(
+            claude.contains("TaskList"),
+            "Claude intro must reference TaskList check for VM-reboot recovery:\n{claude}",
+        );
+        assert!(
+            claude.contains("silently"),
+            "Claude intro must instruct silent re-arm so the agent doesn't \
+             announce the re-arm into the conversation:\n{claude}",
+        );
+    }
 }
