@@ -169,7 +169,10 @@ code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-s
 </head>
 <body>
 <header>
-  <h1>giga ui</h1>
+  <a href="#/" style="display:flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit">
+    <img src="/assets/giga-icon.png" alt="giga" style="height:1.8rem;width:auto;border-radius:4px">
+    <h1>giga ui</h1>
+  </a>
   <span class="sub">v__VERSION__ · dashboard</span>
   <div class="right">
     <span id="proc-summary"></span>
@@ -282,8 +285,30 @@ const renderHome = async () => {
 
   const content = $("content");
   content.innerHTML = "";
-  content.appendChild(el("h2", {}, "All swarms"));
-  content.appendChild(el("p", { className: "desc" }, `${swarms.length} registered.`));
+
+  // v0.6.49: filter out archived swarms unless the operator has
+  // opted in via the toggle. Toggle state is persisted in
+  // localStorage so refresh doesn't lose it.
+  const showArchived = localStorage.getItem("show-archived") === "1";
+  const visible = swarms.filter((s) => !s.archived || showArchived);
+  const archivedCount = swarms.filter((s) => s.archived).length;
+
+  const titleRow = el("div", { style: "display:flex;align-items:center;gap:.75rem" });
+  titleRow.appendChild(el("h2", { style: "margin:0" }, "All swarms"));
+  if (archivedCount > 0) {
+    const lbl = el("label", { style: "font-size:.8rem;color:var(--muted);display:flex;align-items:center;gap:.25rem;cursor:pointer" });
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = showArchived;
+    cb.addEventListener("change", () => {
+      localStorage.setItem("show-archived", cb.checked ? "1" : "0");
+      renderHome();
+    });
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(` show archived (${archivedCount})`));
+    titleRow.appendChild(lbl);
+  }
+  content.appendChild(titleRow);
+  content.appendChild(el("p", { className: "desc" }, `${visible.length} active${archivedCount > 0 ? `, ${archivedCount} archived` : ""}.`));
 
   // Toolbar with machine-level actions (Phase v2-2: upgrade).
   const toolbar = el("div", { className: "toolbar" });
@@ -326,21 +351,28 @@ const renderHome = async () => {
   content.appendChild(toolbar);
   content.appendChild(output);
 
-  if (swarms.length === 0) {
-    content.appendChild(el("div", { className: "empty" },
-      "No swarms registered. Run ",
-      el("code", {}, "giga setup"),
-      " to create one."));
+  if (visible.length === 0) {
+    if (swarms.length === 0) {
+      content.appendChild(el("div", { className: "empty" },
+        "No swarms registered. Run ",
+        el("code", {}, "giga setup"),
+        " to create one."));
+    } else {
+      content.appendChild(el("div", { className: "empty" },
+        "All swarms are archived. Toggle \"show archived\" above to bring them back."));
+    }
     return;
   }
 
   const grid = el("div", { className: "card-grid" });
-  for (const s of swarms) {
+  for (const s of visible) {
+    const cardInner = el("div", { style: "position:relative" });
     const card = el("a", {
       className: "card",
       onClick: () => navTo({ view: "swarm", swarm: s.name }),
+      style: s.archived ? "opacity:.55" : "",
     },
-      el("h3", {}, s.name),
+      el("h3", {}, s.name, s.archived ? el("span", { style: "color:var(--muted);font-size:.7rem;font-weight:normal;margin-left:.4rem" }, "archived") : null),
       s.load_error
         ? el("div", { className: "stat", style: "color:var(--bad)" }, `config error: ${s.load_error.slice(0, 80)}…`)
         : el("div", { className: "stat" }, `${s.agent_count} agents · ${s.channel_count} channels`),
@@ -348,7 +380,27 @@ const renderHome = async () => {
         ? el("div", { className: "last" }, `last activity ${fmtRel(s.last_activity_iso)}`)
         : el("div", { className: "last" }, "no activity yet")
     );
-    grid.appendChild(card);
+    const archiveBtn = el("button", {
+      style: "position:absolute;top:.4rem;right:.4rem;background:transparent;color:var(--muted);border:1px solid var(--border);padding:.1rem .4rem;font-size:.65rem",
+      title: s.archived ? "Bring this swarm back into the active list" : "Hide this swarm from the default list (reversible — toggle 'show archived' to find it again)",
+    }, s.archived ? "unarchive" : "archive");
+    archiveBtn.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      archiveBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/swarms/${encodeURIComponent(s.name)}/archive`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ archived: !s.archived }),
+        });
+        if (r.ok) renderHome();
+      } finally {
+        archiveBtn.disabled = false;
+      }
+    });
+    cardInner.appendChild(card);
+    cardInner.appendChild(archiveBtn);
+    grid.appendChild(cardInner);
   }
   content.appendChild(grid);
 };

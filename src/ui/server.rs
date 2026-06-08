@@ -44,7 +44,9 @@ fn build_router() -> Router {
             get(api::get_channel_tail).post(api::post_to_channel),
         )
         .route("/api/swarms/{name}/timeline", get(api::get_swarm_timeline))
+        .route("/api/swarms/{name}/archive", axum::routing::post(api::set_swarm_archived))
         .route("/api/processes", get(api::list_processes))
+        .route("/assets/giga-icon.png", get(serve_icon))
         .route("/api/swarms/{name}/validate", axum::routing::post(api::validate_swarm))
         .route("/api/swarms/{name}/launch", axum::routing::post(api::launch_swarm))
         .route("/api/swarms/{name}/kill", axum::routing::post(api::kill_swarm))
@@ -65,6 +67,18 @@ fn build_router() -> Router {
 /// initial ship so end users don't need Node to build giga.
 /// Reasonable to revisit if/when interactions get more complex.
 const DASHBOARD_HTML: &str = include_str!("../../templates/ui/dashboard.html");
+
+/// v0.6.49: brand icon shown in the header. ~47KB, 256x171 PNG.
+/// Embedded via include_bytes! so no separate asset shipping
+/// is required.
+const ICON_PNG: &[u8] = include_bytes!("../../assets/giga-icon.png");
+
+async fn serve_icon() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        ICON_PNG,
+    )
+}
 
 async fn index() -> Html<String> {
     // Inject the running version into the page header so the user

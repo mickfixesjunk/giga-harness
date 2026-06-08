@@ -26,12 +26,19 @@ pub struct Registry {
     pub entries: Vec<Entry>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Entry {
     pub name: String,
     pub config: PathBuf,
     #[serde(default)]
     pub code_roots: Vec<PathBuf>,
+    /// v0.6.49: archived swarms stay in the registry (so their
+    /// configs + history are preserved and they can be brought
+    /// back via un-archive) but are hidden from the UI's default
+    /// swarm list. `serde(default)` keeps old swarms.toml files
+    /// readable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 /// `~/.giga/swarms.toml` — absolute path. Created on first upsert.
@@ -84,20 +91,42 @@ pub fn upsert(name: &str, config: &Path, code_roots: &[PathBuf]) -> Result<bool>
 /// true if `reg` was modified. Separated from `upsert` so unit tests
 /// can exercise the merge logic without touching `~/.giga`.
 pub fn upsert_in(reg: &mut Registry, name: &str, config: &Path, code_roots: &[PathBuf]) -> bool {
-    let new_entry = Entry {
-        name: name.to_string(),
-        config: config.to_path_buf(),
-        code_roots: code_roots.to_vec(),
-    };
     if let Some(existing) = reg.entries.iter_mut().find(|e| e.name == name) {
-        if existing.config != new_entry.config || existing.code_roots != new_entry.code_roots {
-            *existing = new_entry;
+        if existing.config != config || existing.code_roots != code_roots {
+            existing.config = config.to_path_buf();
+            existing.code_roots = code_roots.to_vec();
+            // Preserve `archived` — upserting (e.g. via `giga init`)
+            // shouldn't silently un-archive a swarm.
             return true;
         }
         return false;
     }
-    reg.entries.push(new_entry);
+    reg.entries.push(Entry {
+        name: name.to_string(),
+        config: config.to_path_buf(),
+        code_roots: code_roots.to_vec(),
+        archived: false,
+    });
     true
+}
+
+/// v0.6.49: flip the `archived` flag on a registered swarm. Returns
+/// `Ok(true)` when the flag changed (write happened),
+/// `Ok(false)` when it was already in the requested state.
+/// Returns Err if the named swarm is not registered.
+pub fn set_archived(name: &str, archived: bool) -> Result<bool> {
+    let mut reg = load()?;
+    let entry = reg
+        .entries
+        .iter_mut()
+        .find(|e| e.name == name)
+        .ok_or_else(|| anyhow::anyhow!("swarm `{name}` is not registered"))?;
+    if entry.archived == archived {
+        return Ok(false);
+    }
+    entry.archived = archived;
+    save(&reg)?;
+    Ok(true)
 }
 
 /// Given a starting directory (typically cwd), walk up parent dirs
@@ -203,6 +232,7 @@ mod tests {
                 name: name.to_string(),
                 config: cfg,
                 code_roots: vec![code_root.to_path_buf()],
+                archived: false,
             }],
         };
         (tmp, reg)
@@ -230,6 +260,7 @@ mod tests {
                 name: "alice".into(),
                 config: PathBuf::from("/old.toml"),
                 code_roots: vec![PathBuf::from("/code/a")],
+                archived: false,
             }],
         };
         let changed = upsert_in(
@@ -250,6 +281,7 @@ mod tests {
                 name: "alice".into(),
                 config: PathBuf::from("/x.toml"),
                 code_roots: vec![PathBuf::from("/code/a")],
+                archived: false,
             }],
         };
         let changed = upsert_in(
@@ -268,6 +300,7 @@ mod tests {
                 name: "alice".into(),
                 config: PathBuf::from("/x.toml"),
                 code_roots: vec![PathBuf::from("/code/a")],
+                archived: false,
             }],
         };
         let changed = upsert_in(
@@ -316,6 +349,7 @@ mod tests {
                 name: "ghost".into(),
                 config: PathBuf::from("/nonexistent/giga-harness.toml"),
                 code_roots: vec![code_root.path().to_path_buf()],
+                    archived: false,
             }],
         };
         assert!(find_match(&reg, code_root.path()).is_none());
@@ -336,11 +370,13 @@ mod tests {
                     name: "first".into(),
                     config: cfg1.clone(),
                     code_roots: vec![code_root.path().to_path_buf()],
+                    archived: false,
                 },
                 Entry {
                     name: "second".into(),
                     config: cfg2,
                     code_roots: vec![code_root.path().to_path_buf()],
+                    archived: false,
                 },
             ],
         };
@@ -355,6 +391,7 @@ mod tests {
                 name: "alice".into(),
                 config: PathBuf::from("/some/config.toml"),
                 code_roots: vec![PathBuf::from("/code/a"), PathBuf::from("/code/b")],
+                archived: false,
             }],
         };
         let serialized = toml::to_string_pretty(&original).unwrap();

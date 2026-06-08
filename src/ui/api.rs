@@ -32,6 +32,9 @@ pub struct SwarmSummary {
     /// channel counts are zero and the operator can use this to
     /// diagnose. The other fields fall back to defaults.
     pub load_error: Option<String>,
+    /// v0.6.49: archive flag from the registry. UI hides archived
+    /// swarms by default; toggling "show archived" surfaces them.
+    pub archived: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -257,6 +260,45 @@ fn inbox_dir_for(cfg: &Config, ch: &Channel) -> Option<PathBuf> {
 /// cross-swarm orientation ("what's actually live right now?").
 pub async fn list_processes() -> Json<process::ProcessSnapshot> {
     Json(process::snapshot())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArchiveBody {
+    pub archived: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArchiveResult {
+    pub swarm: String,
+    pub archived: bool,
+    /// True when the flag flipped; false when it was already in
+    /// the requested state.
+    pub changed: bool,
+}
+
+/// `POST /api/swarms/:name/archive` with body `{archived: bool}` —
+/// flips the registry entry's archived flag. The configs and
+/// channel files stay on disk untouched; only the UI's default
+/// filtering changes. Unarchive by passing `{archived: false}`.
+pub async fn set_swarm_archived(
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<ArchiveBody>,
+) -> Result<Json<ArchiveResult>, (axum::http::StatusCode, Json<PostError>)> {
+    match registry::set_archived(&name, body.archived) {
+        Ok(changed) => Ok(Json(ArchiveResult {
+            swarm: name,
+            archived: body.archived,
+            changed,
+        })),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("is not registered") {
+                Err(not_found(&msg))
+            } else {
+                Err(internal(&msg))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -734,6 +776,7 @@ fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
             channel_count: cfg.channels.len(),
             last_activity_iso: last_activity(&cfg),
             load_error: None,
+            archived: entry.archived,
         },
         Err(e) => SwarmSummary {
             name: entry.name.clone(),
@@ -742,6 +785,7 @@ fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
             channel_count: 0,
             last_activity_iso: None,
             load_error: Some(format!("{e:#}")),
+            archived: entry.archived,
         },
     }
 }
@@ -907,6 +951,7 @@ mod tests {
             name: "missing".to_string(),
             config: PathBuf::from("/nonexistent/giga-harness.toml"),
             code_roots: vec![],
+            archived: false,
         };
         let summary = summarize_swarm(&entry);
         assert_eq!(summary.name, "missing");
