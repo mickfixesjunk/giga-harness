@@ -75,6 +75,30 @@ pub struct Args {
     pub dry_run: bool,
 }
 
+/// v0.6.30: bare install — update the local binary without any
+/// swarm-aware coordination. Used when `giga upgrade` is invoked
+/// from outside any swarm dir (no `giga-harness.toml` in CWD or any
+/// ancestor and no entry in `~/.giga/swarms.toml` matching this
+/// directory). Skips: peer-host install, Windows agent disarm/rearm
+/// broadcast, post-install peer rearm. Just runs `install_local`.
+///
+/// Rationale: upgrading the binary is a system-level concern; it
+/// shouldn't be blocked by the CWD not happening to sit under a
+/// swarm. The disarm/rearm dance is only meaningful when a known
+/// swarm with Windows watchers is present, so when none is in scope,
+/// the dance is trivially a no-op.
+pub fn run_bare(dry_run: bool) -> Result<()> {
+    println!("==> upgrading giga (bare install — no swarm config in scope)");
+    install_local(dry_run)?;
+    println!();
+    println!("bare install complete. Skipped: peer-host install, Windows agent disarm/rearm.");
+    println!(
+        "If you have a swarm and want the full upgrade flow, cd to its config dir + re-run \
+         (or pass --config <path>)."
+    );
+    Ok(())
+}
+
 pub fn run(args: Args) -> Result<()> {
     let cfg = Config::load(&args.config)?;
     // v0.4.5 bug fix: canonicalize the config path before passing it

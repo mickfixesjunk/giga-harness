@@ -750,15 +750,23 @@ fn main() -> Result<()> {
             skip_windows,
             dry_run,
         } => {
-            let config = registry::resolve_config(config)?;
-            upgrade::run(upgrade::Args {
-                config,
-                as_agent: r#as,
-                skip_peers,
-                skip_broadcast,
-                skip_windows,
-                dry_run,
-            })
+            // v0.6.30: `giga upgrade` should work CWD-independently —
+            // the binary install is system-level, not per-swarm. If
+            // config resolution fails (CWD is not under any registered
+            // swarm and no explicit --config was passed), fall through
+            // to a bare install rather than erroring out. The disarm/
+            // rearm dance is only meaningful when a swarm is in scope.
+            match registry::resolve_config(config) {
+                Ok(config) => upgrade::run(upgrade::Args {
+                    config,
+                    as_agent: r#as,
+                    skip_peers,
+                    skip_broadcast,
+                    skip_windows,
+                    dry_run,
+                }),
+                Err(_) => upgrade::run_bare(dry_run),
+            }
         }
         Command::Teleport {
             agent,
