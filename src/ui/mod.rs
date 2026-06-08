@@ -16,6 +16,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+pub mod api;
 pub mod pid;
 pub mod server;
 
