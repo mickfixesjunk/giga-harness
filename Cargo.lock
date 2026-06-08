@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "giga-harness"
-version = "0.6.47"
+version = "0.6.48"
 dependencies = [
  "anyhow",
  "axum",

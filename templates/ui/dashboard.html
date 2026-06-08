@@ -390,8 +390,10 @@ const renderSwarm = async (swarm, focusChannel, focusAgent) => {
     agentList.appendChild(el("li", {}, el("a", {
       className: active ? "active" : "",
       title: a.role,
+      "data-agent": a.name,
       onClick: () => navTo({ view: "agent", swarm: detail.name, agent: a.name }),
-    }, el("span", { className: "status-dot " + status }), a.name,
+    }, el("span", { className: "status-dot " + status, "data-status-dot": "1" }),
+       a.name,
        el("span", { className: "meta" }, a.runtime))));
   }
   nav.appendChild(agentList);
@@ -442,20 +444,20 @@ const renderSwarmOverview = (detail) => {
   content.appendChild(titleRow);
   if (detail.description) content.appendChild(el("p", { className: "desc" }, detail.description));
 
-  // v0.6.46: auto-refresh agent status + channel list every 15s.
-  // Only re-renders the swarm-overview view (not channel views);
-  // stopped on nav-away via stopSwarmRefresh().
+  // v0.6.48: surgical auto-refresh of sidebar status dots only.
+  // The previous implementation re-rendered the whole overview
+  // every 15s — destroyed scroll position + closed any open
+  // add-agent / add-channel form. Now we just re-fetch and patch
+  // the agent dots in place. Main pane is never touched by the
+  // timer; user controls main-pane refresh via the ↻ button.
   stopSwarmRefresh();
   swarmRefreshTimer = setInterval(async () => {
     try {
       const updated = await api(`/api/swarms/${encodeURIComponent(detail.name)}`);
       currentSwarmDetail = updated;
       const r = parseHash();
-      // Only patch the view if we're still on the same swarm
-      // overview (i.e. the user hasn't navigated to a channel).
-      if (r.view === "swarm" && r.swarm === detail.name) {
-        renderSwarmOverview(updated);
-      }
+      if (r.view !== "swarm" || r.swarm !== detail.name) return;
+      patchSidebarAgentDots(updated);
     } catch {}
   }, 15000);
 
@@ -584,6 +586,25 @@ const loadTimeline = async (detail, listEl) => {
 const truncate = (s, n) => {
   if (s.length <= n) return s;
   return s.slice(0, n) + "\n…(truncated)";
+};
+
+// v0.6.48: in-place sidebar status-dot updater. Walks the
+// freshly-fetched swarm detail and updates each agent's
+// status-dot className without re-rendering anything. Cheap +
+// non-destructive — won't interrupt the user scrolling the
+// timeline, typing into a form, or anything else.
+const patchSidebarAgentDots = (updated) => {
+  for (const a of updated.agents) {
+    const ps = a.process_status || {};
+    const status = ps.tmux_alive && ps.watcher_alive ? "ok"
+                 : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
+    const link = document.querySelector(`#nav a[data-agent="${CSS.escape(a.name)}"]`);
+    if (!link) continue;
+    const dot = link.querySelector('[data-status-dot]');
+    if (!dot) continue;
+    const desired = "status-dot " + status;
+    if (dot.className !== desired) dot.className = desired;
+  }
 };
 
 // v0.6.47: agent detail view. Same outer chrome as the other
