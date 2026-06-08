@@ -332,9 +332,8 @@ enum Command {
     ///     prints the doc to stdout. An agent invoking this captures
     ///     the doc into their conversation context.
     ///
-    /// Doc source: `CLAUDE_OPERATOR.md` at the repo root, baked into
-    /// the binary at compile time. No network. Same content for both
-    /// audiences.
+    /// Doc source: `templates/CLAUDE_OPERATOR.md`, baked into the binary at
+    /// compile time. No network. Same content for both audiences.
     ClaudeOperator,
     /// Tabulate every channel's last message + WAITING ON tag.
     Sweep {
@@ -461,9 +460,10 @@ enum Command {
     },
     /// Append a new [[hosts]] entry to the canonical TOML and
     /// (by default) auto-bootstrap the new peer: mkdir + rsync the
-    /// canonical TOML + ensure peer has a `this_host.toml`. After
-    /// this, run `giga add-agent --host <name> ...` to put agents
-    /// on the new host.
+    /// swarm dir (canonical TOML + agents/ templates, excluding
+    /// *.local.toml + workdirs/) + ensure peer has a `this_host.toml`.
+    /// After this, run `giga add-agent --host <name> ...` to put
+    /// agents on the new host.
     ///
     /// Typical use: after `giga setup --remote-node` on the peer +
     /// noting its tailnet hostname, run this on the operator host

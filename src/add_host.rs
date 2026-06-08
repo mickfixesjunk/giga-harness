@@ -101,7 +101,7 @@ pub fn run(args: Args) -> Result<()> {
             println!("    set host = \"{name}\" on existing host-less agents, and write this_host.toml");
         }
         if !args.no_bootstrap {
-            println!("  + would also bootstrap (mkdir + rsync TOML + ensure this_host.toml on peer)");
+            println!("  + would also bootstrap (mkdir + rsync swarm dir + ensure this_host.toml on peer)");
         }
         return Ok(());
     }
@@ -182,7 +182,7 @@ pub fn run(args: Args) -> Result<()> {
         println!("(--no-bootstrap: skipping peer push; run `giga sync --once` later or use add-agent --host {} to trigger it)", args.name);
     } else {
         println!();
-        println!("bootstrapping `{}` (mkdir + rsync TOML + ensure this_host.toml)...", args.name);
+        println!("bootstrapping `{}` (mkdir + rsync swarm dir + ensure this_host.toml)...", args.name);
         match sync::bootstrap_peer(&revalidated, &args.name, &args.config) {
             Ok(()) => println!("  + bootstrap complete"),
             Err(e) => {

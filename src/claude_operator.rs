@@ -12,9 +12,9 @@
 //!     captures the text into their conversation context — same effect
 //!     as the operator, just for an already-running Claude session.
 //!
-//! The doc is `CLAUDE_OPERATOR.md` at the repo root, baked into the
-//! binary at compile time with `include_str!`. No network, no stale-URL
-//! risk, version-locked to the giga binary.
+//! The doc is `templates/CLAUDE_OPERATOR.md`, baked into the binary at
+//! compile time with `include_str!`. No network, no stale-URL risk,
+//! version-locked to the giga binary.
 //!
 //! Usage on the operator host:
 //!   giga claude-operator                  # drop into Claude with the doc loaded
@@ -29,7 +29,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
-const DOC: &str = include_str!("../CLAUDE_OPERATOR.md");
+const DOC: &str = include_str!("../templates/CLAUDE_OPERATOR.md");
 
 pub fn run() -> Result<()> {
     if std::io::stdout().is_terminal() {
