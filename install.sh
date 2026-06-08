@@ -33,7 +33,7 @@ detect_target() {
         Darwin*)
             case "$uname_m" in
                 arm64|aarch64) echo "aarch64-apple-darwin" ;;
-                x86_64) err "intel macs aren't currently published — open an issue" ;;
+                x86_64) echo "x86_64-apple-darwin" ;;
                 *) err "unsupported darwin arch: $uname_m" ;;
             esac
             ;;

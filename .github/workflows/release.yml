@@ -32,6 +32,15 @@ jobs:
             target: aarch64-apple-darwin
             archive: giga-aarch64-apple-darwin.tar.gz
             bin: giga
+          # v0.6.53: Intel Macs (x86_64). Cross-compiled from the
+          # arm64 macos-latest runner — rust-toolchain action installs
+          # the x86_64 target via `targets:` and produces a real
+          # x86_64 Mach-O. Rosetta-using Intel Macs run it natively;
+          # Apple Silicon would prefer the aarch64 tarball above.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: giga-x86_64-apple-darwin.tar.gz
+            bin: giga
     steps:
       - uses: actions/checkout@v4
 
