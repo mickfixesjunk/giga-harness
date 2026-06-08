@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>giga ui</title>
+<style>
+:root {
+  --bg: #fafafa; --panel: #ffffff; --border: #e5e5e5; --muted: #6b6b6b;
+  --text: #1a1a1a; --accent: #1a4ed4; --ok: #16a34a; --bad: #dc2626; --warn: #ca8a04;
+  --code-bg: #f3f3f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f10; --panel: #181819; --border: #2a2a2c; --muted: #9a9a9a;
+    --text: #e5e5e5; --accent: #6ea1ff; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24;
+    --code-bg: #1f1f21;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg); color: var(--text); height: 100vh;
+  display: grid; grid-template-rows: auto 1fr; font-size: 14px;
+}
+header {
+  padding: .6rem 1rem; background: var(--panel); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 1rem;
+}
+header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+header .sub { color: var(--muted); font-size: .85rem; }
+header .right { margin-left: auto; display: flex; gap: 1rem; align-items: center; font-size: .85rem; color: var(--muted); }
+main { display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
+nav {
+  background: var(--panel); border-right: 1px solid var(--border);
+  overflow-y: auto; padding: .5rem 0;
+}
+nav h2 {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); padding: .75rem 1rem .25rem; margin: 0;
+}
+nav ul { list-style: none; padding: 0; margin: 0; }
+nav li a {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .4rem 1rem; color: var(--text); text-decoration: none;
+  cursor: pointer; font-size: .9rem;
+}
+nav li a:hover { background: var(--code-bg); }
+nav li a.active { background: var(--accent); color: white; }
+nav li a.active .meta { color: rgba(255,255,255,.85); }
+nav li a .meta { color: var(--muted); font-size: .75rem; margin-left: auto; }
+nav .status-dot {
+  width: .55rem; height: .55rem; border-radius: 50%;
+  background: var(--muted); flex-shrink: 0;
+}
+nav .status-dot.ok { background: var(--ok); }
+nav .status-dot.partial { background: var(--warn); }
+nav .status-dot.bad { background: var(--bad); }
+section {
+  padding: 1rem 1.25rem; overflow-y: auto; display: flex; flex-direction: column; min-height: 0;
+}
+section h2 { margin: 0 0 .5rem 0; font-size: 1.1rem; }
+section .desc { color: var(--muted); margin: 0 0 1rem 0; font-size: .9rem; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .75rem; }
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: .85rem; text-decoration: none; color: var(--text); display: block;
+}
+.card:hover { border-color: var(--accent); }
+.card h3 { margin: 0 0 .25rem 0; font-size: 1rem; }
+.card .stat { color: var(--muted); font-size: .85rem; }
+.card .last { color: var(--muted); font-size: .75rem; margin-top: .35rem; }
+.section-tabs { display: flex; gap: 1rem; margin-bottom: .75rem; border-bottom: 1px solid var(--border); }
+.section-tabs a {
+  padding: .4rem 0; color: var(--muted); text-decoration: none;
+  border-bottom: 2px solid transparent; font-size: .85rem; cursor: pointer;
+}
+.section-tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+.agent-row, .channel-row {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .35rem .5rem; border-radius: 4px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.agent-row:hover, .channel-row:hover { background: var(--code-bg); }
+.agent-row .name, .channel-row .name { flex: 1; font-weight: 500; }
+.agent-row .meta, .channel-row .meta { color: var(--muted); font-size: .75rem; }
+.posts { display: flex; flex-direction: column; gap: .8rem; min-height: 0; flex: 1; overflow-y: auto; padding-right: .5rem; }
+.post {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: .65rem .85rem;
+}
+.post-head {
+  display: flex; align-items: baseline; gap: .5rem;
+  font-size: .85rem; margin-bottom: .3rem;
+}
+.post-head .sender { font-weight: 600; color: var(--accent); }
+.post-head .ts { color: var(--muted); font-size: .75rem; margin-left: auto; }
+.post-head .subject { color: var(--text); }
+.post-body { white-space: pre-wrap; font-family: ui-monospace, 'Menlo', monospace; font-size: .82rem; line-height: 1.4; color: var(--text); }
+.empty { color: var(--muted); padding: 2rem; text-align: center; font-style: italic; }
+.error { background: #dc2626; color: white; padding: .5rem 1rem; border-radius: 4px; font-size: .85rem; margin-bottom: 1rem; }
+.ws-state { font-size: .75rem; color: var(--muted); }
+.ws-state.live::before { content: "● "; color: var(--ok); }
+.ws-state.connecting::before { content: "● "; color: var(--warn); }
+.ws-state.disconnected::before { content: "● "; color: var(--bad); }
+button {
+  background: var(--accent); color: white; border: 0;
+  padding: .35rem .75rem; border-radius: 4px; cursor: pointer; font-size: .8rem;
+}
+button:hover { opacity: .9; }
+code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-size: .85em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>giga ui</h1>
+  <span class="sub">v__VERSION__ · dashboard</span>
+  <div class="right">
+    <span id="proc-summary"></span>
+    <a href="/api/health" target="_blank" style="color: var(--muted)">API</a>
+  </div>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <section id="content"></section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...children) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "className") e.className = v;
+    else if (k === "onClick") e.addEventListener("click", v);
+    else if (k === "html") e.innerHTML = v;
+    else if (v !== null && v !== undefined) e.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null) continue;
+    if (typeof c === "string") e.appendChild(document.createTextNode(c));
+    else e.appendChild(c);
+  }
+  return e;
+};
+
+const fmtRel = (iso) => {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "";
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+};
+
+// ---------- routing ----------
+// #/                                       — home (swarms grid)
+// #/swarm/<name>                           — swarm view, no channel selected
+// #/swarm/<name>/channel/<file>            — swarm view + channel tail
+
+const parseHash = () => {
+  const h = location.hash.replace(/^#\/?/, "");
+  if (!h) return { view: "home" };
+  const parts = h.split("/").filter(Boolean);
+  if (parts[0] === "swarm" && parts.length >= 2) {
+    const swarm = decodeURIComponent(parts[1]);
+    if (parts.length >= 4 && parts[2] === "channel") {
+      return { view: "channel", swarm, channel: decodeURIComponent(parts[3]) };
+    }
+    return { view: "swarm", swarm };
+  }
+  return { view: "home" };
+};
+
+const navTo = (route) => {
+  if (route.view === "home") location.hash = "#/";
+  else if (route.view === "swarm") location.hash = `#/swarm/${encodeURIComponent(route.swarm)}`;
+  else if (route.view === "channel") location.hash = `#/swarm/${encodeURIComponent(route.swarm)}/channel/${encodeURIComponent(route.channel)}`;
+};
+
+// ---------- data layer ----------
+
+const api = async (path) => {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return await r.json();
+};
+
+let activeWs = null;
+const closeWs = () => {
+  if (activeWs) { try { activeWs.close(); } catch {} activeWs = null; }
+};
+
+// ---------- views ----------
+
+const renderHome = async () => {
+  closeWs();
+  $("nav").innerHTML = "";
+  $("nav").appendChild(el("h2", {}, "Swarms"));
+  $("content").innerHTML = "<div class='empty'>Loading…</div>";
+
+  let swarms;
+  try { swarms = await api("/api/swarms"); }
+  catch (e) {
+    $("content").innerHTML = "";
+    $("content").appendChild(el("div", { className: "error" }, `Failed to load swarms: ${e.message}`));
+    return;
+  }
+
+  const navList = el("ul");
+  for (const s of swarms) {
+    navList.appendChild(el("li", {}, el("a", {
+      onClick: () => navTo({ view: "swarm", swarm: s.name }),
+    }, el("span", { className: "status-dot " + (s.load_error ? "bad" : "ok") }), s.name)));
+  }
+  $("nav").appendChild(navList);
+
+  const content = $("content");
+  content.innerHTML = "";
+  content.appendChild(el("h2", {}, "All swarms"));
+  content.appendChild(el("p", { className: "desc" }, `${swarms.length} registered.`));
+
+  if (swarms.length === 0) {
+    content.appendChild(el("div", { className: "empty" },
+      "No swarms registered. Run ",
+      el("code", {}, "giga setup"),
+      " to create one."));
+    return;
+  }
+
+  const grid = el("div", { className: "card-grid" });
+  for (const s of swarms) {
+    const card = el("a", {
+      className: "card",
+      onClick: () => navTo({ view: "swarm", swarm: s.name }),
+    },
+      el("h3", {}, s.name),
+      s.load_error
+        ? el("div", { className: "stat", style: "color:var(--bad)" }, `config error: ${s.load_error.slice(0, 80)}…`)
+        : el("div", { className: "stat" }, `${s.agent_count} agents · ${s.channel_count} channels`),
+      s.last_activity_iso
+        ? el("div", { className: "last" }, `last activity ${fmtRel(s.last_activity_iso)}`)
+        : el("div", { className: "last" }, "no activity yet")
+    );
+    grid.appendChild(card);
+  }
+  content.appendChild(grid);
+};
+
+let currentSwarmDetail = null;
+
+const renderSwarm = async (swarm, focusChannel) => {
+  closeWs();
+  $("content").innerHTML = "<div class='empty'>Loading…</div>";
+  $("nav").innerHTML = "";
+
+  let detail;
+  try { detail = await api(`/api/swarms/${encodeURIComponent(swarm)}`); }
+  catch (e) {
+    $("content").innerHTML = "";
+    $("content").appendChild(el("div", { className: "error" }, `Failed to load ${swarm}: ${e.message}`));
+    return;
+  }
+  currentSwarmDetail = detail;
+
+  // Build sidebar: home link + agents + channels.
+  const nav = $("nav");
+  nav.appendChild(el("h2", {}, el("a", { onClick: () => navTo({ view: "home" }), style: "color:var(--muted);cursor:pointer" }, "← all swarms")));
+  nav.appendChild(el("h2", {}, `${detail.name}`));
+
+  nav.appendChild(el("h2", {}, "Agents"));
+  const agentList = el("ul");
+  for (const a of detail.agents) {
+    const ps = a.process_status || {};
+    const status = ps.tmux_alive && ps.watcher_alive ? "ok"
+                 : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
+    agentList.appendChild(el("li", {}, el("a", {
+      title: a.role,
+    }, el("span", { className: "status-dot " + status }), a.name,
+       el("span", { className: "meta" }, a.runtime))));
+  }
+  nav.appendChild(agentList);
+
+  nav.appendChild(el("h2", {}, "Channels"));
+  const chList = el("ul");
+  for (const c of detail.channels) {
+    const active = focusChannel === c.file;
+    chList.appendChild(el("li", {}, el("a", {
+      className: active ? "active" : "",
+      onClick: () => navTo({ view: "channel", swarm: detail.name, channel: c.file }),
+    }, c.file)));
+  }
+  nav.appendChild(chList);
+
+  // Content area depends on whether a channel is focused.
+  if (focusChannel) {
+    renderChannel(detail, focusChannel);
+  } else {
+    renderSwarmOverview(detail);
+  }
+};
+
+const renderSwarmOverview = (detail) => {
+  const content = $("content");
+  content.innerHTML = "";
+  content.appendChild(el("h2", {}, detail.name));
+  if (detail.description) content.appendChild(el("p", { className: "desc" }, detail.description));
+
+  content.appendChild(el("h2", {}, "Agents"));
+  const agentRows = el("div");
+  for (const a of detail.agents) {
+    const ps = a.process_status || {};
+    const status = ps.tmux_alive && ps.watcher_alive ? "ok"
+                 : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
+    agentRows.appendChild(el("div", { className: "agent-row" },
+      el("span", { className: "status-dot " + status }),
+      el("span", { className: "name" }, a.name),
+      el("span", { className: "meta" },
+        a.runtime, " · ", a.platform,
+        a.host ? ` · host=${a.host}` : "",
+        a.bench_scheduler ? " · bench" : "",
+        a.swarm_boss ? " · boss" : ""
+      )
+    ));
+  }
+  content.appendChild(agentRows);
+
+  content.appendChild(el("h2", { style: "margin-top:1rem" }, "Channels"));
+  const chRows = el("div");
+  for (const c of detail.channels) {
+    chRows.appendChild(el("div", {
+      className: "channel-row",
+      onClick: () => navTo({ view: "channel", swarm: detail.name, channel: c.file }),
+    },
+      el("span", { className: "name" }, c.file),
+      el("span", { className: "meta" }, c.participants.join(", "))
+    ));
+  }
+  content.appendChild(chRows);
+};
+
+const renderChannel = async (detail, file) => {
+  const content = $("content");
+  content.innerHTML = "";
+  content.appendChild(el("h2", {}, file));
+  const ch = detail.channels.find((c) => c.file === file);
+  if (ch) content.appendChild(el("p", { className: "desc" }, ch.participants.join(" ↔ ") + (ch.purpose ? " — " + ch.purpose : "")));
+  const stateBadge = el("span", { className: "ws-state connecting" }, "connecting…");
+  content.appendChild(stateBadge);
+  const posts = el("div", { className: "posts" });
+  content.appendChild(posts);
+
+  closeWs();
+  const wsUrl = location.origin.replace(/^http/, "ws") +
+    `/ws/channels/${encodeURIComponent(detail.name)}/${encodeURIComponent(file)}`;
+  const ws = new WebSocket(wsUrl);
+  activeWs = ws;
+
+  ws.onopen = () => {
+    stateBadge.className = "ws-state live";
+    stateBadge.textContent = "live";
+  };
+  ws.onclose = () => {
+    stateBadge.className = "ws-state disconnected";
+    stateBadge.textContent = "disconnected";
+  };
+  ws.onerror = () => {
+    stateBadge.className = "ws-state disconnected";
+    stateBadge.textContent = "error";
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === "snapshot") {
+      posts.innerHTML = "";
+      for (const p of msg.posts) posts.appendChild(renderPost(p));
+      posts.scrollTop = posts.scrollHeight;
+    } else if (msg.type === "append") {
+      const wasAtBottom = posts.scrollTop + posts.clientHeight + 50 >= posts.scrollHeight;
+      posts.appendChild(renderPost(msg.post));
+      if (wasAtBottom) posts.scrollTop = posts.scrollHeight;
+    } else if (msg.type === "error") {
+      stateBadge.className = "ws-state disconnected";
+      stateBadge.textContent = "error: " + msg.message;
+    }
+  };
+};
+
+const renderPost = (p) => {
+  return el("div", { className: "post" },
+    el("div", { className: "post-head" },
+      el("span", { className: "sender" }, "[" + p.sender + "]"),
+      el("span", { className: "subject" }, p.subject),
+      el("span", { className: "ts" }, fmtRel(p.timestamp_iso))
+    ),
+    el("div", { className: "post-body" }, p.body || "(empty body)")
+  );
+};
+
+// ---------- glue ----------
+
+const updateProcSummary = async () => {
+  try {
+    const snap = await api("/api/processes");
+    const sessions = snap.tmux.length;
+    const watchers = snap.watchers.length;
+    $("proc-summary").textContent = `${sessions} tmux session(s) · ${watchers} watcher(s)`;
+  } catch {
+    $("proc-summary").textContent = "process probe failed";
+  }
+};
+
+const route = () => {
+  const r = parseHash();
+  if (r.view === "home") renderHome();
+  else if (r.view === "swarm") renderSwarm(r.swarm, null);
+  else if (r.view === "channel") renderSwarm(r.swarm, r.channel);
+};
+
+window.addEventListener("hashchange", route);
+window.addEventListener("DOMContentLoaded", () => {
+  route();
+  updateProcSummary();
+  setInterval(updateProcSummary, 15000);
+});
+</script>
+</body>
+</html>
