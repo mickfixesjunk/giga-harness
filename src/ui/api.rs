@@ -399,6 +399,77 @@ pub async fn launch_swarm(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct LogQuery {
+    /// How many lines of pane buffer to capture. Default 200,
+    /// capped at 2000 to keep responses bounded.
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogSnapshot {
+    pub swarm: String,
+    pub agent: String,
+    pub window: String,
+    pub content: String,
+    /// True when tmux returned the snapshot; false when the window
+    /// wasn't found (returns empty content).
+    pub captured: bool,
+}
+
+/// `GET /api/swarms/:swarm/agents/:agent/log[?lines=N]` — captures
+/// the agent's tmux pane via `tmux capture-pane -p -S -N`. For
+/// single-pane Claude/agy agents the window name IS the slug. For
+/// codex agents we try `<slug>-cli` then `<slug>-bridge` so callers
+/// can target the half they want by suffixing `-cli`/`-bridge`
+/// directly OR just pass the bare slug to default to `-cli`.
+pub async fn get_agent_log(
+    AxumPath((swarm, agent)): AxumPath<(String, String)>,
+    Query(q): Query<LogQuery>,
+) -> Result<Json<LogSnapshot>, (axum::http::StatusCode, Json<PostError>)> {
+    let lines = q.lines.unwrap_or(200).min(2000);
+    let session = format!("giga-{swarm}");
+
+    // Try the agent's slug first; if that misses, try `<slug>-cli`
+    // (codex two-pane shape). Direct bridge access works too when
+    // the caller passes `<slug>-bridge` explicitly.
+    let candidates = [agent.clone(), format!("{agent}-cli")];
+    for window in &candidates {
+        let target = format!("{session}:{window}");
+        let out = std::process::Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-t",
+                &target,
+                "-p",
+                "-S",
+                &format!("-{lines}"),
+            ])
+            .output();
+        if let Ok(o) = out {
+            if o.status.success() {
+                return Ok(Json(LogSnapshot {
+                    swarm,
+                    agent,
+                    window: window.clone(),
+                    content: String::from_utf8_lossy(&o.stdout).into_owned(),
+                    captured: true,
+                }));
+            }
+        }
+    }
+    // Window not found in either form — return empty snapshot
+    // rather than 404 so the frontend can render "no pane" without
+    // a special error code path.
+    Ok(Json(LogSnapshot {
+        swarm,
+        agent,
+        window: String::new(),
+        content: String::new(),
+        captured: false,
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AddAgentBody {
     pub name: String,
