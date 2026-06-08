@@ -112,6 +112,79 @@ pub struct TailQuery {
 }
 
 #[derive(Debug, Serialize)]
+pub struct TimelinePost {
+    pub channel: String,
+    pub sender: String,
+    pub subject: String,
+    pub timestamp_iso: String,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Timeline {
+    pub swarm: String,
+    pub posts: Vec<TimelinePost>,
+    /// Total posts scanned across every channel in the swarm
+    /// before the truncation to `n`.
+    pub total_scanned: usize,
+}
+
+/// `GET /api/swarms/:name/timeline[?n=N]` — aggregate the last N
+/// posts across every channel in the swarm, newest first. Useful
+/// for the swarm landing page so the operator sees "what just
+/// happened" without picking a channel.
+pub async fn get_swarm_timeline(
+    AxumPath(name): AxumPath<String>,
+    Query(q): Query<TailQuery>,
+) -> Result<Json<Timeline>, axum::http::StatusCode> {
+    let n = q.n.unwrap_or(100).min(500);
+    let reg = registry::load().map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+    let cfg = Config::load(&entry.config)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut all: Vec<TimelinePost> = Vec::new();
+    for ch in &cfg.channels {
+        let inbox = match ch.side.as_str() {
+            "windows" => cfg.paths.windows_inbox.as_ref(),
+            _ => cfg.paths.wsl_inbox.as_ref(),
+        };
+        let inbox = match inbox {
+            Some(p) => p,
+            None => continue,
+        };
+        let path = inbox.join(&ch.file);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for p in post_parser::parse(&text) {
+            all.push(TimelinePost {
+                channel: ch.file.clone(),
+                sender: p.sender,
+                subject: p.subject,
+                timestamp_iso: p.timestamp_iso,
+                body: p.body,
+            });
+        }
+    }
+    let total_scanned = all.len();
+    // Sort newest first by ISO timestamp (lexical order works for
+    // RFC-3339 / 8601-Z timestamps).
+    all.sort_by(|a, b| b.timestamp_iso.cmp(&a.timestamp_iso));
+    all.truncate(n);
+    Ok(Json(Timeline {
+        swarm: name,
+        posts: all,
+        total_scanned,
+    }))
+}
+
+#[derive(Debug, Serialize)]
 pub struct ChannelTail {
     pub swarm: String,
     pub file: String,

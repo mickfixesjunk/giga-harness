@@ -214,8 +214,9 @@ const fmtRel = (iso) => {
 
 // ---------- routing ----------
 // #/                                       — home (swarms grid)
-// #/swarm/<name>                           — swarm view, no channel selected
-// #/swarm/<name>/channel/<file>            — swarm view + channel tail
+// #/swarm/<name>                           — swarm view: timeline
+// #/swarm/<name>/agent/<slug>              — agent detail view
+// #/swarm/<name>/channel/<file>            — channel tail (live WS)
 
 const parseHash = () => {
   const h = location.hash.replace(/^#\/?/, "");
@@ -226,6 +227,9 @@ const parseHash = () => {
     if (parts.length >= 4 && parts[2] === "channel") {
       return { view: "channel", swarm, channel: decodeURIComponent(parts[3]) };
     }
+    if (parts.length >= 4 && parts[2] === "agent") {
+      return { view: "agent", swarm, agent: decodeURIComponent(parts[3]) };
+    }
     return { view: "swarm", swarm };
   }
   return { view: "home" };
@@ -235,6 +239,7 @@ const navTo = (route) => {
   if (route.view === "home") location.hash = "#/";
   else if (route.view === "swarm") location.hash = `#/swarm/${encodeURIComponent(route.swarm)}`;
   else if (route.view === "channel") location.hash = `#/swarm/${encodeURIComponent(route.swarm)}/channel/${encodeURIComponent(route.channel)}`;
+  else if (route.view === "agent") location.hash = `#/swarm/${encodeURIComponent(route.swarm)}/agent/${encodeURIComponent(route.agent)}`;
 };
 
 // ---------- data layer ----------
@@ -355,7 +360,7 @@ const stopSwarmRefresh = () => {
   if (swarmRefreshTimer) { clearInterval(swarmRefreshTimer); swarmRefreshTimer = null; }
 };
 
-const renderSwarm = async (swarm, focusChannel) => {
+const renderSwarm = async (swarm, focusChannel, focusAgent) => {
   closeWs();
   stopSwarmRefresh();
   $("content").innerHTML = "<div class='empty'>Loading…</div>";
@@ -381,8 +386,11 @@ const renderSwarm = async (swarm, focusChannel) => {
     const ps = a.process_status || {};
     const status = ps.tmux_alive && ps.watcher_alive ? "ok"
                  : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
+    const active = focusAgent === a.name;
     agentList.appendChild(el("li", {}, el("a", {
+      className: active ? "active" : "",
       title: a.role,
+      onClick: () => navTo({ view: "agent", swarm: detail.name, agent: a.name }),
     }, el("span", { className: "status-dot " + status }), a.name,
        el("span", { className: "meta" }, a.runtime))));
   }
@@ -399,9 +407,11 @@ const renderSwarm = async (swarm, focusChannel) => {
   }
   nav.appendChild(chList);
 
-  // Content area depends on whether a channel is focused.
+  // Content area depends on focus mode.
   if (focusChannel) {
     renderChannel(detail, focusChannel);
+  } else if (focusAgent) {
+    renderAgent(detail, focusAgent);
   } else {
     renderSwarmOverview(detail);
   }
@@ -519,83 +529,123 @@ const renderSwarmOverview = (detail) => {
     formPanel.style.display = formPanel.style.display === "none" ? "" : "none";
   });
 
-  content.appendChild(el("h2", {}, "Agents"));
-  const agentRows = el("div");
-  for (const a of detail.agents) {
-    const ps = a.process_status || {};
-    const status = ps.tmux_alive && ps.watcher_alive ? "ok"
-                 : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
-    const logToggle = el("button", {
-      style: "background:transparent;color:var(--muted);border:1px solid var(--border);padding:.15rem .5rem;font-size:.7rem",
-    }, "log");
-    const logBox = el("pre", {
-      style: "display:none;background:var(--bg);color:var(--text);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:4px;padding:.5rem;font-family:ui-monospace,'Menlo',monospace;font-size:.75rem;max-height:18rem;overflow:auto;margin:.25rem 0 .5rem 0;white-space:pre-wrap",
-    }, "");
-    let timer = null;
-    let frozen = false;
-    const fetchLog = async () => {
-      if (frozen) return;
-      try {
-        const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/agents/${encodeURIComponent(a.name)}/log?lines=200`);
-        const j = await r.json();
-        const nearBottom = logBox.scrollTop + logBox.clientHeight + 50 >= logBox.scrollHeight;
-        logBox.textContent = j.captured ? (j.content || "(empty pane)") : "(no matching tmux window — agent isn't running or named differently)";
-        if (nearBottom) logBox.scrollTop = logBox.scrollHeight;
-      } catch (e) {
-        logBox.textContent = "log fetch error: " + e.message;
-      }
-    };
-    logToggle.addEventListener("click", () => {
-      if (logBox.style.display === "none") {
-        logBox.style.display = "block";
-        fetchLog();
-        timer = setInterval(fetchLog, 2000);
-      } else {
-        logBox.style.display = "none";
-        if (timer) { clearInterval(timer); timer = null; }
-      }
-    });
-    logBox.addEventListener("mouseenter", () => { frozen = true; });
-    logBox.addEventListener("mouseleave", () => { frozen = false; });
-    const row = el("div", { className: "agent-row" },
-      el("span", { className: "status-dot " + status }),
-      el("span", { className: "name" }, a.name),
-      el("span", { className: "meta" },
-        a.runtime, " · ", a.platform,
-        a.host ? ` · host=${a.host}` : "",
-        a.bench_scheduler ? " · bench" : "",
-        a.swarm_boss ? " · boss" : ""
-      ),
-      logToggle,
-    );
-    agentRows.appendChild(row);
-    agentRows.appendChild(logBox);
-  }
-  content.appendChild(agentRows);
-
-  const chHeading = el("h2", { style: "margin-top:1rem;display:flex;align-items:center;gap:.5rem" }, "Channels");
-  const addChannelBtn = el("button", {
-    style: "background:transparent;color:var(--muted);border:1px solid var(--border);padding:.2rem .6rem;font-size:.75rem",
-  }, "+ add channel");
-  chHeading.appendChild(addChannelBtn);
-  content.appendChild(chHeading);
+  // "+ add channel" button — placed in the toolbar with everything
+  // else, since the channels list itself lives in the sidebar.
+  const addChannelBtn = el("button", {}, "+ add channel");
+  toolbar.appendChild(addChannelBtn);
   const addChannelPanel = el("div", { className: "form-panel", style: "display:none" });
   renderAddChannelForm(addChannelPanel, detail, allBtns, output);
   content.appendChild(addChannelPanel);
   addChannelBtn.addEventListener("click", () => {
     addChannelPanel.style.display = addChannelPanel.style.display === "none" ? "" : "none";
   });
-  const chRows = el("div");
-  for (const c of detail.channels) {
-    chRows.appendChild(el("div", {
-      className: "channel-row",
-      onClick: () => navTo({ view: "channel", swarm: detail.name, channel: c.file }),
-    },
-      el("span", { className: "name" }, c.file),
-      el("span", { className: "meta" }, c.participants.join(", "))
-    ));
+
+  // Unified timeline: most recent posts across every channel in
+  // the swarm (broadcast and bilateral both). Replaces the old
+  // agent grid + channel rows that were duplicates of the sidebar.
+  const timelineHeading = el("h2", { style: "margin-top:1rem" }, "Recent activity");
+  content.appendChild(timelineHeading);
+  const timelineList = el("div", { className: "posts", id: "swarm-timeline" });
+  content.appendChild(timelineList);
+  loadTimeline(detail, timelineList);
+};
+
+const loadTimeline = async (detail, listEl) => {
+  listEl.innerHTML = "<div class='empty'>Loading timeline…</div>";
+  try {
+    const t = await api(`/api/swarms/${encodeURIComponent(detail.name)}/timeline?n=100`);
+    listEl.innerHTML = "";
+    if (!t.posts.length) {
+      listEl.appendChild(el("div", { className: "empty" }, "No posts yet."));
+      return;
+    }
+    for (const p of t.posts) {
+      const card = el("div", {
+        className: "post",
+        style: "cursor:pointer",
+      },
+        el("div", { className: "post-head" },
+          el("span", { className: "sender" }, "[" + p.sender + "]"),
+          el("span", { style: "color:var(--muted);font-size:.75rem" }, p.channel),
+          el("span", { className: "subject" }, p.subject),
+          el("span", { className: "ts" }, fmtRel(p.timestamp_iso)),
+        ),
+        el("div", { className: "post-body" }, truncate(p.body || "(empty body)", 600)),
+      );
+      card.addEventListener("click", () => navTo({ view: "channel", swarm: detail.name, channel: p.channel }));
+      listEl.appendChild(card);
+    }
+  } catch (e) {
+    listEl.innerHTML = "";
+    listEl.appendChild(el("div", { className: "error" }, "Timeline load failed: " + e.message));
   }
-  content.appendChild(chRows);
+};
+
+const truncate = (s, n) => {
+  if (s.length <= n) return s;
+  return s.slice(0, n) + "\n…(truncated)";
+};
+
+// v0.6.47: agent detail view. Same outer chrome as the other
+// swarm sub-views; main pane shows metadata + the live tmux
+// pane log.
+const renderAgent = (detail, slug) => {
+  stopSwarmRefresh();
+  const a = detail.agents.find((x) => x.name === slug);
+  const content = $("content");
+  content.innerHTML = "";
+  if (!a) {
+    content.appendChild(el("h2", {}, slug));
+    content.appendChild(el("div", { className: "error" }, "Agent not found in this swarm's config."));
+    return;
+  }
+  const ps = a.process_status || {};
+  const status = ps.tmux_alive && ps.watcher_alive ? "ok"
+               : ps.tmux_alive || ps.watcher_alive ? "partial" : "bad";
+
+  const title = el("div", { style: "display:flex;align-items:center;gap:.5rem" });
+  title.appendChild(el("span", { className: "status-dot " + status, style: "width:.85rem;height:.85rem" }));
+  title.appendChild(el("h2", { style: "margin:0" }, a.name));
+  title.appendChild(el("span", { className: "meta", style: "color:var(--muted);font-size:.9rem" },
+    a.runtime, " · ", a.platform,
+    a.host ? ` · host=${a.host}` : "",
+    a.bench_scheduler ? " · bench" : "",
+    a.swarm_boss ? " · boss" : ""
+  ));
+  content.appendChild(title);
+  content.appendChild(el("p", { className: "desc" }, a.role));
+
+  const meta = el("div", { style: "margin:.5rem 0;font-size:.85rem;color:var(--muted)" });
+  meta.appendChild(el("div", {}, "workdir: ", el("code", {}, a.workdir)));
+  if (a.code_root) meta.appendChild(el("div", {}, "code root: ", el("code", {}, a.code_root)));
+  meta.appendChild(el("div", {},
+    "tmux: ", ps.tmux_alive ? "alive" : "not running",
+    " · watcher: ", ps.watcher_alive ? "alive" : "not running",
+  ));
+  content.appendChild(meta);
+
+  content.appendChild(el("h2", {}, "Live pane log"));
+  const logBox = el("pre", {
+    style: "background:var(--bg);color:var(--text);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:4px;padding:.5rem;font-family:ui-monospace,'Menlo',monospace;font-size:.78rem;max-height:32rem;overflow:auto;white-space:pre-wrap;margin:0",
+  }, "loading…");
+  content.appendChild(logBox);
+  let frozen = false;
+  const fetchLog = async () => {
+    if (frozen) return;
+    try {
+      const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/agents/${encodeURIComponent(a.name)}/log?lines=400`);
+      const j = await r.json();
+      const nearBottom = logBox.scrollTop + logBox.clientHeight + 50 >= logBox.scrollHeight;
+      logBox.textContent = j.captured ? (j.content || "(empty pane)") : "(no matching tmux window — agent isn't running or named differently)";
+      if (nearBottom) logBox.scrollTop = logBox.scrollHeight;
+    } catch (e) {
+      logBox.textContent = "log fetch error: " + e.message;
+    }
+  };
+  logBox.addEventListener("mouseenter", () => { frozen = true; });
+  logBox.addEventListener("mouseleave", () => { frozen = false; });
+  fetchLog();
+  swarmRefreshTimer = setInterval(fetchLog, 2000); // reuse the timer slot
 };
 
 const renderAddChannelForm = (panel, detail, allBtns, output) => {
@@ -912,8 +962,9 @@ const updateProcSummary = async () => {
 const route = () => {
   const r = parseHash();
   if (r.view === "home") renderHome();
-  else if (r.view === "swarm") renderSwarm(r.swarm, null);
-  else if (r.view === "channel") renderSwarm(r.swarm, r.channel);
+  else if (r.view === "swarm") renderSwarm(r.swarm, null, null);
+  else if (r.view === "channel") renderSwarm(r.swarm, r.channel, null);
+  else if (r.view === "agent") renderSwarm(r.swarm, null, r.agent);
 };
 
 window.addEventListener("hashchange", route);

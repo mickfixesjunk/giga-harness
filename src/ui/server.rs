@@ -43,6 +43,7 @@ fn build_router() -> Router {
             "/api/swarms/{name}/channels/{file}",
             get(api::get_channel_tail).post(api::post_to_channel),
         )
+        .route("/api/swarms/{name}/timeline", get(api::get_swarm_timeline))
         .route("/api/processes", get(api::list_processes))
         .route("/api/swarms/{name}/validate", axum::routing::post(api::validate_swarm))
         .route("/api/swarms/{name}/launch", axum::routing::post(api::launch_swarm))
