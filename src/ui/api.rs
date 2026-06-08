@@ -569,6 +569,60 @@ pub async fn add_agent(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddChannelBody {
+    /// Bilateral channel — must be exactly two participants per
+    /// add-channel's v1 contract.
+    pub participants: Vec<String>,
+    /// Override the auto-derived `<a>-<b>.md` filename. Rarely
+    /// needed; lets the operator name a channel something other
+    /// than its participants (e.g. `_broadcast.md`).
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `POST /api/swarms/:name/channels` — shells out to
+/// `giga add-channel --participants a,b` for the swarm.
+pub async fn add_channel(
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<AddChannelBody>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    if body.participants.len() != 2 {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(PostError {
+                error: "bilateral channels only — pass exactly two participants".to_string(),
+            }),
+        ));
+    }
+    let config_str = entry.config.display().to_string();
+    let participants_str = body.participants.join(",");
+    let mut argv = vec![
+        "add-channel",
+        "--config",
+        &config_str,
+        "--participants",
+        &participants_str,
+    ];
+    if let Some(f) = body.file.as_deref() {
+        argv.push("--file");
+        argv.push(f);
+    }
+    if body.dry_run {
+        argv.push("--dry-run");
+    }
+    let out = run_giga(&argv).map_err(|e| internal(&format!("spawn giga add-channel: {e:#}")))?;
+    Ok(Json(out))
+}
+
 /// `POST /api/swarms/:name/kill` — shells out to
 /// `tmux kill-session -t giga-<swarm>`. Returns the tmux exit
 /// code so the operator can tell whether the session existed.

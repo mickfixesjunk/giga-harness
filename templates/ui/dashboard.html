@@ -530,7 +530,18 @@ const renderSwarmOverview = (detail) => {
   }
   content.appendChild(agentRows);
 
-  content.appendChild(el("h2", { style: "margin-top:1rem" }, "Channels"));
+  const chHeading = el("h2", { style: "margin-top:1rem;display:flex;align-items:center;gap:.5rem" }, "Channels");
+  const addChannelBtn = el("button", {
+    style: "background:transparent;color:var(--muted);border:1px solid var(--border);padding:.2rem .6rem;font-size:.75rem",
+  }, "+ add channel");
+  chHeading.appendChild(addChannelBtn);
+  content.appendChild(chHeading);
+  const addChannelPanel = el("div", { className: "form-panel", style: "display:none" });
+  renderAddChannelForm(addChannelPanel, detail, allBtns, output);
+  content.appendChild(addChannelPanel);
+  addChannelBtn.addEventListener("click", () => {
+    addChannelPanel.style.display = addChannelPanel.style.display === "none" ? "" : "none";
+  });
   const chRows = el("div");
   for (const c of detail.channels) {
     chRows.appendChild(el("div", {
@@ -542,6 +553,74 @@ const renderSwarmOverview = (detail) => {
     ));
   }
   content.appendChild(chRows);
+};
+
+const renderAddChannelForm = (panel, detail, allBtns, output) => {
+  panel.innerHTML = "";
+  const aSel = el("select");
+  const bSel = el("select");
+  for (const a of detail.agents) {
+    aSel.appendChild(el("option", { value: a.name }, a.name));
+    bSel.appendChild(el("option", { value: a.name }, a.name));
+  }
+  if (detail.agents.length >= 2) bSel.selectedIndex = 1;
+  const fileI = el("input", { type: "text", placeholder: "(auto: <a>-<b>.md, sorted)" });
+  const dryCk = el("input", { type: "checkbox" });
+  dryCk.checked = true;
+  const submitBtn = el("button", {}, "add");
+  const cancelBtn = el("button", { style: "background:transparent;color:var(--muted);border:1px solid var(--border)" }, "cancel");
+  const handle = async () => {
+    if (aSel.value === bSel.value) {
+      output.style.display = "block";
+      output.className = "exec-output err";
+      output.textContent = "participants must differ";
+      return;
+    }
+    const body = {
+      participants: [aSel.value, bSel.value],
+      file: fileI.value.trim() || null,
+      dry_run: dryCk.checked,
+    };
+    allBtns.forEach((b) => (b.disabled = true));
+    submitBtn.disabled = true;
+    output.style.display = "block";
+    output.className = "exec-output";
+    output.textContent = `running giga add-channel${dryCk.checked ? " --dry-run" : ""}…`;
+    try {
+      const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/channels`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        output.className = "exec-output err";
+        output.textContent = j.error || `${r.status} ${r.statusText}`;
+        return;
+      }
+      output.className = "exec-output " + (j.ok ? "ok" : "err");
+      output.textContent = "";
+      if (j.stdout) { output.appendChild(el("div", { className: "label" }, "stdout")); output.appendChild(document.createTextNode(j.stdout)); }
+      if (j.stderr) { output.appendChild(el("div", { className: "label" }, "stderr")); output.appendChild(document.createTextNode(j.stderr)); }
+      output.appendChild(el("div", { className: "label" }, "exit code: " + j.exit_code));
+    } catch (e) {
+      output.className = "exec-output err";
+      output.textContent = e.message;
+    } finally {
+      allBtns.forEach((b) => (b.disabled = false));
+      submitBtn.disabled = false;
+    }
+  };
+  submitBtn.addEventListener("click", handle);
+  cancelBtn.addEventListener("click", () => { panel.style.display = "none"; });
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "from"), aSel));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "to"), bSel));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "filename"), fileI));
+  panel.appendChild(el("div", { className: "hint" }, "Bilateral channels only. Filename auto-derived as sorted-alphabetical <a>-<b>.md unless you override."));
+  const checkboxRow = el("div", { className: "checkbox-row" });
+  const dryLabel = el("label", {}, dryCk, " dry-run (preview only)");
+  checkboxRow.appendChild(dryLabel);
+  panel.appendChild(el("div", { className: "row" }, el("span"), checkboxRow));
+  panel.appendChild(el("div", { className: "actions" }, submitBtn, cancelBtn));
 };
 
 const renderChannel = async (detail, file) => {
