@@ -186,6 +186,105 @@ pub async fn list_processes() -> Json<process::ProcessSnapshot> {
     Json(process::snapshot())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PostBody {
+    pub r#as: String,
+    pub subject: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub waiting_on: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PostResponse {
+    pub swarm: String,
+    pub file: String,
+    pub posted_as: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PostError {
+    pub error: String,
+}
+
+/// `POST /api/swarms/:name/channels/:file` — append a post to a
+/// channel via the same machinery `giga post` uses. Validates
+/// channel + sender against the swarm config; the underlying
+/// `post::run` enforces participant rules + slice routing.
+///
+/// v0.6.40 v2 ship gate: no auth in v1, so any tailnet client can
+/// post. Acceptable when the server is localhost-only (the v1
+/// default); operators who --bind 0.0.0.0 take responsibility for
+/// the tailnet trust model.
+pub async fn post_to_channel(
+    AxumPath((name, file)): AxumPath<(String, String)>,
+    Json(body): Json<PostBody>,
+) -> Result<Json<PostResponse>, (axum::http::StatusCode, Json<PostError>)> {
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    // post::run validates the channel + participant itself; we still
+    // pre-check that the channel is declared in this swarm so
+    // arbitrary file appends are blocked even before post::run is
+    // reached.
+    let cfg = Config::load(&entry.config)
+        .map_err(|e| internal(&format!("config load: {e:#}")))?;
+    let _ = cfg
+        .channels
+        .iter()
+        .find(|c| c.file == file)
+        .ok_or_else(|| not_found("channel not in swarm config"))?;
+
+    // Build post::Args and delegate to the canonical implementation.
+    // Sync I/O inside an async handler is fine here — the append is
+    // a few syscalls; not worth a spawn_blocking dance.
+    let args = crate::post::Args {
+        channel: file.clone(),
+        me: body.r#as.clone(),
+        subject: body.subject.clone(),
+        body: body.body.clone(),
+        waiting_on: body.waiting_on.clone(),
+        needs: None,
+        config: entry.config.clone(),
+        to: Vec::new(),
+        fyi: false,
+    };
+    crate::post::run(args).map_err(|e| {
+        let msg = format!("{e:#}");
+        // Participant/waiting-on validation errors are the user's
+        // fault, not 500s — surface as 400 with the original error.
+        if msg.contains("is not a participant") || msg.contains("WAITING ON target") {
+            (axum::http::StatusCode::BAD_REQUEST, Json(PostError { error: msg }))
+        } else {
+            internal(&msg)
+        }
+    })?;
+
+    Ok(Json(PostResponse {
+        swarm: name,
+        file,
+        posted_as: body.r#as,
+    }))
+}
+
+fn not_found(msg: &str) -> (axum::http::StatusCode, Json<PostError>) {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(PostError { error: msg.to_string() }),
+    )
+}
+
+fn internal(msg: &str) -> (axum::http::StatusCode, Json<PostError>) {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(PostError { error: msg.to_string() }),
+    )
+}
+
 fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
     match Config::load(&entry.config) {
         Ok(cfg) => SwarmSummary {

@@ -108,7 +108,36 @@ button {
   padding: .35rem .75rem; border-radius: 4px; cursor: pointer; font-size: .8rem;
 }
 button:hover { opacity: .9; }
+button:disabled { opacity: .5; cursor: not-allowed; }
 code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-size: .85em; }
+.composer {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: .65rem; margin-top: .75rem;
+  display: grid; grid-template-columns: auto 1fr; gap: .4rem .6rem; align-items: center;
+}
+.composer .row {
+  display: contents;
+}
+.composer label {
+  font-size: .75rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted);
+}
+.composer input, .composer textarea, .composer select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: .3rem .45rem; font: inherit; font-size: .85rem;
+  width: 100%;
+}
+.composer textarea {
+  font-family: ui-monospace, 'Menlo', monospace; font-size: .8rem;
+  min-height: 4rem; resize: vertical;
+}
+.composer .actions {
+  grid-column: 1 / -1; display: flex; gap: .5rem; align-items: center;
+  margin-top: .25rem;
+}
+.composer .actions .feedback { font-size: .8rem; color: var(--muted); }
+.composer .actions .feedback.ok { color: var(--ok); }
+.composer .actions .feedback.err { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -352,6 +381,7 @@ const renderChannel = async (detail, file) => {
   content.appendChild(stateBadge);
   const posts = el("div", { className: "posts" });
   content.appendChild(posts);
+  if (ch) content.appendChild(renderComposer(detail.name, ch));
 
   closeWs();
   const wsUrl = location.origin.replace(/^http/, "ws") +
@@ -398,6 +428,70 @@ const renderPost = (p) => {
     ),
     el("div", { className: "post-body" }, p.body || "(empty body)")
   );
+};
+
+// v0.6.40: per-channel post composer. Sender dropdown is the
+// channel's participants (server-side validates anyway, so this
+// is a guard against typos). Subject + body free-text. Waiting-on
+// dropdown is participants except the sender.
+const renderComposer = (swarmName, channel) => {
+  const wrap = el("div", { className: "composer" });
+  const senderSel = el("select", { name: "as" });
+  for (const p of channel.participants) senderSel.appendChild(el("option", { value: p }, p));
+  const subjInput = el("input", { type: "text", name: "subject", placeholder: "subject line" });
+  const bodyTa = el("textarea", { name: "body", placeholder: "body (markdown ok)" });
+  const waitingSel = el("select", { name: "waiting_on" });
+  waitingSel.appendChild(el("option", { value: "" }, "(none — informational)"));
+  for (const p of channel.participants) waitingSel.appendChild(el("option", { value: p }, p));
+  const feedback = el("span", { className: "feedback" }, "");
+  const submit = el("button", {}, "post");
+
+  const updateWaitingOptions = () => {
+    const me = senderSel.value;
+    for (const opt of waitingSel.options) {
+      opt.disabled = opt.value === me && opt.value !== "";
+    }
+    if (waitingSel.value === me && me !== "") waitingSel.value = "";
+  };
+  senderSel.addEventListener("change", updateWaitingOptions);
+  updateWaitingOptions();
+
+  submit.addEventListener("click", async () => {
+    const subject = subjInput.value.trim();
+    if (!subject) { feedback.className = "feedback err"; feedback.textContent = "subject required"; return; }
+    submit.disabled = true;
+    feedback.className = "feedback"; feedback.textContent = "posting…";
+    try {
+      const r = await fetch(`/api/swarms/${encodeURIComponent(swarmName)}/channels/${encodeURIComponent(channel.file)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          as: senderSel.value,
+          subject: subject,
+          body: bodyTa.value || null,
+          waiting_on: waitingSel.value || null,
+        }),
+      });
+      if (!r.ok) {
+        const ej = await r.json().catch(() => ({}));
+        throw new Error(ej.error || `${r.status} ${r.statusText}`);
+      }
+      feedback.className = "feedback ok"; feedback.textContent = "posted";
+      subjInput.value = ""; bodyTa.value = "";
+      setTimeout(() => { feedback.textContent = ""; }, 3000);
+    } catch (e) {
+      feedback.className = "feedback err"; feedback.textContent = e.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  wrap.appendChild(el("div", { className: "row" }, el("label", {}, "from"), senderSel));
+  wrap.appendChild(el("div", { className: "row" }, el("label", {}, "subject"), subjInput));
+  wrap.appendChild(el("div", { className: "row" }, el("label", {}, "body"), bodyTa));
+  wrap.appendChild(el("div", { className: "row" }, el("label", {}, "waiting on"), waitingSel));
+  wrap.appendChild(el("div", { className: "actions" }, submit, feedback));
+  return wrap;
 };
 
 // ---------- glue ----------
