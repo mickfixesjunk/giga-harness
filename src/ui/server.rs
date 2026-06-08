@@ -44,6 +44,8 @@ fn build_router() -> Router {
             get(api::get_channel_tail).post(api::post_to_channel),
         )
         .route("/api/processes", get(api::list_processes))
+        .route("/api/swarms/{name}/validate", axum::routing::post(api::validate_swarm))
+        .route("/api/upgrade", axum::routing::post(api::run_upgrade))
         .route("/ws/channels/{swarm}/{file}", get(ws::ws_channel))
         .with_state(AppState::new())
 }

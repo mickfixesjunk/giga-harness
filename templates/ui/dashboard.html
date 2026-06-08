@@ -138,6 +138,18 @@ code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-s
 .composer .actions .feedback { font-size: .8rem; color: var(--muted); }
 .composer .actions .feedback.ok { color: var(--ok); }
 .composer .actions .feedback.err { color: var(--bad); }
+.toolbar { display: flex; gap: .5rem; margin: .5rem 0; }
+.toolbar button { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+.exec-output {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: .65rem .85rem; margin-top: .5rem;
+  font-family: ui-monospace, 'Menlo', monospace; font-size: .8rem;
+  white-space: pre-wrap; max-height: 14rem; overflow-y: auto;
+}
+.exec-output.ok { border-left: 3px solid var(--ok); }
+.exec-output.err { border-left: 3px solid var(--bad); }
+.exec-output .label { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; margin-top: .25rem; }
 </style>
 </head>
 <body>
@@ -252,6 +264,47 @@ const renderHome = async () => {
   content.appendChild(el("h2", {}, "All swarms"));
   content.appendChild(el("p", { className: "desc" }, `${swarms.length} registered.`));
 
+  // Toolbar with machine-level actions (Phase v2-2: upgrade).
+  const toolbar = el("div", { className: "toolbar" });
+  const upgradeBtn = el("button", {}, "giga upgrade --bare");
+  const dryRunBtn = el("button", {}, "preview upgrade (--dry-run)");
+  const output = el("div", { style: "display:none" });
+  const triggerUpgrade = async (dryRun) => {
+    upgradeBtn.disabled = dryRunBtn.disabled = true;
+    output.style.display = "block";
+    output.className = "exec-output";
+    output.textContent = "running giga upgrade" + (dryRun ? " --dry-run" : "") + "…";
+    try {
+      const r = await fetch(`/api/upgrade?dry_run=${dryRun ? "true" : "false"}`, { method: "POST" });
+      const j = await r.json();
+      output.className = "exec-output " + (j.ok ? "ok" : "err");
+      output.textContent = "";
+      if (j.stdout) {
+        output.appendChild(el("div", { className: "label" }, "stdout"));
+        output.appendChild(document.createTextNode(j.stdout));
+      }
+      if (j.stderr) {
+        output.appendChild(el("div", { className: "label" }, "stderr"));
+        output.appendChild(document.createTextNode(j.stderr));
+      }
+      output.appendChild(el("div", { className: "label" }, "exit code: " + j.exit_code));
+    } catch (e) {
+      output.className = "exec-output err";
+      output.textContent = e.message;
+    } finally {
+      upgradeBtn.disabled = dryRunBtn.disabled = false;
+    }
+  };
+  upgradeBtn.addEventListener("click", () => {
+    if (!confirm("Run giga upgrade --bare now? This downloads and installs the latest release.")) return;
+    triggerUpgrade(false);
+  });
+  dryRunBtn.addEventListener("click", () => triggerUpgrade(true));
+  toolbar.appendChild(upgradeBtn);
+  toolbar.appendChild(dryRunBtn);
+  content.appendChild(toolbar);
+  content.appendChild(output);
+
   if (swarms.length === 0) {
     content.appendChild(el("div", { className: "empty" },
       "No swarms registered. Run ",
@@ -337,6 +390,40 @@ const renderSwarmOverview = (detail) => {
   content.innerHTML = "";
   content.appendChild(el("h2", {}, detail.name));
   if (detail.description) content.appendChild(el("p", { className: "desc" }, detail.description));
+
+  // Toolbar with swarm-level actions (Phase v2-2: validate).
+  const toolbar = el("div", { className: "toolbar" });
+  const validateBtn = el("button", {}, "validate");
+  const output = el("div", { style: "display:none" });
+  validateBtn.addEventListener("click", async () => {
+    validateBtn.disabled = true;
+    output.style.display = "block";
+    output.className = "exec-output";
+    output.textContent = "running giga validate…";
+    try {
+      const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/validate`, { method: "POST" });
+      const j = await r.json();
+      output.className = "exec-output " + (j.ok ? "ok" : "err");
+      output.textContent = "";
+      if (j.stdout) {
+        output.appendChild(el("div", { className: "label" }, "stdout"));
+        output.appendChild(document.createTextNode(j.stdout));
+      }
+      if (j.stderr) {
+        output.appendChild(el("div", { className: "label" }, "stderr"));
+        output.appendChild(document.createTextNode(j.stderr));
+      }
+      output.appendChild(el("div", { className: "label" }, "exit code: " + j.exit_code));
+    } catch (e) {
+      output.className = "exec-output err";
+      output.textContent = e.message;
+    } finally {
+      validateBtn.disabled = false;
+    }
+  });
+  toolbar.appendChild(validateBtn);
+  content.appendChild(toolbar);
+  content.appendChild(output);
 
   content.appendChild(el("h2", {}, "Agents"));
   const agentRows = el("div");

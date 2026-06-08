@@ -279,6 +279,13 @@ enum Command {
         /// Print what would happen; don't run install or post.
         #[arg(long)]
         dry_run: bool,
+        /// v0.6.41: bare install — skip the swarm-aware machinery
+        /// (Windows agent disarm/rearm broadcast, peer-host
+        /// install) and just update the local binary. Equivalent
+        /// to running `giga upgrade` from a no-swarm directory.
+        /// Used by the UI's "upgrade" button.
+        #[arg(long)]
+        bare: bool,
     },
     /// Launch the browser-based dashboard for managing every
     /// registered swarm on this machine.
@@ -789,7 +796,13 @@ fn main() -> Result<()> {
             skip_broadcast,
             skip_windows,
             dry_run,
+            bare,
         } => {
+            // v0.6.41: explicit --bare flag skips all swarm-aware
+            // machinery (the UI's upgrade button uses this).
+            if bare {
+                return upgrade::run_bare(dry_run);
+            }
             // v0.6.30: `giga upgrade` should work CWD-independently —
             // the binary install is system-level, not per-swarm. If
             // config resolution fails (CWD is not under any registered

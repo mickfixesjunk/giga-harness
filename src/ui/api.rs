@@ -285,6 +285,77 @@ fn internal(msg: &str) -> (axum::http::StatusCode, Json<PostError>) {
     )
 }
 
+#[derive(Debug, Serialize)]
+pub struct ExecResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub ok: bool,
+}
+
+/// `POST /api/swarms/:name/validate` — shell out to `giga validate
+/// --config <swarm.toml>` and return its stdout/stderr/exit-code.
+/// Read-only operation (validate doesn't mutate anything); kept as
+/// POST so the frontend keeps cache controllers from caching the
+/// trigger.
+pub async fn validate_swarm(
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    // `giga validate` takes CONFIG as a positional argument, not
+    // `--config` (unlike `giga post` / `giga launch`). Easy gotcha
+    // caught during the smoke test.
+    let config_str = entry.config.display().to_string();
+    let out = run_giga(&["validate", &config_str])
+        .map_err(|e| internal(&format!("spawn giga validate: {e:#}")))?;
+    Ok(Json(out))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpgradeQuery {
+    /// When true, runs `giga upgrade --dry-run` so the operator can
+    /// preview without actually installing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `POST /api/upgrade` — shell out to `giga upgrade --bare`
+/// (system-level binary install only; no swarm-aware disarm/rearm
+/// dance). Pass `?dry_run=true` to preview without installing.
+///
+/// This intentionally runs `--bare`; the dance for Windows
+/// peer-host watchers is deferred to v2.1 once the multi-swarm
+/// iteration story is settled.
+pub async fn run_upgrade(
+    Query(q): Query<UpgradeQuery>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    let mut args = vec!["upgrade", "--bare"];
+    if q.dry_run {
+        args.push("--dry-run");
+    }
+    let out = run_giga(&args).map_err(|e| internal(&format!("spawn giga upgrade: {e:#}")))?;
+    Ok(Json(out))
+}
+
+/// Invokes the same `giga` binary that's currently running (so the
+/// child sees the same dependencies + behavior). Captures stdout +
+/// stderr; never inherits them.
+fn run_giga(argv: &[&str]) -> Result<ExecResult, std::io::Error> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("giga"));
+    let out = std::process::Command::new(&exe).args(argv).output()?;
+    Ok(ExecResult {
+        exit_code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        ok: out.status.success(),
+    })
+}
+
 fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
     match Config::load(&entry.config) {
         Ok(cfg) => SwarmSummary {
