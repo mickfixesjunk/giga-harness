@@ -40,6 +40,7 @@ fn build_router() -> Router {
         .route("/api/swarms", get(api::list_swarms))
         .route("/api/swarms/{name}", get(api::get_swarm))
         .route("/api/swarms/{name}/channels/{file}", get(api::get_channel_tail))
+        .route("/api/processes", get(api::list_processes))
         .route("/ws/channels/{swarm}/{file}", get(ws::ws_channel))
         .with_state(AppState::new())
 }

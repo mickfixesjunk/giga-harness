@@ -11,6 +11,7 @@
 use crate::config::{Agent, Channel, Config};
 use crate::registry;
 use crate::ui::channel as post_parser;
+use crate::ui::process;
 use axum::extract::{Path as AxumPath, Query};
 use axum::http::StatusCode;
 use axum::Json;
@@ -56,6 +57,22 @@ pub struct AgentDto {
     pub role: String,
     pub bench_scheduler: bool,
     pub swarm_boss: bool,
+    /// v0.6.36 Phase E: live process status derived from
+    /// `tmux list-windows` + `ps`. `None` means we couldn't even
+    /// query — render as "unknown" in the UI rather than guessing
+    /// alive/dead.
+    pub process_status: Option<AgentProcessStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentProcessStatus {
+    /// True when this agent has a tmux window named after its slug
+    /// in this swarm's `giga-<swarm>` session. For codex agents the
+    /// match includes the `-bridge` / `-cli` suffix.
+    pub tmux_alive: bool,
+    /// True when a `giga watch --as <slug>` process is in `ps` —
+    /// either a standalone watcher or the codex bridge sidecar.
+    pub watcher_alive: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +179,13 @@ fn inbox_dir_for(cfg: &Config, ch: &Channel) -> Option<PathBuf> {
     }
 }
 
+/// `GET /api/processes` — machine-wide tmux sessions + every
+/// `giga watch` Monitor watcher currently running. Useful for
+/// cross-swarm orientation ("what's actually live right now?").
+pub async fn list_processes() -> Json<process::ProcessSnapshot> {
+    Json(process::snapshot())
+}
+
 fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
     match Config::load(&entry.config) {
         Ok(cfg) => SwarmSummary {
@@ -184,18 +208,40 @@ fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
 }
 
 fn detail_from(entry: &registry::Entry, cfg: &Config) -> SwarmDetail {
+    let snapshot = process::snapshot();
+    let session_name = format!("giga-{}", entry.name);
+    let tmux_window_names: Vec<String> = snapshot
+        .tmux
+        .iter()
+        .find(|s| s.name == session_name)
+        .map(|s| s.windows.iter().map(|w| w.name.clone()).collect())
+        .unwrap_or_default();
+    let watcher_agents: Vec<String> = snapshot
+        .watchers
+        .iter()
+        .map(|w| w.agent.clone())
+        .collect();
     SwarmDetail {
         name: entry.name.clone(),
         config_path: entry.config.clone(),
         description: cfg.project.description.clone(),
         project_runtime: cfg.project.runtime.as_ref().map(|r| r.as_str().to_string()),
         launch_model: cfg.project.launch_model.clone(),
-        agents: cfg.agents.iter().map(|a| agent_dto(a, cfg)).collect(),
+        agents: cfg
+            .agents
+            .iter()
+            .map(|a| agent_dto(a, cfg, &tmux_window_names, &watcher_agents))
+            .collect(),
         channels: cfg.channels.iter().map(channel_dto).collect(),
     }
 }
 
-fn agent_dto(a: &Agent, cfg: &Config) -> AgentDto {
+fn agent_dto(
+    a: &Agent,
+    cfg: &Config,
+    tmux_window_names: &[String],
+    watcher_agents: &[String],
+) -> AgentDto {
     AgentDto {
         name: a.name.clone(),
         runtime: cfg.agent_runtime(a).as_str().to_string(),
@@ -206,7 +252,23 @@ fn agent_dto(a: &Agent, cfg: &Config) -> AgentDto {
         role: a.role.clone(),
         bench_scheduler: a.bench_scheduler,
         swarm_boss: a.swarm_boss,
+        process_status: Some(AgentProcessStatus {
+            tmux_alive: agent_has_tmux_window(&a.name, tmux_window_names),
+            watcher_alive: watcher_agents.iter().any(|w| w == &a.name),
+        }),
     }
+}
+
+/// Match an agent slug to its tmux window. Single-pane agents have a
+/// window named after the slug verbatim; codex agents have
+/// `<slug>-bridge` + `<slug>-cli`. Treat the agent as alive if any
+/// matching window exists.
+fn agent_has_tmux_window(slug: &str, window_names: &[String]) -> bool {
+    let bridge = format!("{slug}-bridge");
+    let cli = format!("{slug}-cli");
+    window_names
+        .iter()
+        .any(|n| n == slug || n == &bridge || n == &cli)
 }
 
 fn channel_dto(c: &Channel) -> ChannelDto {
