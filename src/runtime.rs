@@ -314,6 +314,32 @@ mod tests {
         }
     }
 
+    /// v0.6.29 regression guard for codex pane-only-output discipline.
+    /// Codex CLI built-in slash commands (`/review`, `/diff`, etc.)
+    /// produce output in the pane only; agents don't naturally know
+    /// to relay that output to the swarm channel via `giga post`.
+    /// The codex runtime AGENTS.md snippet must explicitly bind these
+    /// commands to a follow-up `giga post`. Burned on superdeduper
+    /// 2026-06-07: codex-review's PR #171 and #176 verdicts sat in
+    /// the pane for 1-1.5hr each, requiring manual nudges from
+    /// design to trigger the post.
+    #[test]
+    fn codex_snippet_binds_builtin_commands_to_giga_post() {
+        let body = Runtime::Codex.session_start_snippet();
+        assert!(
+            body.contains("/review"),
+            "codex snippet must call out /review specifically (most common pane-only failure mode):\n{body}",
+        );
+        assert!(
+            body.contains("pane only") || body.contains("pane-only"),
+            "codex snippet must explain the pane-only failure mode:\n{body}",
+        );
+        assert!(
+            body.contains("giga post"),
+            "codex snippet must instruct the follow-up giga post:\n{body}",
+        );
+    }
+
     /// v0.6.28 regression guard for the VM-reboot Monitor revival
     /// hole: a WSL VM reboot kills every Monitor process but Claude
     /// Code preserves the agent's conversation history, so the agent

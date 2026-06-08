@@ -24,6 +24,29 @@ Conventions:
 - Subject prefix `[<your-slug> YYYY-MM-DD HH:MM TZ]` so the inbox
   watcher's notification line shows enough context.
 
+## Pane-only output from built-in commands MUST be posted to channel
+
+Codex CLI's built-in slash commands (e.g. `/review`, `/diff`,
+`/explain`) produce output in your pane only — they do NOT
+automatically trigger a `giga post`. This is the most common comms
+break for codex agents: the verdict sits in the pane unposted while
+peer agents wait silently for a response.
+
+**Rule:** every built-in slash command's FINAL step is a `giga post`
+of the result to the relevant channel. Treat any pane-producing
+command as TWO halves: (1) run the command, (2) `giga post` the
+result.
+
+**Example (`/review` verdict):**
+
+- Subject: `[<your-slug> YYYY-MM-DD HH:MM TZ] PR #N review verdict — LGTM | changes requested | concerns`
+- Body: formal verdict + findings with `file:line` references + recommended fix
+- Channel: the PR author's bilateral with you (e.g. `codex-review-<peer>.md`)
+- End with the standard `WAITING ON:` / `(Informational, no response required.)` closing tag
+
+If you find yourself thinking "the work is done, the user can see
+the output," you have skipped the post step. Re-read this section.
+
 ## Bridge-pane health
 
 If you stop receiving envelopes, the bridge process may have died. The
