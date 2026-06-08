@@ -113,6 +113,15 @@ mod tests {
         assert!(p.exists());
     }
 
+    /// v0.6.33: gated to unix. The Phase A `process_alive` Windows
+    /// stub always returns `true` (single-user workstation; PID
+    /// collision is rare; full WinAPI liveness check deferred to
+    /// Phase G). That stub means a "definitely dead" PID like
+    /// 2_000_000 reports as alive on Windows and the acquire
+    /// correctly bails — but the test was written to assert the
+    /// unix overwrite path. When the Windows stub is upgraded,
+    /// drop the cfg gate.
+    #[cfg(unix)]
     #[test]
     fn acquire_overwrites_stale_pid_file() {
         // PID 1 is init/systemd — definitely alive — so we can't
