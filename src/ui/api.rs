@@ -356,6 +356,78 @@ fn run_giga(argv: &[&str]) -> Result<ExecResult, std::io::Error> {
     })
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct LaunchQuery {
+    /// Stagger between agent spawns in seconds. Default 0 (no
+    /// stagger); pass 5-15 for 10+ agent swarms to avoid the TPM
+    /// limit storm.
+    #[serde(default)]
+    pub stagger: u64,
+    /// When true, also re-run `giga init` before launching. Default
+    /// false — re-init can overwrite local AGENTS.md edits.
+    #[serde(default)]
+    pub init: bool,
+}
+
+/// `POST /api/swarms/:name/launch` — shells out to `giga launch`
+/// for this swarm. Defaults to --skip-init + --terminal tmux to
+/// keep the call deterministic; pass `?init=true` to re-render
+/// AGENTS.md before launching. Synchronous; the request returns
+/// when `giga launch` exits (can take a while for staggered
+/// launches).
+pub async fn launch_swarm(
+    AxumPath(name): AxumPath<String>,
+    Query(q): Query<LaunchQuery>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    let config_str = entry.config.display().to_string();
+    let stagger_str = q.stagger.to_string();
+    let mut argv: Vec<&str> = vec!["launch", "--config", &config_str, "--terminal", "tmux"];
+    if !q.init {
+        argv.push("--skip-init");
+    }
+    if q.stagger > 0 {
+        argv.push("--stagger-per-agent-seconds");
+        argv.push(&stagger_str);
+    }
+    let out = run_giga(&argv).map_err(|e| internal(&format!("spawn giga launch: {e:#}")))?;
+    Ok(Json(out))
+}
+
+/// `POST /api/swarms/:name/kill` — shells out to
+/// `tmux kill-session -t giga-<swarm>`. Returns the tmux exit
+/// code so the operator can tell whether the session existed.
+/// No-op (exit 1) when the session is already gone.
+pub async fn kill_swarm(
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    // Verify the swarm exists in the registry before touching tmux,
+    // so a typo in `name` doesn't accidentally hit a similarly-named
+    // session belonging to another tool.
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let _entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    let session = format!("giga-{name}");
+    let out = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output()
+        .map_err(|e| internal(&format!("spawn tmux: {e}")))?;
+    Ok(Json(ExecResult {
+        exit_code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        ok: out.status.success(),
+    }))
+}
+
 fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
     match Config::load(&entry.config) {
         Ok(cfg) => SwarmSummary {

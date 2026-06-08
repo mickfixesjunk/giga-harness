@@ -391,17 +391,19 @@ const renderSwarmOverview = (detail) => {
   content.appendChild(el("h2", {}, detail.name));
   if (detail.description) content.appendChild(el("p", { className: "desc" }, detail.description));
 
-  // Toolbar with swarm-level actions (Phase v2-2: validate).
+  // Toolbar with swarm-level actions (v2: validate + launch + kill).
   const toolbar = el("div", { className: "toolbar" });
   const validateBtn = el("button", {}, "validate");
+  const launchBtn = el("button", {}, "launch");
+  const killBtn = el("button", {}, "kill");
   const output = el("div", { style: "display:none" });
-  validateBtn.addEventListener("click", async () => {
-    validateBtn.disabled = true;
+  const runExec = async (url, label, btnGroup) => {
+    btnGroup.forEach((b) => (b.disabled = true));
     output.style.display = "block";
     output.className = "exec-output";
-    output.textContent = "running giga validate…";
+    output.textContent = `running ${label}…`;
     try {
-      const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/validate`, { method: "POST" });
+      const r = await fetch(url, { method: "POST" });
       const j = await r.json();
       output.className = "exec-output " + (j.ok ? "ok" : "err");
       output.textContent = "";
@@ -418,10 +420,33 @@ const renderSwarmOverview = (detail) => {
       output.className = "exec-output err";
       output.textContent = e.message;
     } finally {
-      validateBtn.disabled = false;
+      btnGroup.forEach((b) => (b.disabled = false));
     }
+  };
+  const allBtns = [validateBtn, launchBtn, killBtn];
+  validateBtn.addEventListener("click", () =>
+    runExec(`/api/swarms/${encodeURIComponent(detail.name)}/validate`, "giga validate", allBtns)
+  );
+  launchBtn.addEventListener("click", () => {
+    const n = detail.agents.length;
+    const useStagger = n >= 10;
+    const staggerVal = useStagger ? prompt(`Stagger between agent spawns (seconds)? Empty = ${useStagger ? "10" : "0"}.`, useStagger ? "10" : "0") : "0";
+    if (staggerVal === null) return; // canceled
+    const stagger = Math.max(0, parseInt(staggerVal, 10) || 0);
+    if (!confirm(`Launch ${detail.name} (${n} agents${stagger ? `, ${stagger}s stagger` : ""})? This spawns tmux/wt panes.`)) return;
+    runExec(
+      `/api/swarms/${encodeURIComponent(detail.name)}/launch?stagger=${stagger}`,
+      `giga launch (--skip-init${stagger ? `, --stagger ${stagger}` : ""})`,
+      allBtns
+    );
+  });
+  killBtn.addEventListener("click", () => {
+    if (!confirm(`Kill tmux session giga-${detail.name}? This terminates EVERY agent pane in this swarm. Channel files + workdirs are untouched.`)) return;
+    runExec(`/api/swarms/${encodeURIComponent(detail.name)}/kill`, "tmux kill-session", allBtns);
   });
   toolbar.appendChild(validateBtn);
+  toolbar.appendChild(launchBtn);
+  toolbar.appendChild(killBtn);
   content.appendChild(toolbar);
   content.appendChild(output);
 
