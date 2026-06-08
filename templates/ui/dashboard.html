@@ -150,6 +150,21 @@ code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-s
 .exec-output.ok { border-left: 3px solid var(--ok); }
 .exec-output.err { border-left: 3px solid var(--bad); }
 .exec-output .label { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; margin-top: .25rem; }
+.form-panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: .75rem; margin: .75rem 0;
+  display: grid; grid-template-columns: 8rem 1fr; gap: .4rem .6rem; align-items: center;
+}
+.form-panel .row { display: contents; }
+.form-panel label { font-size: .8rem; color: var(--muted); }
+.form-panel input, .form-panel textarea, .form-panel select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: .3rem .45rem; font: inherit; font-size: .85rem; width: 100%;
+}
+.form-panel .checkbox-row { grid-column: 2; display: flex; gap: 1rem; align-items: center; font-size: .85rem; }
+.form-panel .checkbox-row label { color: var(--text); }
+.form-panel .actions { grid-column: 1 / -1; display: flex; gap: .5rem; align-items: center; margin-top: .25rem; }
+.form-panel .hint { grid-column: 2; font-size: .75rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -447,8 +462,19 @@ const renderSwarmOverview = (detail) => {
   toolbar.appendChild(validateBtn);
   toolbar.appendChild(launchBtn);
   toolbar.appendChild(killBtn);
+
+  const addAgentBtn = el("button", {}, "+ add agent");
+  toolbar.appendChild(addAgentBtn);
   content.appendChild(toolbar);
   content.appendChild(output);
+
+  // Inline add-agent form, hidden by default.
+  const formPanel = el("div", { className: "form-panel", style: "display:none" });
+  renderAddAgentForm(formPanel, detail, allBtns, output);
+  content.appendChild(formPanel);
+  addAgentBtn.addEventListener("click", () => {
+    formPanel.style.display = formPanel.style.display === "none" ? "" : "none";
+  });
 
   content.appendChild(el("h2", {}, "Agents"));
   const agentRows = el("div");
@@ -604,6 +630,112 @@ const renderComposer = (swarmName, channel) => {
   wrap.appendChild(el("div", { className: "row" }, el("label", {}, "waiting on"), waitingSel));
   wrap.appendChild(el("div", { className: "actions" }, submit, feedback));
   return wrap;
+};
+
+// v0.6.43 v2: add-agent inline form. Posts to
+// /api/swarms/:name/agents which shells out to `giga add-agent`.
+// Field set matches the most-used CLI flags; advanced bits
+// (--template, --no-broadcast as default off) deferred.
+const renderAddAgentForm = (panel, detail, allBtns, output) => {
+  panel.innerHTML = "";
+  const nameI = el("input", { type: "text", placeholder: "alice" });
+  const roleI = el("input", { type: "text", placeholder: "Short role description" });
+  const workdirI = el("input", { type: "text" });
+  // Default workdir based on swarm config path.
+  const configDir = detail.config_path.replace(/\/giga-harness\.toml$/, "");
+  workdirI.value = `${configDir}/workdirs/<name>`;
+  nameI.addEventListener("input", () => {
+    workdirI.value = `${configDir}/workdirs/${nameI.value || "<name>"}`;
+  });
+  const platformS = el("select");
+  for (const p of ["wsl", "windows"]) platformS.appendChild(el("option", { value: p }, p));
+  const hostS = el("select");
+  hostS.appendChild(el("option", { value: "" }, "(none — single-host swarm)"));
+  // Hosts come from the detail's agent set (any unique host name we've seen).
+  const hosts = Array.from(new Set(detail.agents.map((a) => a.host).filter(Boolean)));
+  for (const h of hosts) hostS.appendChild(el("option", { value: h }, h));
+  const codeRootI = el("input", { type: "text", placeholder: "(optional, e.g. /home/me/projects/foo)" });
+  const peersSel = el("select", { multiple: true, size: 6, style: "min-height:6.5rem" });
+  for (const a of detail.agents) peersSel.appendChild(el("option", { value: a.name }, a.name));
+  const benchCk = el("input", { type: "checkbox" });
+  const bossCk = el("input", { type: "checkbox" });
+  const dryCk = el("input", { type: "checkbox" });
+  dryCk.checked = true; // safer default — preview first
+  const submitBtn = el("button", {}, "add");
+  const cancelBtn = el("button", { style: "background:transparent;color:var(--muted);border:1px solid var(--border)" }, "cancel");
+
+  const handle = async () => {
+    const name = nameI.value.trim();
+    const role = roleI.value.trim();
+    const workdir = workdirI.value.trim();
+    if (!name || !role || !workdir) {
+      output.style.display = "block";
+      output.className = "exec-output err";
+      output.textContent = "name, role, and workdir are required";
+      return;
+    }
+    const peers = Array.from(peersSel.selectedOptions).map((o) => o.value);
+    const body = {
+      name, role, workdir,
+      platform: platformS.value,
+      host: hostS.value || null,
+      peers,
+      bench_scheduler: benchCk.checked,
+      swarm_boss: bossCk.checked,
+      code_root: codeRootI.value.trim() || null,
+      dry_run: dryCk.checked,
+    };
+    allBtns.forEach((b) => (b.disabled = true));
+    submitBtn.disabled = true;
+    output.style.display = "block";
+    output.className = "exec-output";
+    output.textContent = `running giga add-agent${dryCk.checked ? " --dry-run" : ""}…`;
+    try {
+      const r = await fetch(`/api/swarms/${encodeURIComponent(detail.name)}/agents`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        output.className = "exec-output err";
+        output.textContent = j.error || `${r.status} ${r.statusText}`;
+        return;
+      }
+      output.className = "exec-output " + (j.ok ? "ok" : "err");
+      output.textContent = "";
+      if (j.stdout) { output.appendChild(el("div", { className: "label" }, "stdout")); output.appendChild(document.createTextNode(j.stdout)); }
+      if (j.stderr) { output.appendChild(el("div", { className: "label" }, "stderr")); output.appendChild(document.createTextNode(j.stderr)); }
+      output.appendChild(el("div", { className: "label" }, "exit code: " + j.exit_code));
+    } catch (e) {
+      output.className = "exec-output err";
+      output.textContent = e.message;
+    } finally {
+      allBtns.forEach((b) => (b.disabled = false));
+      submitBtn.disabled = false;
+    }
+  };
+  submitBtn.addEventListener("click", handle);
+  cancelBtn.addEventListener("click", () => { panel.style.display = "none"; });
+
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "name"), nameI));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "role"), roleI));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "workdir"), workdirI));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "platform"), platformS));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "host"), hostS));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "code root"), codeRootI));
+  panel.appendChild(el("div", { className: "row" }, el("label", {}, "peers"), peersSel));
+  const checkboxRow = el("div", { className: "checkbox-row" });
+  const addCheck = (cb, txt) => {
+    const wrap = el("label", {});
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(" " + txt));
+    checkboxRow.appendChild(wrap);
+  };
+  addCheck(benchCk, "bench scheduler");
+  addCheck(bossCk, "swarm boss");
+  addCheck(dryCk, "dry-run (preview only)");
+  panel.appendChild(el("div", { className: "row" }, el("span"), checkboxRow));
+  panel.appendChild(el("div", { className: "actions" }, submitBtn, cancelBtn));
 };
 
 // ---------- glue ----------

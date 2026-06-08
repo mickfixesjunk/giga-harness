@@ -47,6 +47,7 @@ fn build_router() -> Router {
         .route("/api/swarms/{name}/validate", axum::routing::post(api::validate_swarm))
         .route("/api/swarms/{name}/launch", axum::routing::post(api::launch_swarm))
         .route("/api/swarms/{name}/kill", axum::routing::post(api::kill_swarm))
+        .route("/api/swarms/{name}/agents", axum::routing::post(api::add_agent))
         .route("/api/upgrade", axum::routing::post(api::run_upgrade))
         .route("/ws/channels/{swarm}/{file}", get(ws::ws_channel))
         .with_state(AppState::new())

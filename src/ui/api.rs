@@ -399,6 +399,105 @@ pub async fn launch_swarm(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddAgentBody {
+    pub name: String,
+    pub workdir: String,
+    pub role: String,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub peers: Vec<String>,
+    #[serde(default)]
+    pub bench_scheduler: bool,
+    #[serde(default)]
+    pub swarm_boss: bool,
+    #[serde(default)]
+    pub no_broadcast: bool,
+    #[serde(default)]
+    pub code_root: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `POST /api/swarms/:name/agents` — shells out to
+/// `giga add-agent` with the body's fields mapped to flags.
+/// Returns the underlying command output. Dry-run mode lets the
+/// operator preview the TOML / channel-file changes before
+/// committing.
+pub async fn add_agent(
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<AddAgentBody>,
+) -> Result<Json<ExecResult>, (axum::http::StatusCode, Json<PostError>)> {
+    let reg = registry::load().map_err(|e| internal(&format!("registry load: {e:#}")))?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| not_found("swarm not found"))?;
+    let config_str = entry.config.display().to_string();
+    // Validate slug shape early — giga's own check is later in the
+    // pipeline but we'd rather not spawn a subprocess for an
+    // obviously-bad name.
+    if body.name.is_empty()
+        || !body
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(PostError {
+                error: "agent name must be a non-empty [a-zA-Z0-9_-]+ slug".to_string(),
+            }),
+        ));
+    }
+    let mut argv: Vec<String> = vec![
+        "add-agent".into(),
+        "--config".into(),
+        config_str,
+        "--name".into(),
+        body.name.clone(),
+        "--workdir".into(),
+        body.workdir.clone(),
+        "--role".into(),
+        body.role.clone(),
+    ];
+    if let Some(p) = body.platform.as_deref() {
+        argv.push("--platform".into());
+        argv.push(p.to_string());
+    }
+    if let Some(h) = body.host.as_deref() {
+        argv.push("--host".into());
+        argv.push(h.to_string());
+    }
+    if let Some(cr) = body.code_root.as_deref() {
+        argv.push("--code-root".into());
+        argv.push(cr.to_string());
+    }
+    for peer in &body.peers {
+        argv.push("--peer".into());
+        argv.push(peer.clone());
+    }
+    if body.bench_scheduler {
+        argv.push("--bench-scheduler".into());
+    }
+    if body.swarm_boss {
+        argv.push("--swarm-boss".into());
+    }
+    if body.no_broadcast {
+        argv.push("--no-broadcast".into());
+    }
+    if body.dry_run {
+        argv.push("--dry-run".into());
+    }
+    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = run_giga(&argv_refs).map_err(|e| internal(&format!("spawn giga add-agent: {e:#}")))?;
+    Ok(Json(out))
+}
+
 /// `POST /api/swarms/:name/kill` — shells out to
 /// `tmux kill-session -t giga-<swarm>`. Returns the tmux exit
 /// code so the operator can tell whether the session existed.
