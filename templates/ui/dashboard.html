@@ -254,6 +254,7 @@ const closeWs = () => {
 
 const renderHome = async () => {
   closeWs();
+  stopSwarmRefresh();
   $("nav").innerHTML = "";
   $("nav").appendChild(el("h2", {}, "Swarms"));
   $("content").innerHTML = "<div class='empty'>Loading…</div>";
@@ -348,9 +349,15 @@ const renderHome = async () => {
 };
 
 let currentSwarmDetail = null;
+let swarmRefreshTimer = null;
+
+const stopSwarmRefresh = () => {
+  if (swarmRefreshTimer) { clearInterval(swarmRefreshTimer); swarmRefreshTimer = null; }
+};
 
 const renderSwarm = async (swarm, focusChannel) => {
   closeWs();
+  stopSwarmRefresh();
   $("content").innerHTML = "<div class='empty'>Loading…</div>";
   $("nav").innerHTML = "";
 
@@ -403,8 +410,44 @@ const renderSwarm = async (swarm, focusChannel) => {
 const renderSwarmOverview = (detail) => {
   const content = $("content");
   content.innerHTML = "";
-  content.appendChild(el("h2", {}, detail.name));
+  const titleRow = el("div", { style: "display:flex;align-items:center;gap:.5rem" });
+  titleRow.appendChild(el("h2", { style: "margin:0" }, detail.name));
+  const refreshBtn = el("button", {
+    style: "background:transparent;color:var(--muted);border:1px solid var(--border);padding:.2rem .55rem;font-size:.7rem",
+    title: "Refresh agent status + channel list now",
+  }, "↻ refresh");
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    try {
+      const updated = await api(`/api/swarms/${encodeURIComponent(detail.name)}`);
+      currentSwarmDetail = updated;
+      renderSwarmOverview(updated);
+    } catch (e) {
+      // swallow; the page will re-attempt on its own timer
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  });
+  titleRow.appendChild(refreshBtn);
+  content.appendChild(titleRow);
   if (detail.description) content.appendChild(el("p", { className: "desc" }, detail.description));
+
+  // v0.6.46: auto-refresh agent status + channel list every 15s.
+  // Only re-renders the swarm-overview view (not channel views);
+  // stopped on nav-away via stopSwarmRefresh().
+  stopSwarmRefresh();
+  swarmRefreshTimer = setInterval(async () => {
+    try {
+      const updated = await api(`/api/swarms/${encodeURIComponent(detail.name)}`);
+      currentSwarmDetail = updated;
+      const r = parseHash();
+      // Only patch the view if we're still on the same swarm
+      // overview (i.e. the user hasn't navigated to a channel).
+      if (r.view === "swarm" && r.swarm === detail.name) {
+        renderSwarmOverview(updated);
+      }
+    } catch {}
+  }, 15000);
 
   // Toolbar with swarm-level actions (v2: validate + launch + kill).
   const toolbar = el("div", { className: "toolbar" });
@@ -624,6 +667,7 @@ const renderAddChannelForm = (panel, detail, allBtns, output) => {
 };
 
 const renderChannel = async (detail, file) => {
+  stopSwarmRefresh();
   const content = $("content");
   content.innerHTML = "";
   content.appendChild(el("h2", {}, file));
