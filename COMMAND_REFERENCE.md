@@ -31,6 +31,8 @@ Full command surface for `giga`, grouped by use case. Run `giga <command> --help
   - [`giga upgrade`](#giga-upgrade)
   - [`giga watch`](#giga-watch)
   - [`giga codex-channel`](#giga-codex-channel)
+- [Dashboard](#dashboard)
+  - [`giga ui`](#giga-ui)
 - [Quick lookup table](#quick-lookup-by-goal)
 
 ---
@@ -467,6 +469,34 @@ Most operators never run this directly — the codex bridge pane (spawned by `gi
 
 ---
 
+## Dashboard
+
+### `giga ui`
+
+Browser-based dashboard for managing every swarm registered on this machine. Reads `~/.giga/swarms.toml` to enumerate swarms, parses each one's TOML for agent/channel topology, and live-tails channel files over WebSocket. v1 is read-only — see and observe what's running; v2 (post + launch/kill from the browser) is the next major slice.
+
+```sh
+giga ui                           # binds 127.0.0.1:7878
+giga ui --port 7879               # alternate port
+giga ui --bind 0.0.0.0            # expose on LAN (no auth yet — local-only safer)
+
+# Opt-in spawn from `giga launch`:
+giga launch --ui                  # adds a giga-ui pane to the session
+giga launch --ui --ui-port 7879   # alt port
+```
+
+Behavior:
+
+- **CWD-independent** — runs from anywhere; doesn't need a `giga-harness.toml` in scope.
+- **Single instance per user**, enforced via PID file at `~/.giga/ui.pid`. Stale files (process crashed without cleanup) are auto-detected on next start. The same PID file is what `giga launch --ui` uses to decide whether to spawn a new pane.
+- **Live channel updates** — open a channel page and the WebSocket pushes new posts as they're appended (POSIX-style polling tailer, 500ms cadence).
+- **Process status** — agent dots are green when both the tmux window and the `giga watch` Monitor are live, amber when one is missing, red when both are gone. Top-right shows the machine-wide tmux session count + watcher count, refreshed every 15s.
+- **Ctrl-C to stop** — drains in-flight requests and removes the PID file.
+
+The dashboard is a single self-contained HTML page (no Node, no CDN, no build) embedded into the giga binary at compile time. No external deps at runtime.
+
+---
+
 ## Quick lookup by goal
 
 | Goal | Command |
@@ -512,6 +542,10 @@ Most operators never run this directly — the codex bridge pane (spawned by `gi
 | Upgrade only the POSIX side (skip Windows clients) | `giga upgrade --skip-windows` |
 | Re-run init quietly | `giga init --no-trust` |
 | Preview an upgrade plan | `giga upgrade --dry-run` |
+| **Dashboard** | |
+| Browser-based dashboard for all swarms | `giga ui` |
+| Spawn the dashboard alongside agents | `giga launch --ui` |
+| Dashboard on a different port | `giga ui --port 7879` |
 
 ---
 
