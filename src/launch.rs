@@ -17,6 +17,8 @@ pub fn run(
     new_window: bool,
     terminal: &str,
     stagger_per_agent_seconds: u64,
+    ui: bool,
+    ui_port: u16,
 ) -> Result<()> {
     if !skip_init {
         init::run(config_path)?;
@@ -221,6 +223,41 @@ pub fn run(
             .unwrap_or_else(|| ".".to_string());
         panes.push(daemon_pane("giga-sync", "giga sync", &swarm_dir));
         panes.push(daemon_pane("giga-merger", "giga merger", &swarm_dir));
+    }
+    // v0.6.38 Phase H: optional `--ui` pane. The UI server is
+    // CWD-independent + single-instance (PID file at
+    // ~/.giga/ui.pid). Spawn a pane only when no live server is
+    // already running — re-running `giga launch --ui` after a
+    // crash will pick up; re-running while it's alive is a no-op
+    // (we DON'T add a duplicate pane that'd fail at startup).
+    if ui {
+        if let Some(home) = crate::cursor::giga_home() {
+            let pid_file = home.join("ui.pid");
+            if crate::ui::pid::is_alive(&pid_file) {
+                println!(
+                    "  giga ui already running (pid file {}); skipping spawn",
+                    pid_file.display(),
+                );
+            } else {
+                let canonical = config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| config_path.to_path_buf());
+                let swarm_dir = canonical
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string());
+                panes.push(daemon_pane(
+                    "giga-ui",
+                    &format!("giga ui --port {ui_port}"),
+                    &swarm_dir,
+                ));
+                println!(
+                    "  giga ui pane scheduled (http://127.0.0.1:{ui_port}/)",
+                );
+            }
+        } else {
+            println!("  could not resolve ~/.giga; skipping --ui pane");
+        }
     }
     let _ = incremental;
     let mux = terminal::parse_override(terminal).ok_or_else(|| {

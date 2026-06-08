@@ -33,6 +33,22 @@ impl Drop for Guard {
     }
 }
 
+/// Read the PID file at `path` and report whether the recorded
+/// process is alive. Used by `giga launch --ui` to decide whether
+/// the UI server already needs to be spawned. Treats missing,
+/// malformed, or dead-PID files as "not running".
+pub fn is_alive(path: &Path) -> bool {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let pid: i32 = match text.trim().parse() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    process_alive(pid)
+}
+
 pub fn acquire(path: &Path) -> Result<Guard> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

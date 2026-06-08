@@ -155,6 +155,15 @@ enum Command {
         /// roughly `(N-1) * stagger` seconds.
         #[arg(long, value_name = "SECONDS", default_value_t = 0)]
         stagger_per_agent_seconds: u64,
+        /// v0.6.38 Phase H: also spawn the `giga ui` dashboard as a
+        /// pane in the launch session. Idempotent: skipped silently
+        /// when the server is already running (per ~/.giga/ui.pid).
+        #[arg(long)]
+        ui: bool,
+        /// Port for the auto-spawned `giga ui` pane. Default 7878.
+        /// Ignored when `--ui` is not set.
+        #[arg(long, value_name = "PORT", default_value_t = 7878)]
+        ui_port: u16,
     },
     /// Move an agent from one host to another in the tailnet.
     ///
@@ -709,6 +718,8 @@ fn main() -> Result<()> {
             new_window,
             terminal,
             stagger_per_agent_seconds,
+            ui,
+            ui_port,
         } => {
             let config = registry::resolve_config(config)?;
             if let Some(host) = host {
@@ -732,6 +743,11 @@ fn main() -> Result<()> {
                     remote_args.push("--stagger-per-agent-seconds".to_string());
                     remote_args.push(stagger_per_agent_seconds.to_string());
                 }
+                if ui {
+                    remote_args.push("--ui".to_string());
+                    remote_args.push("--ui-port".to_string());
+                    remote_args.push(ui_port.to_string());
+                }
                 let code = remote::run(remote::Args {
                     host,
                     config,
@@ -747,6 +763,8 @@ fn main() -> Result<()> {
                 new_window,
                 &terminal,
                 stagger_per_agent_seconds,
+                ui,
+                ui_port,
             )
         }
         Command::Hosts { config, available } => {
