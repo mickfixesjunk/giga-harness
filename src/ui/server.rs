@@ -37,6 +37,7 @@ fn build_router() -> Router {
         .route("/api/health", get(health))
         .route("/api/swarms", get(api::list_swarms))
         .route("/api/swarms/{name}", get(api::get_swarm))
+        .route("/api/swarms/{name}/channels/{file}", get(api::get_channel_tail))
 }
 
 /// Phase B index — server-rendered HTML listing the registered

@@ -10,10 +10,11 @@
 
 use crate::config::{Agent, Channel, Config};
 use crate::registry;
-use axum::extract::Path as AxumPath;
+use crate::ui::channel as post_parser;
+use axum::extract::{Path as AxumPath, Query};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize)]
@@ -84,6 +85,81 @@ pub async fn get_swarm(
         .ok_or(StatusCode::NOT_FOUND)?;
     let cfg = Config::load(&entry.config).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(detail_from(entry, &cfg)))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct TailQuery {
+    /// How many posts to return (oldest-newest order). Default 50,
+    /// capped at 500 to keep responses bounded.
+    pub n: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChannelTail {
+    pub swarm: String,
+    pub file: String,
+    /// Posts in chronological order (oldest first). Same shape as
+    /// post_parser::Post.
+    pub posts: Vec<post_parser::Post>,
+    /// Total number of posts in the file before truncation. `None`
+    /// when the file is missing (channel listed in config but inbox
+    /// file not yet created).
+    pub total: Option<usize>,
+}
+
+pub async fn get_channel_tail(
+    AxumPath((name, file)): AxumPath<(String, String)>,
+    Query(q): Query<TailQuery>,
+) -> Result<Json<ChannelTail>, StatusCode> {
+    let reg = registry::load().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let entry = reg
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let cfg = Config::load(&entry.config).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Security: only files listed in the swarm's [[channels]] are
+    // readable. Prevents path-traversal via `../etc/passwd` and
+    // accidental disclosure of non-channel files.
+    let channel_meta = cfg
+        .channels
+        .iter()
+        .find(|c| c.file == file)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let inbox_dir = inbox_dir_for(&cfg, channel_meta).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = inbox_dir.join(&file);
+
+    let n = q.n.unwrap_or(50).min(500);
+
+    let (posts, total) = match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let parsed = post_parser::parse(&text);
+            let total = parsed.len();
+            let start = total.saturating_sub(n);
+            (parsed[start..].to_vec(), Some(total))
+        }
+        Err(_) => (Vec::new(), None),
+    };
+
+    Ok(Json(ChannelTail {
+        swarm: name,
+        file,
+        posts,
+        total,
+    }))
+}
+
+/// Pick the inbox directory for a channel based on its `side`
+/// (`"wsl"` or `"windows"`). Falls back to `wsl_inbox` for unknown
+/// sides — caller already validated `channel_meta` so this never
+/// surfaces an attacker-controlled side.
+fn inbox_dir_for(cfg: &Config, ch: &Channel) -> Option<PathBuf> {
+    match ch.side.as_str() {
+        "windows" => cfg.paths.windows_inbox.clone(),
+        _ => cfg.paths.wsl_inbox.clone(),
+    }
 }
 
 fn summarize_swarm(entry: &registry::Entry) -> SwarmSummary {
