@@ -1,6 +1,6 @@
 [package]
 name = "giga-harness"
-version = "0.6.34"
+version = "0.6.35"
 edition = "2021"
 description = "Manual multi-agent coordination harness — one command, N terminals, agents chatting via file-based inboxes."
 repository = "https://github.com/mickfixesjunk/giga-harness"
@@ -26,8 +26,12 @@ serde_json = "1"
 # v0.6.31 Phase A — UI dashboard server. tokio is gated to features
 # we actually use (multi-thread runtime, macros for #[tokio::main],
 # signal for ctrl-c, net for TcpListener).
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+# v0.6.35 Phase D: futures stream/sink utilities for the WS split
+# into separate read/write halves. Already in axum's dep tree —
+# this just makes the extension traits importable.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -3,6 +3,8 @@
 //! crate version. Phase B layers the swarm/agent REST API on top.
 
 use crate::ui::api;
+use crate::ui::state::AppState;
+use crate::ui::ws;
 use anyhow::{Context, Result};
 use axum::{response::Html, routing::get, Json, Router};
 use serde::Serialize;
@@ -38,6 +40,8 @@ fn build_router() -> Router {
         .route("/api/swarms", get(api::list_swarms))
         .route("/api/swarms/{name}", get(api::get_swarm))
         .route("/api/swarms/{name}/channels/{file}", get(api::get_channel_tail))
+        .route("/ws/channels/{swarm}/{file}", get(ws::ws_channel))
+        .with_state(AppState::new())
 }
 
 /// Phase B index — server-rendered HTML listing the registered
