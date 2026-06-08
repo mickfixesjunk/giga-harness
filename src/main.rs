@@ -44,6 +44,7 @@ mod runtime;
 mod takeover;
 mod teleport;
 mod trust;
+mod ui;
 mod upgrade;
 mod validate;
 mod watch;
@@ -269,6 +270,27 @@ enum Command {
         /// Print what would happen; don't run install or post.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Launch the browser-based dashboard for managing every
+    /// registered swarm on this machine.
+    ///
+    /// Phase A skeleton (v0.6.31): boots an axum server on
+    /// 127.0.0.1:7878 (default) with a placeholder page + health
+    /// endpoint. Single-instance enforced via ~/.giga/ui.pid.
+    /// Ctrl-C to stop.
+    ///
+    /// Read-only swarm + channel APIs land in Phase B-E; Svelte
+    /// frontend lands in Phase F. See ./UI_DESIGN.md in the giga
+    /// workdir for the full design + plan.
+    Ui {
+        /// Address to bind. Defaults to localhost-only. Pass
+        /// 0.0.0.0 to expose on the network (no auth in Phase A —
+        /// don't do this on untrusted networks).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// TCP port. Default 7878.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
     },
     /// List the swarm's hosts + which agents live on each + whether
     /// this_host matches. Read-only; useful for orientation after
@@ -768,6 +790,7 @@ fn main() -> Result<()> {
                 Err(_) => upgrade::run_bare(dry_run),
             }
         }
+        Command::Ui { bind, port } => ui::run(ui::Args { bind, port }),
         Command::Teleport {
             agent,
             to,

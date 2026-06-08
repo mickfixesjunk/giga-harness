@@ -1,6 +1,6 @@
 [package]
 name = "giga-harness"
-version = "0.6.30"
+version = "0.6.31"
 edition = "2021"
 description = "Manual multi-agent coordination harness — one command, N terminals, agents chatting via file-based inboxes."
 repository = "https://github.com/mickfixesjunk/giga-harness"
@@ -23,9 +23,18 @@ which = "7"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 shell-escape = "0.1"
 serde_json = "1"
+# v0.6.31 Phase A — UI dashboard server. tokio is gated to features
+# we actually use (multi-thread runtime, macros for #[tokio::main],
+# signal for ctrl-c, net for TcpListener).
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 
 [dev-dependencies]
 tempfile = "3"
+# v0.6.31: tower::ServiceExt::oneshot for in-process axum tests
+# (no socket required). Same family of crates axum already depends
+# on at runtime.
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = 3
