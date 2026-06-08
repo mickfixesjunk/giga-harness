@@ -944,11 +944,26 @@ const renderAddAgentForm = (panel, detail, allBtns, output) => {
   });
   const platformS = el("select");
   for (const p of ["wsl", "windows"]) platformS.appendChild(el("option", { value: p }, p));
-  const hostS = el("select");
-  hostS.appendChild(el("option", { value: "" }, "(none — single-host swarm)"));
-  // Hosts come from the detail's agent set (any unique host name we've seen).
-  const hosts = Array.from(new Set(detail.agents.map((a) => a.host).filter(Boolean)));
-  for (const h of hosts) hostS.appendChild(el("option", { value: h }, h));
+  // v0.6.54: host is now mandatory. Dropdown is populated from
+  // the swarm's [[hosts]] section (not inferred from agents — that
+  // would miss a freshly-added host with no agents). Default
+  // selection is this_host so the common case is one click. No
+  // "(none)" option — the design earlier let agents slide in
+  // unpinned, which broke multi-host expectations.
+  const hostS = el("select", { required: true });
+  const knownHosts = detail.hosts && detail.hosts.length ? detail.hosts : (
+    // Legacy fallback for pre-[[hosts]] configs: derive from existing agents.
+    Array.from(new Set(detail.agents.map((a) => a.host).filter(Boolean)))
+  );
+  if (knownHosts.length === 0) {
+    hostS.appendChild(el("option", { value: "" }, "(no [[hosts]] defined — add one in the TOML first)"));
+    hostS.disabled = true;
+  } else {
+    for (const h of knownHosts) hostS.appendChild(el("option", { value: h }, h));
+    if (detail.this_host && knownHosts.includes(detail.this_host)) {
+      hostS.value = detail.this_host;
+    }
+  }
   const codeRootI = el("input", { type: "text", placeholder: "(optional, e.g. /home/me/projects/foo)" });
   const peersSel = el("select", { multiple: true, size: 6, style: "min-height:6.5rem" });
   for (const a of detail.agents) peersSel.appendChild(el("option", { value: a.name }, a.name));
@@ -969,11 +984,17 @@ const renderAddAgentForm = (panel, detail, allBtns, output) => {
       output.textContent = "name, role, and workdir are required";
       return;
     }
+    if (!hostS.value) {
+      output.style.display = "block";
+      output.className = "exec-output err";
+      output.textContent = "host is required — every agent must be pinned to a host. Add a [[hosts]] entry to the TOML if none exist yet.";
+      return;
+    }
     const peers = Array.from(peersSel.selectedOptions).map((o) => o.value);
     const body = {
       name, role, workdir,
       platform: platformS.value,
-      host: hostS.value || null,
+      host: hostS.value,
       peers,
       bench_scheduler: benchCk.checked,
       swarm_boss: bossCk.checked,

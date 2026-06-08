@@ -46,6 +46,15 @@ pub struct SwarmDetail {
     pub launch_model: String,
     pub agents: Vec<AgentDto>,
     pub channels: Vec<ChannelDto>,
+    /// v0.6.54: this_host (from this_host.toml or [project].this_host).
+    /// The add-agent form uses this as the default `host` selection
+    /// so single-host swarms don't keep accidentally adding hostless
+    /// agents.
+    pub this_host: Option<String>,
+    /// v0.6.54: every host declared in [[hosts]]. The add-agent form
+    /// populates the host dropdown from this list (not from agent
+    /// host fields, which would miss a host that has no agents yet).
+    pub hosts: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -816,6 +825,8 @@ fn detail_from(entry: &registry::Entry, cfg: &Config) -> SwarmDetail {
             .map(|a| agent_dto(a, cfg, &tmux_window_names, &watcher_agents))
             .collect(),
         channels: cfg.channels.iter().map(channel_dto).collect(),
+        this_host: cfg.this_host.clone(),
+        hosts: cfg.hosts.iter().map(|h| h.name.clone()).collect(),
     }
 }
 
