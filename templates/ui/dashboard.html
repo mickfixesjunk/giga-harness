@@ -170,7 +170,7 @@ code { background: var(--code-bg); padding: 0 .25rem; border-radius: 3px; font-s
 <body>
 <header>
   <a href="#/" style="display:flex;align-items:center;gap:.55rem;text-decoration:none;color:inherit">
-    <img src="/assets/giga-icon.png" alt="giga" style="height:1.8rem;width:auto;border-radius:4px">
+    <img src="/assets/giga-icon.png" alt="giga" style="height:5.4rem;width:auto;border-radius:6px">
     <h1>giga ui</h1>
   </a>
   <span class="sub">v__VERSION__ · dashboard</span>
@@ -275,23 +275,24 @@ const renderHome = async () => {
     return;
   }
 
+  // v0.6.49 (fix in v0.6.50): filter archived swarms out of BOTH
+  // the sidebar and the main grid. Previously the sidebar showed
+  // them anyway.
+  const showArchived = localStorage.getItem("show-archived") === "1";
+  const visible = swarms.filter((s) => !s.archived || showArchived);
+  const archivedCount = swarms.filter((s) => s.archived).length;
+
   const navList = el("ul");
-  for (const s of swarms) {
+  for (const s of visible) {
     navList.appendChild(el("li", {}, el("a", {
       onClick: () => navTo({ view: "swarm", swarm: s.name }),
+      style: s.archived ? "opacity:.55" : "",
     }, el("span", { className: "status-dot " + (s.load_error ? "bad" : "ok") }), s.name)));
   }
   $("nav").appendChild(navList);
 
   const content = $("content");
   content.innerHTML = "";
-
-  // v0.6.49: filter out archived swarms unless the operator has
-  // opted in via the toggle. Toggle state is persisted in
-  // localStorage so refresh doesn't lose it.
-  const showArchived = localStorage.getItem("show-archived") === "1";
-  const visible = swarms.filter((s) => !s.archived || showArchived);
-  const archivedCount = swarms.filter((s) => s.archived).length;
 
   const titleRow = el("div", { style: "display:flex;align-items:center;gap:.75rem" });
   titleRow.appendChild(el("h2", { style: "margin:0" }, "All swarms"));
