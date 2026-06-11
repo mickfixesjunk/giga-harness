@@ -368,8 +368,14 @@ pub(crate) fn render_agent_claudemd(
     config_dir: &Path,
     config_path: &Path,
 ) -> Result<String> {
-    // If the agent has an explicit template, use it verbatim (the
-    // template author owns the content). Otherwise auto-generate.
+    // If the agent has an explicit template, the template author owns
+    // the role prose — but the Session Start section is still rendered
+    // per-runtime. A `{{SESSION_START}}` placeholder (what `giga setup`
+    // writes) — or, for pre-placeholder templates, an existing
+    // `## Session Start` section — is replaced with the runtime's
+    // watcher-arming snippet so a `runtime = "agy"` / "codex" agent gets
+    // the correct protocol without hand-editing the template. No flag
+    // needed: the runtime is read straight from the TOML.
     if let Some(tpl) = &agent.claudemd_template {
         let abs = if tpl.is_absolute() {
             tpl.clone()
@@ -378,6 +384,11 @@ pub(crate) fn render_agent_claudemd(
         };
         let body = fs::read_to_string(&abs)
             .with_context(|| format!("reading agent AGENTS.md template {}", abs.display()))?;
+        let snippet = cfg
+            .agent_runtime(agent)
+            .session_start_snippet()
+            .replace("{{AGENT}}", &agent.name);
+        let body = inject_session_start(&body, &snippet);
         return Ok(prepend_header(&body, agent, cfg, config_path));
     }
 
@@ -440,6 +451,65 @@ pub(crate) fn render_agent_claudemd(
     s.push_str("\n\n");
 
     Ok(prepend_header(&s, agent, cfg, config_path))
+}
+
+/// Inject the runtime-specific Session Start snippet into a custom
+/// AGENTS.md template. Called only for agents with a `claudemd_template`
+/// (the auto-generated path already picks the right snippet directly).
+///
+/// Priority:
+///   1. `{{SESSION_START}}` placeholder (what `giga setup` writes into
+///      runtime-agnostic templates) — every occurrence is replaced with
+///      `snippet`.
+///   2. Legacy fallback: a line-anchored `## Session Start...` heading.
+///      The whole section (that heading through the line before the next
+///      `## ` heading, or EOF) is replaced. This lets pre-placeholder
+///      swarms become runtime-correct on the next `giga init` without
+///      anyone editing the template by hand.
+///   3. Neither present: the body is returned unchanged.
+///
+/// `snippet` must already have `{{AGENT}}` substituted; it begins with
+/// its own `## Session Start` heading.
+fn inject_session_start(body: &str, snippet: &str) -> String {
+    const PLACEHOLDER: &str = "{{SESSION_START}}";
+    let snippet = snippet.trim_end();
+    if body.contains(PLACEHOLDER) {
+        return body.replace(PLACEHOLDER, snippet);
+    }
+
+    let lines: Vec<&str> = body.lines().collect();
+    let is_session_start_heading = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("## ")
+            && t.trim_start_matches('#')
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("session start")
+    };
+    let Some(start) = lines.iter().position(|l| is_session_start_heading(l)) else {
+        return body.to_string();
+    };
+    // End = next top-level (`## `) heading after the Session Start one,
+    // or EOF. The runtime snippet may itself contain `## ` subsections,
+    // but we only look at the ORIGINAL body here so that's irrelevant.
+    let end = ((start + 1)..lines.len())
+        .find(|&i| lines[i].trim_start().starts_with("## "))
+        .unwrap_or(lines.len());
+
+    let mut result = lines[..start].join("\n");
+    result.truncate(result.trim_end().len());
+    if !result.is_empty() {
+        result.push_str("\n\n");
+    }
+    result.push_str(snippet);
+    if end < lines.len() {
+        result.push_str("\n\n");
+        result.push_str(&lines[end..].join("\n"));
+    }
+    if body.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 /// v0.3.6: render the "Swarm coordination" section that goes into the
@@ -886,5 +956,137 @@ swarm_boss = true
         assert!(!body.contains("Swarm coordination"));
         assert!(!body.contains("giga sync --quiet"));
         assert!(!body.contains("giga merger --quiet"));
+    }
+
+    // ---- inject_session_start ----
+
+    #[test]
+    fn inject_replaces_placeholder() {
+        let body = "# alice\n\nrole stuff.\n\n{{SESSION_START}}\n\n## Convention\n\nx\n";
+        let out = inject_session_start(body, "## Session Start\n\nARMED.\n");
+        assert!(out.contains("ARMED."));
+        assert!(!out.contains("{{SESSION_START}}"));
+        // surrounding content preserved
+        assert!(out.contains("role stuff."));
+        assert!(out.contains("## Convention"));
+    }
+
+    #[test]
+    fn inject_replaces_legacy_section_midbody() {
+        // No placeholder — a hand-written `## Session Start` section
+        // between two others must be swapped out, neighbors preserved.
+        let body = "## Channels\n\n- a.md\n\n## Session Start\n\n1. Arm the Monitor.\n2. Standby.\n\n## Convention\n\nWAITING ON tag.\n";
+        let out = inject_session_start(body, "## Session Start (do this first)\n\nRUNTIME SNIPPET.\n");
+        assert!(out.contains("RUNTIME SNIPPET."), "snippet not injected:\n{out}");
+        assert!(!out.contains("Arm the Monitor."), "old section survived:\n{out}");
+        assert!(out.contains("## Channels") && out.contains("- a.md"), "preceding section lost");
+        assert!(out.contains("## Convention") && out.contains("WAITING ON tag."), "following section lost");
+        // exactly one Session Start heading remains
+        assert_eq!(out.matches("Session Start").count(), 1);
+    }
+
+    #[test]
+    fn inject_replaces_legacy_section_at_eof() {
+        let body = "## Role\n\nstuff.\n\n## Session Start\n\nold monitor text.\n";
+        let out = inject_session_start(body, "## Session Start\n\nNEW.\n");
+        assert!(out.contains("NEW."));
+        assert!(!out.contains("old monitor text."));
+        assert!(out.contains("## Role") && out.contains("stuff."));
+    }
+
+    #[test]
+    fn inject_noop_when_no_session_start_or_placeholder() {
+        let body = "# custom\n\njust role prose, no session start.\n";
+        let out = inject_session_start(body, "## Session Start\n\nSNIP.\n");
+        assert_eq!(out, body, "body with no Session Start must be untouched");
+    }
+
+    #[test]
+    fn custom_template_agy_agent_gets_agy_session_start() {
+        // End-to-end: a custom template with a legacy Monitor Session
+        // Start, an agent with runtime = "agy" → rendered AGENTS.md
+        // carries the AGY run_command protocol, not Claude's Monitor.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("design.md"),
+            "# design\n\nrole.\n\n## Session Start\n\n1. Arm the Monitor via Monitor TOOL.\n\n## Convention\n\nx\n",
+        )
+        .unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+runtime = "agy"
+claudemd_template = "agents/design.md"
+"#;
+        let cfg = Config::load_str_for_test(cfg_text).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
+        assert!(
+            body.contains("Runtime: Antigravity") && body.contains("run_command"),
+            "agy snippet not injected:\n{body}",
+        );
+        assert!(
+            !body.contains("Arm the Monitor via Monitor TOOL."),
+            "stale Claude Monitor section survived:\n{body}",
+        );
+        // {{AGENT}} placeholder in the snippet got substituted
+        assert!(body.contains("giga watch --as design --agy"));
+        assert!(!body.contains("{{AGENT}}"));
+        // role prose preserved
+        assert!(body.contains("role."));
+    }
+
+    #[test]
+    fn custom_template_claude_agent_keeps_monitor() {
+        // Default runtime (no field) → Claude Monitor snippet injected.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("design.md"),
+            "# design\n\nrole.\n\n{{SESSION_START}}\n",
+        )
+        .unwrap();
+        let cfg_text = r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+
+[[agents]]
+name = "design"
+workdir = "/h/design"
+role = "."
+platform = "wsl"
+claudemd_template = "agents/design.md"
+"#;
+        let cfg = Config::load_str_for_test(cfg_text).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
+        assert!(body.contains("Monitor` TOOL") || body.contains("Monitor TOOL") || body.contains("`Monitor`"));
+        assert!(body.contains("giga watch --as design"));
+        assert!(!body.contains("--agy") && !body.contains("--codex"));
     }
 }

@@ -80,9 +80,9 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          the README one-liner: \
          https://github.com/mickfixesjunk/giga-harness#install\n\
          \n\
-         ## Step 2 — ask the user 6 questions\n\
+         ## Step 2 — ask the user 7 questions\n\
          \n\
-         Use AskUserQuestion (one tool call, all six at once):\n\
+         Use AskUserQuestion (one tool call, all seven at once):\n\
          \n\
          1. **Project name** (kebab-case slug, e.g. `my-saas-side-project`). \
          Becomes the config dir name and the tmux session label.\n\
@@ -119,6 +119,17 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          \"None — set it later with `giga set-swarm-boss <slug>`\" option for users \
          who want to defer. Set `swarm_boss = true` on the chosen agent in the \
          generated TOML.\n\
+         7. **Which agent runtime?** Options:\n\
+         * `claude` — Claude Code (default, recommended). Watcher uses Claude's \
+         Monitor tool.\n\
+         * `codex` — OpenAI Codex CLI. Each agent gets a CLI pane + a bridge pane.\n\
+         * `antigravity` — Antigravity (`agy`) CLI. Watcher runs as an AGY \
+         `run_command` background task with reactive wakeup.\n\
+         Default to `claude`. This sets `[project].runtime` (whole-swarm). Most \
+         swarms use one runtime; per-agent overrides via `[[agents]].runtime` are \
+         possible later. You do NOT hand-write any runtime-specific watcher \
+         instructions — `giga init` injects the correct Session Start protocol per \
+         runtime (see Step 3).\n\
          \n\
          ## Standard agent role definitions\n\
          \n\
@@ -168,6 +179,8 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          ```toml\n\
          [project]\n\
          name = \"PROJECT_NAME\"\n\
+         runtime = \"RUNTIME_CHOICE\"   # from question 7: claude | codex | agy \
+         (use \"agy\" if the user picked antigravity). Omit only if claude.\n\
          \n\
          # No [paths] block needed for new swarms (v0.6.24+).\n\
          # wsl_inbox auto-defaults to <config_dir>/inbox/\n\
@@ -212,21 +225,23 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          role definitions above into a prominent \"## Your responsibilities\" section. \
          Also include:\n\
          \n\
-         **Session Start section** (must appear in this order):\n\
-         1. Arm the Monitor. Use exactly: \
-         `Monitor(persistent: true, command: \"giga watch --as <slug>\")`. \
-         This is a Monitor TOOL call — NOT a Bash command. Running giga watch via \
-         Bash exits immediately. `persistent: true` is REQUIRED to keep it alive. \
-         On the first arm, the watcher auto-replays any unread messages from prior \
-         sessions as the initial batch of notifications (it reads a stored per-agent \
-         cursor at `~/.giga/cursors/<slug>/<channel>.pos` to know where to resume), \
-         then transitions to live tailing. The agent should read those initial \
-         notifications before doing anything else.\n\
-         2. Standby for messages.\n\
+         **Session Start section — DO NOT hand-write watcher/Monitor instructions.** \
+         Put a single line containing exactly the placeholder \
+         `{{{{SESSION_START}}}}` where the Session Start section should go (right \
+         after the channel list reads best). `giga init` replaces that placeholder \
+         with the correct watcher-arming protocol for the swarm's runtime — Claude's \
+         Monitor tool, AGY's `run_command` background task, or the Codex bridge — \
+         based on `[project].runtime` / `[[agents]].runtime`. This is why the \
+         template stays runtime-agnostic: the same `agents/<slug>.md` renders \
+         correctly no matter which runtime you chose in question 7, and `giga \
+         takeover --to <runtime>` can re-render it later. Hand-writing Monitor \
+         instructions here would HARD-CODE the Claude protocol and break codex/agy \
+         agents.\n\
          \n\
-         Also include: channel file list (so agents know what to read in step 1), \
-         and the message format convention (every message ends with \
-         `WAITING ON: <agent>` or `(Informational, no response required.)`).\n\
+         Also include (these ARE yours to author, runtime-agnostic): the channel \
+         file list (so agents know what they participate in), and the message \
+         format convention (every message ends with `WAITING ON: <agent>` or \
+         `(Informational, no response required.)`).\n\
          \n\
          ## Step 4 — discover the command surface\n\
          \n\
@@ -265,7 +280,7 @@ fn build_prompt(cwd: &Path, configs_default: &Path, platform_hint: &str) -> Stri
          https://github.com/mickfixesjunk/giga-harness/blob/main/MANUAL_SETUP.md \
          is the full conventions doc.\n\
          \n\
-         Begin now: confirm prerequisites, then ask the user the four questions.",
+         Begin now: confirm prerequisites, then ask the user the seven questions.",
         cwd = cwd.display(),
         ver = env!("CARGO_PKG_VERSION"),
         platform_hint = platform_hint,
@@ -343,9 +358,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_references_all_six_questions() {
+    fn prompt_references_all_seven_questions() {
         let out = sample_prompt();
-        // The bootstrap flow hinges on these six questions being
+        // The bootstrap flow hinges on these seven questions being
         // mentioned. If a future edit accidentally drops one, this
         // test catches it.
         assert!(out.contains("Project name"));
@@ -356,6 +371,33 @@ mod tests {
         assert!(
             out.contains("swarm_boss"),
             "Q6 (swarm_boss) missing from bootstrap prompt",
+        );
+        assert!(
+            out.contains("Which agent runtime?"),
+            "Q7 (runtime) missing from bootstrap prompt",
+        );
+    }
+
+    #[test]
+    fn prompt_uses_session_start_placeholder_not_hardcoded_monitor() {
+        // The bootstrap agent must emit a runtime-agnostic
+        // {{SESSION_START}} placeholder, NOT a hand-written Monitor
+        // block — otherwise codex/agy agents get the wrong (Claude)
+        // Session Start baked into their template. Regression guard for
+        // the v0.6.x runtime-aware setup fix.
+        let out = sample_prompt();
+        assert!(
+            out.contains("{SESSION_START}"),
+            "setup prompt should instruct the {{SESSION_START}} placeholder",
+        );
+        assert!(
+            !out.contains("Monitor(persistent: true, command:"),
+            "setup prompt still hard-codes the Claude Monitor Session Start — \
+             breaks codex/agy agents",
+        );
+        assert!(
+            out.contains("runtime = \"RUNTIME_CHOICE\""),
+            "setup TOML template should set [project].runtime from question 7",
         );
     }
 

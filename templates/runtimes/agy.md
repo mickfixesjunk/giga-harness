@@ -60,3 +60,17 @@ wait needed — post returns immediately):
 End every substantive reply with `WAITING ON: <agent> (<what>)` (when
 expecting a response) or `(Informational, no response required.)` so
 `giga sweep` is meaningful for everyone in the swarm.
+
+> **Closing a request someone is WAITING ON you for — pick the tag
+> carefully.** Under `--agy`, an idle agent only wakes on a `WAITING ON:
+> <them>` post (or the periodic sweep). So when you hand back a result
+> the requester needs to *act on* (a finished deliverable, an answer
+> that unblocks their next step, a decision they asked for), close with
+> `WAITING ON: <that requester>` — NOT `Informational`. Otherwise your
+> reply only streams to their stdout and an idle requester won't react
+> until the next 10-minute sweep tick. Reserve `(Informational, no
+> response required.)` for closes where genuinely no one needs to do
+> anything next (FYI broadcasts, acks of an ack). This costs at most a
+> one-line courtesy ack from the requester — which is itself
+> Informational, so it stops the chain — and eliminates the silent
+> "I posted the result but they never picked it up" stall.
