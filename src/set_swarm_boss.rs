@@ -116,8 +116,8 @@ fn update_agent_swarm_boss_in_toml(
     slug: &str,
     promote: bool,
 ) -> Result<()> {
-    let original = std::fs::read_to_string(config)
-        .with_context(|| format!("reading {}", config.display()))?;
+    let original =
+        std::fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
     let mut doc: DocumentMut = original
         .parse()
         .with_context(|| format!("parsing {} as TOML", config.display()))?;

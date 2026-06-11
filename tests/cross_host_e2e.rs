@@ -117,10 +117,26 @@ participants = ["alice", "bob"]
         )
     };
 
-    fs::write(host_a_swarm_dir.join("giga-harness.toml"), toml_for(&host_a_inbox)).unwrap();
-    fs::write(host_b_swarm_dir.join("giga-harness.toml"), toml_for(&host_b_inbox)).unwrap();
-    fs::write(host_a_swarm_dir.join("this_host.toml"), "this_host = \"wsl-a\"\n").unwrap();
-    fs::write(host_b_swarm_dir.join("this_host.toml"), "this_host = \"wsl-b\"\n").unwrap();
+    fs::write(
+        host_a_swarm_dir.join("giga-harness.toml"),
+        toml_for(&host_a_inbox),
+    )
+    .unwrap();
+    fs::write(
+        host_b_swarm_dir.join("giga-harness.toml"),
+        toml_for(&host_b_inbox),
+    )
+    .unwrap();
+    fs::write(
+        host_a_swarm_dir.join("this_host.toml"),
+        "this_host = \"wsl-a\"\n",
+    )
+    .unwrap();
+    fs::write(
+        host_b_swarm_dir.join("this_host.toml"),
+        "this_host = \"wsl-b\"\n",
+    )
+    .unwrap();
 
     Fixture {
         _tmp: tmp,
@@ -182,18 +198,21 @@ fn post_dual_writes_to_slice_and_merged_no_merger_needed() {
     // merger only merges PEER slices.
     let fx = build_fixture();
 
-    giga(&fx.home_a, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "hello-from-alice",
-        "--body",
-        "first message",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "hello-from-alice",
+            "--body",
+            "first message",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     let slice = fx.host_a_inbox.join("alice-bob.wsl-a.md");
     let merged_a = fx.host_a_inbox.join("alice-bob.md");
@@ -217,12 +236,15 @@ fn post_dual_writes_to_slice_and_merged_no_merger_needed() {
     // is excluded from tracked slices (post's responsibility), and no
     // peer slice exists yet.
     let merged_len_before = fs::metadata(&merged_a).unwrap().len();
-    giga(&fx.home_a, &[
-        "merger",
-        "--once",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "merger",
+            "--once",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
     let merged_len_after = fs::metadata(&merged_a).unwrap().len();
     assert_eq!(
         merged_len_before, merged_len_after,
@@ -235,30 +257,36 @@ fn round_trip_bilateral_via_simulated_sync() {
     let fx = build_fixture();
 
     // 1) alice posts on host-a.
-    giga(&fx.home_a, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "ping",
-        "--body",
-        "ping from alice",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "ping",
+            "--body",
+            "ping from alice",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     // 2) Simulate sync: alice's slice on host-a -> host-b's inbox.
     fake_sync_slice(&fx.host_a_inbox, &fx.host_b_inbox, "alice-bob.wsl-a.md");
 
     // 3) host-b's merger picks up the incoming slice + appends to its
     //    local merged file. Note home_b — each "host" has its own cursors.
-    giga(&fx.home_b, &[
-        "merger",
-        "--once",
-        "--config",
-        fx.host_b_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_b,
+        &[
+            "merger",
+            "--once",
+            "--config",
+            fx.host_b_config().to_str().unwrap(),
+        ],
+    );
 
     let merged_b = fx.host_b_inbox.join("alice-bob.md");
     let body = fs::read_to_string(&merged_b).unwrap();
@@ -268,18 +296,21 @@ fn round_trip_bilateral_via_simulated_sync() {
     );
 
     // 4) bob replies on host-b. Writes to bob's slice (wsl-b).
-    giga(&fx.home_b, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "bob",
-        "--subject",
-        "pong",
-        "--body",
-        "pong from bob",
-        "--config",
-        fx.host_b_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_b,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "bob",
+            "--subject",
+            "pong",
+            "--body",
+            "pong from bob",
+            "--config",
+            fx.host_b_config().to_str().unwrap(),
+        ],
+    );
 
     let bob_slice = fx.host_b_inbox.join("alice-bob.wsl-b.md");
     assert!(bob_slice.exists());
@@ -288,12 +319,15 @@ fn round_trip_bilateral_via_simulated_sync() {
     fake_sync_slice(&fx.host_b_inbox, &fx.host_a_inbox, "alice-bob.wsl-b.md");
 
     // 6) host-a's merger picks up bob's incoming slice + appends.
-    giga(&fx.home_a, &[
-        "merger",
-        "--once",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "merger",
+            "--once",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     let merged_a = fs::read_to_string(fx.host_a_inbox.join("alice-bob.md")).unwrap();
     assert!(merged_a.contains("[alice] ping"));
@@ -304,28 +338,34 @@ fn round_trip_bilateral_via_simulated_sync() {
 fn merger_idempotent_on_repeated_runs() {
     let fx = build_fixture();
 
-    giga(&fx.home_a, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "once",
-        "--body",
-        "x",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "once",
+            "--body",
+            "x",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     // Three consecutive merger runs — the message should appear exactly
     // once in the merged file, not three times.
     for _ in 0..3 {
-        giga(&fx.home_a, &[
-            "merger",
-            "--once",
-            "--config",
-            fx.host_a_config().to_str().unwrap(),
-        ]);
+        giga(
+            &fx.home_a,
+            &[
+                "merger",
+                "--once",
+                "--config",
+                fx.host_a_config().to_str().unwrap(),
+            ],
+        );
     }
 
     let merged = fs::read_to_string(fx.host_a_inbox.join("alice-bob.md")).unwrap();
@@ -340,44 +380,56 @@ fn merger_idempotent_on_repeated_runs() {
 fn incremental_slice_growth_appears_in_merged_on_next_tick() {
     let fx = build_fixture();
 
-    giga(&fx.home_a, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "first",
-        "--body",
-        "1",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
-    giga(&fx.home_a, &[
-        "merger",
-        "--once",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "first",
+            "--body",
+            "1",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
+    giga(
+        &fx.home_a,
+        &[
+            "merger",
+            "--once",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     // Second post (slice file grows).
-    giga(&fx.home_a, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "second",
-        "--body",
-        "2",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
-    giga(&fx.home_a, &[
-        "merger",
-        "--once",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    giga(
+        &fx.home_a,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "second",
+            "--body",
+            "2",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
+    giga(
+        &fx.home_a,
+        &[
+            "merger",
+            "--once",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
 
     let merged = fs::read_to_string(fx.host_a_inbox.join("alice-bob.md")).unwrap();
     assert!(merged.contains("[alice] first"));
@@ -390,13 +442,16 @@ fn sync_dry_run_prints_expected_plan() {
     // Make sure both slice files exist so sync has something to plan.
     fs::write(fx.host_a_inbox.join("alice-bob.wsl-a.md"), b"").unwrap();
 
-    let out = giga(&fx.home_a, &[
-        "sync",
-        "--once",
-        "--dry-run",
-        "--config",
-        fx.host_a_config().to_str().unwrap(),
-    ]);
+    let out = giga(
+        &fx.home_a,
+        &[
+            "sync",
+            "--once",
+            "--dry-run",
+            "--config",
+            fx.host_a_config().to_str().unwrap(),
+        ],
+    );
     // sync logs to stderr (dry-run lines).
     let stderr = String::from_utf8_lossy(&out.stderr);
     // Expect: one TOML push (to wsl-b) + one slice push (alice-bob.wsl-a.md to wsl-b).
@@ -456,21 +511,27 @@ participants = ["alice", "bob"]
     );
     fs::write(&config_path, toml).unwrap();
 
-    giga(&home, &[
-        "post",
-        "alice-bob",
-        "--as",
-        "alice",
-        "--subject",
-        "hi",
-        "--body",
-        "x",
-        "--config",
-        config_path.to_str().unwrap(),
-    ]);
+    giga(
+        &home,
+        &[
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "hi",
+            "--body",
+            "x",
+            "--config",
+            config_path.to_str().unwrap(),
+        ],
+    );
 
     let merged = inbox.join("alice-bob.md");
-    assert!(merged.exists(), "legacy local-only swarm writes directly to merged");
+    assert!(
+        merged.exists(),
+        "legacy local-only swarm writes directly to merged"
+    );
     let body = fs::read_to_string(&merged).unwrap();
     assert!(body.contains("[alice] hi"));
 

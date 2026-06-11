@@ -83,7 +83,9 @@ wsl_inbox = "/tmp/i"
     #[test]
     fn run_remote_errors_with_default_message() {
         let t = LocalTransport;
-        let err = t.run_remote(&empty_cfg(), "wsl-b", &["sweep".into()]).unwrap_err();
+        let err = t
+            .run_remote(&empty_cfg(), "wsl-b", &["sweep".into()])
+            .unwrap_err();
         assert!(err.to_string().contains("--host commands not supported"));
     }
 }

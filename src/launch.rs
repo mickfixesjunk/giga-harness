@@ -90,9 +90,7 @@ pub fn run(
         0
     };
     if skipped_count > 0 {
-        println!(
-            "  (skipping {skipped_count} peer-host agent(s) — they live on other hosts)"
-        );
+        println!("  (skipping {skipped_count} peer-host agent(s) — they live on other hosts)");
     }
     let agents_iter: Box<dyn Iterator<Item = &_>> = Box::new(local_agents.into_iter());
 
@@ -153,7 +151,9 @@ pub fn run(
                 }
                 let bridge_cmd = format!(
                     "CODEX_CHANNEL_DIR={} giga watch --as {} --codex",
-                    shell_escape::unix::escape(std::borrow::Cow::Borrowed(bridge_dir_unix.as_str())),
+                    shell_escape::unix::escape(std::borrow::Cow::Borrowed(
+                        bridge_dir_unix.as_str()
+                    )),
                     a.name,
                 );
                 out.push(Pane {
@@ -251,9 +251,7 @@ pub fn run(
                     &format!("giga ui --port {ui_port}"),
                     &swarm_dir,
                 ));
-                println!(
-                    "  giga ui pane scheduled (http://127.0.0.1:{ui_port}/)",
-                );
+                println!("  giga ui pane scheduled (http://127.0.0.1:{ui_port}/)",);
             }
         } else {
             println!("  could not resolve ~/.giga; skipping --ui pane");
@@ -292,9 +290,7 @@ pub fn run(
     // turns hit a 429.
     if stagger_per_agent_seconds > 0 {
         let total = stagger_per_agent_seconds * panes.len().saturating_sub(1) as u64;
-        println!(
-            "stagger:     {stagger_per_agent_seconds}s per agent (~{total}s total spread)"
-        );
+        println!("stagger:     {stagger_per_agent_seconds}s per agent (~{total}s total spread)");
     } else if panes.len() >= 8 {
         println!(
             "  HINT: {} panes will start nearly simultaneously. For large swarms, \
@@ -312,7 +308,14 @@ pub fn run(
         eprintln!("\nwarning: no multiplexer available — printing commands instead");
     }
 
-    terminal::launch(mux, &panes, &session, incremental, new_window, stagger_per_agent_seconds)?;
+    terminal::launch(
+        mux,
+        &panes,
+        &session,
+        incremental,
+        new_window,
+        stagger_per_agent_seconds,
+    )?;
     Ok(())
 }
 
@@ -379,9 +382,10 @@ fn should_spawn_daemons_v2(cfg: &crate::config::Config, only: &[String]) -> bool
     // Boss on this_host owns the daemons via Monitor entries in its
     // AGENTS.md → no tmux daemon panes from launch.
     if let Some(this) = cfg.this_host.as_deref() {
-        let has_local_boss = cfg.agents.iter().any(|a| {
-            a.swarm_boss && cfg.agent_host(a).map(|h| h == this).unwrap_or(false)
-        });
+        let has_local_boss = cfg
+            .agents
+            .iter()
+            .any(|a| a.swarm_boss && cfg.agent_host(a).map(|h| h == this).unwrap_or(false));
         if has_local_boss {
             return false;
         }
@@ -442,9 +446,7 @@ fn default_cmd_for_runtime(
 fn default_cmd_tty_only(bin: &str, platform: &str) -> String {
     match platform {
         "windows" => {
-            format!(
-                "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ {bin} }}",
-            )
+            format!("if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ {bin} }}",)
         }
         _ => {
             format!("command -v {bin} >/dev/null && {bin} || true")
@@ -684,7 +686,11 @@ host = "host-a"
 "#;
         let cfg_path = tmp.path().join("giga-harness.toml");
         std::fs::write(&cfg_path, cfg_text).unwrap();
-        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
         assert!(
             should_spawn_daemons(&cfg, true),
@@ -756,7 +762,11 @@ host = "host-a"
 "#;
         let cfg_path = tmp.path().join("giga-harness.toml");
         std::fs::write(&cfg_path, cfg_text).unwrap();
-        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
         assert!(
             !should_spawn_daemons(&cfg, false),
@@ -805,7 +815,11 @@ swarm_boss = true
 "#;
         let cfg_path = tmp.path().join("giga-harness.toml");
         std::fs::write(&cfg_path, cfg_text).unwrap();
-        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
         assert!(
             should_spawn_daemons(&cfg, false),
@@ -815,7 +829,11 @@ swarm_boss = true
 
     #[test]
     fn daemon_pane_targets_swarm_dir_and_runs_command_verbatim() {
-        let p = daemon_pane("giga-sync", "giga sync", "/home/me/.giga/configs/test-swarm");
+        let p = daemon_pane(
+            "giga-sync",
+            "giga sync",
+            "/home/me/.giga/configs/test-swarm",
+        );
         assert_eq!(p.title, "giga-sync");
         assert_eq!(p.cwd, "/home/me/.giga/configs/test-swarm");
         assert_eq!(p.cmd, "giga sync");

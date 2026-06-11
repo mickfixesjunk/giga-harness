@@ -48,7 +48,10 @@ pub fn run(args: Args) -> Result<()> {
         println!("dry-run: would add channel");
         println!("  file:         {}", ch.file);
         println!("  side:         {}", ch.side);
-        println!("  participants: {} <-> {}", ch.participants[0], ch.participants[1]);
+        println!(
+            "  participants: {} <-> {}",
+            ch.participants[0], ch.participants[1]
+        );
         return Ok(());
     }
 

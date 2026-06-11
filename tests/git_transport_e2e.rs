@@ -61,7 +61,10 @@ fn build_git_fixture() -> GitFixture {
     fs::write(seed.join("README.md"), b"giga swarm state\n").unwrap();
     run_git(&seed, &["add", "README.md"]);
     run_git(&seed, &["commit", "--quiet", "-m", "seed"]);
-    run_git(&seed, &["remote", "add", "origin", bare_repo.to_str().unwrap()]);
+    run_git(
+        &seed,
+        &["remote", "add", "origin", bare_repo.to_str().unwrap()],
+    );
     run_git(&seed, &["push", "--quiet", "origin", "main"]);
 
     let home_a = tmp.path().join("home_a");
@@ -220,19 +223,11 @@ fn git_tick_pushes_own_slice_to_repo_and_pulls_peer_slice_from_repo() {
     // own slice → repo, commit, push.
     giga(
         &fx.home_a,
-        &[
-            "sync",
-            "--once",
-            "--config",
-            fx.cfg_a.to_str().unwrap(),
-        ],
+        &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()],
     );
 
     // host-a's clone should now contain alice's slice.
-    let a_slice_in_clone = fx
-        .clone_a
-        .join("slices")
-        .join("alice-bob.wsl-a.md");
+    let a_slice_in_clone = fx.clone_a.join("slices").join("alice-bob.wsl-a.md");
     assert!(
         a_slice_in_clone.exists(),
         "host-a tick should have copied alice's slice into the clone"
@@ -242,12 +237,7 @@ fn git_tick_pushes_own_slice_to_repo_and_pulls_peer_slice_from_repo() {
     // bare repo), mirror peer slice → b's inbox.
     giga(
         &fx.home_b,
-        &[
-            "sync",
-            "--once",
-            "--config",
-            fx.cfg_b.to_str().unwrap(),
-        ],
+        &["sync", "--once", "--config", fx.cfg_b.to_str().unwrap()],
     );
 
     // host-b's inbox should now have alice's slice content.
@@ -271,35 +261,57 @@ fn git_tick_bidirectional_round_trip() {
     giga(
         &fx.home_a,
         &[
-            "post", "alice-bob",
-            "--as", "alice",
-            "--subject", "ping",
-            "--body", "from-a",
-            "--config", fx.cfg_a.to_str().unwrap(),
+            "post",
+            "alice-bob",
+            "--as",
+            "alice",
+            "--subject",
+            "ping",
+            "--body",
+            "from-a",
+            "--config",
+            fx.cfg_a.to_str().unwrap(),
         ],
     );
     giga(
         &fx.home_b,
         &[
-            "post", "alice-bob",
-            "--as", "bob",
-            "--subject", "pong",
-            "--body", "from-b",
-            "--config", fx.cfg_b.to_str().unwrap(),
+            "post",
+            "alice-bob",
+            "--as",
+            "bob",
+            "--subject",
+            "pong",
+            "--body",
+            "from-b",
+            "--config",
+            fx.cfg_b.to_str().unwrap(),
         ],
     );
 
     // Tick A then B then A (gives both directions a chance to round-trip).
     for _ in 0..2 {
-        giga(&fx.home_a, &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()]);
-        giga(&fx.home_b, &["sync", "--once", "--config", fx.cfg_b.to_str().unwrap()]);
+        giga(
+            &fx.home_a,
+            &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()],
+        );
+        giga(
+            &fx.home_b,
+            &["sync", "--once", "--config", fx.cfg_b.to_str().unwrap()],
+        );
     }
 
     // Both hosts should have both slice files in their inbox.
     assert!(fx.inbox_a.join("alice-bob.wsl-a.md").exists()); // own
-    assert!(fx.inbox_a.join("alice-bob.wsl-b.md").exists(), "A should have B's slice");
+    assert!(
+        fx.inbox_a.join("alice-bob.wsl-b.md").exists(),
+        "A should have B's slice"
+    );
     assert!(fx.inbox_b.join("alice-bob.wsl-b.md").exists()); // own
-    assert!(fx.inbox_b.join("alice-bob.wsl-a.md").exists(), "B should have A's slice");
+    assert!(
+        fx.inbox_b.join("alice-bob.wsl-a.md").exists(),
+        "B should have A's slice"
+    );
 
     let a_seen_b = fs::read_to_string(fx.inbox_a.join("alice-bob.wsl-b.md")).unwrap();
     let b_seen_a = fs::read_to_string(fx.inbox_b.join("alice-bob.wsl-a.md")).unwrap();
@@ -314,10 +326,19 @@ fn git_tick_bidirectional_round_trip() {
 fn git_tick_is_noop_when_no_changes() {
     let fx = build_git_fixture();
     // First tick: clone + initial state.
-    giga(&fx.home_a, &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()]);
+    giga(
+        &fx.home_a,
+        &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()],
+    );
     // Second tick: nothing new, should succeed silently (no commit, no push).
-    giga(&fx.home_a, &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()]);
-    giga(&fx.home_a, &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()]);
+    giga(
+        &fx.home_a,
+        &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()],
+    );
+    giga(
+        &fx.home_a,
+        &["sync", "--once", "--config", fx.cfg_a.to_str().unwrap()],
+    );
     // No assertion needed beyond "didn't panic" — the test passes if all
     // three giga calls returned successfully.
 }

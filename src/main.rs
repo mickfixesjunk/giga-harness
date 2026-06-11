@@ -18,31 +18,31 @@ mod add_agent;
 mod add_channel;
 mod add_host;
 mod claude_operator;
-mod config;
-mod hosts;
 mod codex_channel;
+mod config;
 mod cursor;
 mod fs_paths;
+mod hosts;
 mod init;
 mod launch;
 mod merger;
 mod post;
 mod registry;
 mod remote;
+mod runtime;
+mod set_swarm_boss;
 mod setup;
 mod setup_remote_node;
-mod set_swarm_boss;
 mod stale_wait;
 mod sweep;
-mod sync;
 mod switch;
-mod transport;
-mod transports;
-mod templates;
-mod terminal;
-mod runtime;
+mod sync;
 mod takeover;
 mod teleport;
+mod templates;
+mod terminal;
+mod transport;
+mod transports;
 mod trust;
 mod ui;
 mod upgrade;
@@ -667,7 +667,11 @@ enum Command {
         /// Subcommand + args to invoke on the remote host. Captured as
         /// trailing args so flags like `--owed-by` go to the remote
         /// subcommand, not to `giga remote` itself.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
         remote_args: Vec<String>,
     },
     /// Forward giga inbox notifications into a running Codex filesystem channel.
@@ -848,9 +852,7 @@ fn main() -> Result<()> {
         } => {
             let config = registry::resolve_config(config)?;
             let to_runtime = runtime::Runtime::parse(&to).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown --to runtime `{to}` — valid: claude, codex, agy"
-                )
+                anyhow::anyhow!("unknown --to runtime `{to}` — valid: claude, codex, agy")
             })?;
             takeover::run(takeover::Args {
                 config,
@@ -1034,11 +1036,7 @@ fn main() -> Result<()> {
             codex,
         } => {
             let config = registry::resolve_config(config)?;
-            let stagger_override = if no_stagger {
-                Some(0)
-            } else {
-                stagger_seconds
-            };
+            let stagger_override = if no_stagger { Some(0) } else { stagger_seconds };
             // v0.6.0: derive watch mode. clap's conflicts_with enforces
             // --agy and --codex are mutually exclusive; default is Claude.
             let mode = if agy {

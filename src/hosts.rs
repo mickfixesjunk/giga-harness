@@ -180,7 +180,10 @@ pub fn run_available(config_path: &Path) -> Result<()> {
 
     println!();
     if unregistered.is_empty() {
-        println!("All {} tailnet member(s) are registered in this swarm.", roster.len());
+        println!(
+            "All {} tailnet member(s) are registered in this swarm.",
+            roster.len()
+        );
     } else {
         println!(
             "Tailnet members NOT registered in this swarm ({}):",
@@ -188,10 +191,7 @@ pub fn run_available(config_path: &Path) -> Result<()> {
         );
         // Two columns: hostname + dns_name + OS.
         for n in &unregistered {
-            println!(
-                "  {:<14} {:<42} {}",
-                n.host_name, n.dns_name, n.os
-            );
+            println!("  {:<14} {:<42} {}", n.host_name, n.dns_name, n.os);
         }
         println!();
         println!(
@@ -223,7 +223,10 @@ fn query_tailscale_roster() -> Result<Vec<TailnetNode>> {
 
 fn invoke_tailscale_status_json() -> Result<Vec<u8>> {
     // 1. Native PATH lookup.
-    if let Ok(out) = Command::new("tailscale").args(["status", "--json"]).output() {
+    if let Ok(out) = Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+    {
         if out.status.success() {
             return Ok(out.stdout);
         }
@@ -253,8 +256,8 @@ fn invoke_tailscale_status_json() -> Result<Vec<u8>> {
 /// Parse `tailscale status --json` output. Pure — testable without the
 /// subprocess. Returns the flat node list (Self + every Peer).
 fn parse_tailscale_status(bytes: &[u8]) -> Result<Vec<TailnetNode>> {
-    let v: serde_json::Value = serde_json::from_slice(bytes)
-        .context("parsing tailscale status --json output")?;
+    let v: serde_json::Value =
+        serde_json::from_slice(bytes).context("parsing tailscale status --json output")?;
     let mut nodes = Vec::new();
     if let Some(self_node) = v.get("Self") {
         if let Some(n) = extract_node(self_node) {

@@ -54,7 +54,10 @@ pub fn run(args: Args) -> Result<()> {
 
     let abs_config = std::fs::canonicalize(&args.config).unwrap_or(args.config.clone());
 
-    println!("==> teleporting `{}` from `{}` to `{}`", plan.agent, plan.source.name, plan.target.name);
+    println!(
+        "==> teleporting `{}` from `{}` to `{}`",
+        plan.agent, plan.source.name, plan.target.name
+    );
 
     // 1. ensure HANDOVER.md exists on source (touch if missing) so
     //    rsync has something to carry over.
@@ -65,11 +68,8 @@ pub fn run(args: Args) -> Result<()> {
     );
     let escaped_handover =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(source_handover_unix.as_str()));
-    sync::ssh_run(
-        &source_ssh,
-        &format!("touch {escaped_handover}"),
-    )
-    .context("ensuring source HANDOVER.md exists before rsync")?;
+    sync::ssh_run(&source_ssh, &format!("touch {escaped_handover}"))
+        .context("ensuring source HANDOVER.md exists before rsync")?;
     println!("  + source HANDOVER.md exists (touched if missing)");
 
     // 2. rsync workdir from source to target (direct A→B over tailnet SSH).
@@ -92,10 +92,13 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // 6. SSH target: giga init --only <agent>.
-    if let Err(e) = run_remote_giga(&plan.target, &abs_config, &["init"])
-        .context("giga init on target")
+    if let Err(e) =
+        run_remote_giga(&plan.target, &abs_config, &["init"]).context("giga init on target")
     {
-        eprintln!("  ! init on target failed ({e:#}) — run `giga remote --host {} -- init` manually", plan.target.name);
+        eprintln!(
+            "  ! init on target failed ({e:#}) — run `giga remote --host {} -- init` manually",
+            plan.target.name
+        );
     } else {
         println!("  + giga init complete on target");
     }
@@ -120,9 +123,15 @@ pub fn run(args: Args) -> Result<()> {
     //    runtime at kill time.
     if args.keep_running {
         println!();
-        println!("(--keep-running: source pane(s) left alive on `{}`. Tear down manually with:", plan.source.name);
+        println!(
+            "(--keep-running: source pane(s) left alive on `{}`. Tear down manually with:",
+            plan.source.name
+        );
         println!("  # claude/agy agents (1 pane):");
-        println!("  giga remote --host {} -- bash -lc 'tmux kill-window -t giga-{}:{}'", plan.source.name, cfg.project.name, plan.agent);
+        println!(
+            "  giga remote --host {} -- bash -lc 'tmux kill-window -t giga-{}:{}'",
+            plan.source.name, cfg.project.name, plan.agent
+        );
         println!("  # codex agents (2 panes):");
         println!("  giga remote --host {} -- bash -lc 'tmux kill-window -t giga-{}:{}-cli; tmux kill-window -t giga-{}:{}-bridge'", plan.source.name, cfg.project.name, plan.agent, cfg.project.name, plan.agent);
         println!(")");
@@ -159,7 +168,10 @@ fn preflight<'a>(cfg: &'a Config, args: &Args) -> Result<Plan<'a>> {
             anyhow!(
                 "agent `{}` not in [[agents]] (known: {:?})",
                 args.agent,
-                cfg.agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                cfg.agents
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>(),
             )
         })?;
     let source_name = args
@@ -186,7 +198,10 @@ fn preflight<'a>(cfg: &'a Config, args: &Args) -> Result<Plan<'a>> {
             anyhow!(
                 "source host `{}` not in [[hosts]] (known: {:?})",
                 source_name,
-                cfg.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+                cfg.hosts
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect::<Vec<_>>(),
             )
         })?;
     let target = cfg
@@ -197,7 +212,10 @@ fn preflight<'a>(cfg: &'a Config, args: &Args) -> Result<Plan<'a>> {
             anyhow!(
                 "target host `{}` not in [[hosts]] (known: {:?})",
                 args.to,
-                cfg.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+                cfg.hosts
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect::<Vec<_>>(),
             )
         })?;
     // Workdir path is the SAME on both hosts under the homogeneous-path
@@ -216,15 +234,37 @@ fn preflight<'a>(cfg: &'a Config, args: &Args) -> Result<Plan<'a>> {
 }
 
 fn print_dry_run(plan: &Plan) {
-    println!("dry-run: would teleport `{}` from `{}` to `{}`", plan.agent, plan.source.name, plan.target.name);
-    println!("  1. SSH {} : touch {}/HANDOVER.md (ensure exists)", plan.source.name, plan.source_workdir.display());
-    println!("  2. SSH {} : rsync -avz {}/ {}:{}/", plan.source.name, plan.source_workdir.display(), plan.target.name, plan.target_workdir.display());
-    println!("  3. SSH {} : prepend teleport banner to HANDOVER.md", plan.target.name);
+    println!(
+        "dry-run: would teleport `{}` from `{}` to `{}`",
+        plan.agent, plan.source.name, plan.target.name
+    );
+    println!(
+        "  1. SSH {} : touch {}/HANDOVER.md (ensure exists)",
+        plan.source.name,
+        plan.source_workdir.display()
+    );
+    println!(
+        "  2. SSH {} : rsync -avz {}/ {}:{}/",
+        plan.source.name,
+        plan.source_workdir.display(),
+        plan.target.name,
+        plan.target_workdir.display()
+    );
+    println!(
+        "  3. SSH {} : prepend teleport banner to HANDOVER.md",
+        plan.target.name
+    );
     println!("  4. local: edit TOML agent.host = `{}`", plan.target.name);
     println!("  5. local: giga sync --once (push TOML to peers)");
     println!("  6. SSH {} : giga init", plan.target.name);
-    println!("  7. SSH {} : giga launch --only {}", plan.target.name, plan.agent);
-    println!("  8. SSH {} : tmux kill-window (graceful: SIGTERM + 5s + kill)", plan.source.name);
+    println!(
+        "  7. SSH {} : giga launch --only {}",
+        plan.target.name, plan.agent
+    );
+    println!(
+        "  8. SSH {} : tmux kill-window (graceful: SIGTERM + 5s + kill)",
+        plan.source.name
+    );
     println!("(dry-run — no side effects)");
 }
 
@@ -250,10 +290,8 @@ pub(crate) fn build_ssh_target(host: &Host) -> Result<String> {
 /// target). Falls back to two-hop via operator if direct fails.
 fn rsync_direct(plan: &Plan) -> Result<()> {
     let source_ssh = build_ssh_target(plan.source)?;
-    let target_rsync_target = sync::build_rsync_target(
-        plan.target,
-        &format!("{}/", plan.target_workdir.display()),
-    )?;
+    let target_rsync_target =
+        sync::build_rsync_target(plan.target, &format!("{}/", plan.target_workdir.display()))?;
     let source_workdir_unix = format!("{}/", plan.source_workdir.display());
     // `rsync -avz --delete-after` so files removed locally on the source
     // since last sync are removed on the target too. `--delete-after`
@@ -263,9 +301,7 @@ fn rsync_direct(plan: &Plan) -> Result<()> {
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(source_workdir_unix.as_str()));
     let escaped_tgt =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(target_rsync_target.as_str()));
-    let remote_cmd = format!(
-        "rsync -avz --delete-after {escaped_src} {escaped_tgt}",
-    );
+    let remote_cmd = format!("rsync -avz --delete-after {escaped_src} {escaped_tgt}",);
     let direct_result = sync::ssh_run(&source_ssh, &remote_cmd);
     if direct_result.is_ok() {
         return Ok(());
@@ -295,15 +331,15 @@ fn rsync_two_hop(plan: &Plan) -> Result<()> {
     let local_staging = base.join("workdir");
 
     // Hop 1: source -> operator
-    let source_rsync_target = sync::build_rsync_target(
-        plan.source,
-        &format!("{}/", plan.source_workdir.display()),
-    )?;
+    let source_rsync_target =
+        sync::build_rsync_target(plan.source, &format!("{}/", plan.source_workdir.display()))?;
     let status = Command::new("rsync")
         .args([
             "-avz",
             &source_rsync_target,
-            local_staging.to_str().ok_or_else(|| anyhow!("non-UTF8 staging path"))?,
+            local_staging
+                .to_str()
+                .ok_or_else(|| anyhow!("non-UTF8 staging path"))?,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -318,10 +354,8 @@ fn rsync_two_hop(plan: &Plan) -> Result<()> {
     }
 
     // Hop 2: operator -> target
-    let target_rsync_target = sync::build_rsync_target(
-        plan.target,
-        &format!("{}/", plan.target_workdir.display()),
-    )?;
+    let target_rsync_target =
+        sync::build_rsync_target(plan.target, &format!("{}/", plan.target_workdir.display()))?;
     let local_staging_with_slash = format!("{}/", local_staging.display());
     let status = Command::new("rsync")
         .args([
@@ -381,8 +415,8 @@ pub(crate) fn render_teleport_banner(source_host: &str, target_host: &str) -> St
 /// Edit the canonical TOML in-place: set `[[agents]]` where name=agent
 /// to host=target. Uses toml_edit to preserve formatting + comments.
 fn update_toml_agent_host(config: &std::path::Path, agent: &str, target_host: &str) -> Result<()> {
-    let original = std::fs::read_to_string(config)
-        .with_context(|| format!("reading {}", config.display()))?;
+    let original =
+        std::fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
     let mut doc: DocumentMut = original
         .parse()
         .with_context(|| format!("parsing {} as TOML", config.display()))?;
@@ -417,7 +451,9 @@ fn sync_toml_to_peers(config: &std::path::Path) -> Result<()> {
             "sync",
             "--once",
             "--config",
-            config.to_str().ok_or_else(|| anyhow!("non-UTF8 config path"))?,
+            config
+                .to_str()
+                .ok_or_else(|| anyhow!("non-UTF8 config path"))?,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -639,9 +675,15 @@ host = "host-a"
         update_toml_agent_host(&path, "research", "host-b").unwrap();
 
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("# top comment preserved"), "comments must survive edit");
+        assert!(
+            body.contains("# top comment preserved"),
+            "comments must survive edit"
+        );
         assert!(body.contains("host = \"host-b\""), "host should be flipped");
-        assert!(!body.contains("host = \"host-a\""), "old host should be gone");
+        assert!(
+            !body.contains("host = \"host-a\""),
+            "old host should be gone"
+        );
 
         // Re-parse to make sure it's still a valid TOML.
         let _: DocumentMut = body.parse().unwrap();

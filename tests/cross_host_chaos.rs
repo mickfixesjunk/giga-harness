@@ -22,8 +22,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -124,7 +124,13 @@ participants = ["alice", "bob"]
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn giga_post(home: &Path, config: &Path, sender: &str, subject: &str, body: &str) -> Result<(), String> {
+fn giga_post(
+    home: &Path,
+    config: &Path,
+    sender: &str,
+    subject: &str,
+    body: &str,
+) -> Result<(), String> {
     let out = Command::new(GIGA)
         .env("HOME", home)
         .args([
@@ -439,7 +445,12 @@ fn r2_slice_file_is_always_a_complete_prefix_while_appended() {
     // Final sanity: the final file parses to exactly 50 headers.
     let final_text = fs::read_to_string(&slice_path).unwrap();
     let headers = parse_headers(&final_text);
-    assert_eq!(headers.len(), 50, "final slice should have 50 posts, got {}", headers.len());
+    assert_eq!(
+        headers.len(),
+        50,
+        "final slice should have 50 posts, got {}",
+        headers.len()
+    );
 }
 
 // ===========================================================================

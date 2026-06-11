@@ -209,9 +209,8 @@ WAITING ON: design (review pass).\n\
 
     #[test]
     fn parse_ignores_preamble_text_before_first_post() {
-        let with_preamble = format!(
-            "Convention placeholder text: [<sender>] foo — bar\n\n{SAMPLE}"
-        );
+        let with_preamble =
+            format!("Convention placeholder text: [<sender>] foo — bar\n\n{SAMPLE}");
         let posts = parse(&with_preamble);
         // Preamble doesn't form a valid header (starts with [<), so it's skipped.
         assert_eq!(posts.len(), 2);
@@ -219,9 +218,7 @@ WAITING ON: design (review pass).\n\
 
     #[test]
     fn is_header_line_accepts_real_header() {
-        assert!(is_header_line(
-            "[design] online — 2026-05-28T14:30:00Z"
-        ));
+        assert!(is_header_line("[design] online — 2026-05-28T14:30:00Z"));
     }
 
     #[test]

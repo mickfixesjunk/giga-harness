@@ -44,15 +44,36 @@ fn build_router() -> Router {
             get(api::get_channel_tail).post(api::post_to_channel),
         )
         .route("/api/swarms/{name}/timeline", get(api::get_swarm_timeline))
-        .route("/api/swarms/{name}/archive", axum::routing::post(api::set_swarm_archived))
+        .route(
+            "/api/swarms/{name}/archive",
+            axum::routing::post(api::set_swarm_archived),
+        )
         .route("/api/processes", get(api::list_processes))
         .route("/assets/giga-icon.png", get(serve_icon))
-        .route("/api/swarms/{name}/validate", axum::routing::post(api::validate_swarm))
-        .route("/api/swarms/{name}/launch", axum::routing::post(api::launch_swarm))
-        .route("/api/swarms/{name}/kill", axum::routing::post(api::kill_swarm))
-        .route("/api/swarms/{name}/agents", axum::routing::post(api::add_agent))
-        .route("/api/swarms/{name}/channels", axum::routing::post(api::add_channel))
-        .route("/api/swarms/{swarm}/agents/{agent}/log", get(api::get_agent_log))
+        .route(
+            "/api/swarms/{name}/validate",
+            axum::routing::post(api::validate_swarm),
+        )
+        .route(
+            "/api/swarms/{name}/launch",
+            axum::routing::post(api::launch_swarm),
+        )
+        .route(
+            "/api/swarms/{name}/kill",
+            axum::routing::post(api::kill_swarm),
+        )
+        .route(
+            "/api/swarms/{name}/agents",
+            axum::routing::post(api::add_agent),
+        )
+        .route(
+            "/api/swarms/{name}/channels",
+            axum::routing::post(api::add_channel),
+        )
+        .route(
+            "/api/swarms/{swarm}/agents/{agent}/log",
+            get(api::get_agent_log),
+        )
         .route("/api/upgrade", axum::routing::post(api::run_upgrade))
         .route("/ws/channels/{swarm}/{file}", get(ws::ws_channel))
         .with_state(AppState::new())
@@ -74,10 +95,7 @@ const DASHBOARD_HTML: &str = include_str!("../../templates/ui/dashboard.html");
 const ICON_PNG: &[u8] = include_bytes!("../../assets/giga-icon.png");
 
 async fn serve_icon() -> impl axum::response::IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "image/png")],
-        ICON_PNG,
-    )
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], ICON_PNG)
 }
 
 async fn index() -> Html<String> {
@@ -94,7 +112,10 @@ struct Health {
 }
 
 async fn health() -> Json<Health> {
-    Json(Health { status: "ok", version: VERSION })
+    Json(Health {
+        status: "ok",
+        version: VERSION,
+    })
 }
 
 #[cfg(test)]
@@ -112,15 +133,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let text = std::str::from_utf8(&body).unwrap();
         // Embedded dashboard markers.
         assert!(text.contains("<title>giga ui</title>"), "missing title");
-        assert!(text.contains("__VERSION__") == false, "version placeholder should be substituted");
-        assert!(text.contains(VERSION), "dashboard should embed the running version");
+        assert!(
+            text.contains("__VERSION__") == false,
+            "version placeholder should be substituted"
+        );
+        assert!(
+            text.contains(VERSION),
+            "dashboard should embed the running version"
+        );
         // The dashboard wires onto the JSON API.
-        assert!(text.contains("/api/swarms"), "dashboard should reference /api/swarms");
-        assert!(text.contains("/ws/channels/"), "dashboard should reference the WS endpoint");
+        assert!(
+            text.contains("/api/swarms"),
+            "dashboard should reference /api/swarms"
+        );
+        assert!(
+            text.contains("/ws/channels/"),
+            "dashboard should reference the WS endpoint"
+        );
     }
 
     #[test]
@@ -129,7 +164,10 @@ mod tests {
         // it's substituted at request time. Sanity-check the
         // placeholder is present in the template so the substitution
         // has something to act on.
-        assert!(DASHBOARD_HTML.contains("__VERSION__"), "template lost its version placeholder");
+        assert!(
+            DASHBOARD_HTML.contains("__VERSION__"),
+            "template lost its version placeholder"
+        );
     }
 
     #[tokio::test]
@@ -155,12 +193,7 @@ mod tests {
     async fn unknown_path_returns_404() {
         let app = build_router();
         let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/nope")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);

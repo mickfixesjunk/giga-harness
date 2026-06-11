@@ -151,10 +151,7 @@ async fn reader_done(handle: &tokio::task::JoinHandle<()>) {
     }
 }
 
-async fn send_event<S>(
-    sender: &mut S,
-    event: &WireEvent<'_>,
-) -> Result<(), axum::Error>
+async fn send_event<S>(sender: &mut S, event: &WireEvent<'_>) -> Result<(), axum::Error>
 where
     S: SinkExt<Message, Error = axum::Error> + Unpin,
 {
@@ -275,7 +272,10 @@ mod tests {
         // Tailer's initial count = 1; subscriber should see nothing
         // until we append a second post.
         let mid_recv = tokio::time::timeout(Duration::from_millis(600), rx.recv()).await;
-        assert!(mid_recv.is_err(), "did not expect any post pre-append: {mid_recv:?}");
+        assert!(
+            mid_recv.is_err(),
+            "did not expect any post pre-append: {mid_recv:?}"
+        );
 
         let appended = format!(
             "{initial}\n\n{}",
@@ -337,14 +337,13 @@ mod tests {
         while rx.try_recv().is_ok() {}
 
         // Truncate to single post.
-        fs::write(
-            &path,
-            sample_post("c", "z", "2026-01-03T00:00:00Z", "z"),
-        )
-        .unwrap();
+        fs::write(&path, sample_post("c", "z", "2026-01-03T00:00:00Z", "z")).unwrap();
         // No append yet → no broadcast.
         let early = tokio::time::timeout(Duration::from_millis(800), rx.recv()).await;
-        assert!(early.is_err(), "truncation alone should not broadcast: {early:?}");
+        assert!(
+            early.is_err(),
+            "truncation alone should not broadcast: {early:?}"
+        );
 
         // Now append a NEW post past the truncated baseline.
         let again = format!(

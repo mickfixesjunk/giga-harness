@@ -109,10 +109,7 @@ pub fn run(config_path: &Path, once: bool, quiet: bool) -> Result<()> {
 /// One merge sweep across all tracked channels + slices. Pure-ish (the
 /// side effects are deterministic file I/O); extracted so tests can
 /// invoke it without the 3s sleep loop.
-fn merge_tick(
-    tracked: &mut HashMap<String, ChannelMergeState>,
-    giga_home: Option<&Path>,
-) {
+fn merge_tick(tracked: &mut HashMap<String, ChannelMergeState>, giga_home: Option<&Path>) {
     for (channel_name, state) in tracked.iter_mut() {
         for (slice_host, slice) in state.slices.iter_mut() {
             let cur = match fs::metadata(&slice.path) {
@@ -182,13 +179,17 @@ fn refresh_tracked(
 
     for (name, merged_path, slice_hosts) in &active {
         // Build/refresh per-channel state.
-        let entry = tracked.entry(name.clone()).or_insert_with(|| ChannelMergeState {
-            name: name.clone(),
-            merged_path: merged_path.clone(),
-            slices: HashMap::new(),
-        });
+        let entry = tracked
+            .entry(name.clone())
+            .or_insert_with(|| ChannelMergeState {
+                name: name.clone(),
+                merged_path: merged_path.clone(),
+                slices: HashMap::new(),
+            });
         // Drop slices for hosts no longer participating.
-        entry.slices.retain(|h, _| slice_hosts.iter().any(|sh| sh == h));
+        entry
+            .slices
+            .retain(|h, _| slice_hosts.iter().any(|sh| sh == h));
         // Add slices we don't have yet.
         for host in slice_hosts {
             if entry.slices.contains_key(host) {
@@ -454,7 +455,11 @@ participants = ["alice", "bob"]
 
         // Write some content to the wsl-a (peer) slice as if alice posted.
         let slice_a = inbox.join("alice-bob.wsl-a.md");
-        fs::write(&slice_a, b"\n\n===\n[alice] hi - 2026-01-01T00:00:00Z\n===\n").unwrap();
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] hi - 2026-01-01T00:00:00Z\n===\n",
+        )
+        .unwrap();
 
         merge_tick(&mut tracked, Some(tmp.path()));
 
@@ -478,12 +483,20 @@ participants = ["alice", "bob"]
 
         let slice_a = inbox.join("alice-bob.wsl-a.md"); // OWN
         let slice_b = inbox.join("alice-bob.wsl-b.md"); // PEER
-        // Simulate: post on host wsl-a dual-wrote alice's frame already
-        // to merged (skip writing the merged file here so we can verify
-        // merger does NOT add the own-slice content a second time).
-        fs::write(&slice_a, b"\n\n===\n[alice] own-via-post - 2026-01-01T00:00:00Z\n===\n").unwrap();
+                                                        // Simulate: post on host wsl-a dual-wrote alice's frame already
+                                                        // to merged (skip writing the merged file here so we can verify
+                                                        // merger does NOT add the own-slice content a second time).
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] own-via-post - 2026-01-01T00:00:00Z\n===\n",
+        )
+        .unwrap();
         // Peer slice arrives via sync.
-        fs::write(&slice_b, b"\n\n===\n[bob] peer-via-sync - 2026-01-01T00:00:01Z\n===\n").unwrap();
+        fs::write(
+            &slice_b,
+            b"\n\n===\n[bob] peer-via-sync - 2026-01-01T00:00:01Z\n===\n",
+        )
+        .unwrap();
 
         merge_tick(&mut tracked, Some(tmp.path()));
 
@@ -508,7 +521,11 @@ participants = ["alice", "bob"]
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 
         let slice_a = inbox.join("alice-bob.wsl-a.md");
-        fs::write(&slice_a, b"\n\n===\n[alice] once - 2026-01-01T00:00:00Z\n===\n").unwrap();
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] once - 2026-01-01T00:00:00Z\n===\n",
+        )
+        .unwrap();
 
         merge_tick(&mut tracked, Some(tmp.path()));
         merge_tick(&mut tracked, Some(tmp.path())); // no slice growth -> no-op
@@ -529,7 +546,11 @@ participants = ["alice", "bob"]
         let slice_a = inbox.join("alice-bob.wsl-a.md");
 
         // First post.
-        fs::write(&slice_a, b"\n\n===\n[alice] one - 2026-01-01T00:00:00Z\n===\n").unwrap();
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] one - 2026-01-01T00:00:00Z\n===\n",
+        )
+        .unwrap();
         merge_tick(&mut tracked, Some(tmp.path()));
 
         // Second post (append).
@@ -544,7 +565,11 @@ participants = ["alice", "bob"]
         let merged = fs::read_to_string(inbox.join("alice-bob.md")).unwrap();
         assert!(merged.contains("[alice] one"));
         assert!(merged.contains("[alice] two"));
-        assert_eq!(merged.matches("[alice] one").count(), 1, "no re-delivery on incremental tick");
+        assert_eq!(
+            merged.matches("[alice] one").count(),
+            1,
+            "no re-delivery on incremental tick"
+        );
     }
 
     #[test]
@@ -558,7 +583,11 @@ participants = ["alice", "bob"]
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
 
         let slice_a = inbox.join("alice-bob.wsl-a.md");
-        fs::write(&slice_a, b"\n\n===\n[alice] before - 2026-01-01T00:00:00Z\n===\n").unwrap();
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] before - 2026-01-01T00:00:00Z\n===\n",
+        )
+        .unwrap();
         merge_tick(&mut tracked, Some(tmp.path()));
 
         // Truncate.
@@ -566,7 +595,11 @@ participants = ["alice", "bob"]
         merge_tick(&mut tracked, Some(tmp.path())); // cursor reset, no append
 
         // Re-write fresh.
-        fs::write(&slice_a, b"\n\n===\n[alice] after - 2026-01-01T00:00:02Z\n===\n").unwrap();
+        fs::write(
+            &slice_a,
+            b"\n\n===\n[alice] after - 2026-01-01T00:00:02Z\n===\n",
+        )
+        .unwrap();
         merge_tick(&mut tracked, Some(tmp.path()));
 
         let merged = fs::read_to_string(inbox.join("alice-bob.md")).unwrap();
@@ -590,6 +623,10 @@ participants = ["alice", "bob"]
         fs::write(&config_path, new_toml).unwrap();
 
         refresh_tracked(&config_path, &mut tracked, Some(tmp.path()));
-        assert_eq!(tracked.len(), 0, "channel should be dropped from tracked set");
+        assert_eq!(
+            tracked.len(),
+            0,
+            "channel should be dropped from tracked set"
+        );
     }
 }

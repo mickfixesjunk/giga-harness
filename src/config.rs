@@ -461,15 +461,13 @@ fn strip_timestamp_prefix(s: &str) -> &str {
     if !s.starts_with('[') {
         return s;
     }
-    let Some(end) = s.find(']') else { return s; };
+    let Some(end) = s.find(']') else {
+        return s;
+    };
     let inside = &s[1..end];
     // Heuristic: contains a date-like `YYYY-MM-DD` substring AND
     // doesn't look like one of our broadcast tags. Cheap + good enough.
-    let looks_like_timestamp = inside
-        .chars()
-        .filter(|c| *c == '-')
-        .count()
-        >= 2
+    let looks_like_timestamp = inside.chars().filter(|c| *c == '-').count() >= 2
         && inside.chars().any(|c| c.is_ascii_digit());
     let lower = inside.trim().to_ascii_lowercase();
     let is_broadcast_tag = lower == "fyi"
@@ -494,20 +492,13 @@ pub fn is_broadcast_channel(filename: &str) -> bool {
 /// Slot = position of `this_agent` in the alphabetically-sorted
 /// recipient list. Same agent always gets the same slot (deterministic
 /// across watcher restarts). See BROADCAST_FANOUT_DESIGN.md §3.2.
-pub fn fanout_delay_seconds(
-    this_agent: &str,
-    recipients: &[&str],
-    stagger_seconds: u64,
-) -> u64 {
+pub fn fanout_delay_seconds(this_agent: &str, recipients: &[&str], stagger_seconds: u64) -> u64 {
     if stagger_seconds == 0 {
         return 0;
     }
     let mut sorted: Vec<&str> = recipients.to_vec();
     sorted.sort();
-    let slot = sorted
-        .iter()
-        .position(|a| *a == this_agent)
-        .unwrap_or(0) as u64;
+    let slot = sorted.iter().position(|a| *a == this_agent).unwrap_or(0) as u64;
     slot * stagger_seconds
 }
 
@@ -547,10 +538,14 @@ fn load_this_host(config_path: &Path) -> Result<Option<String>> {
     } else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let parsed: ThisHostFile = toml::from_str(&text)
-        .with_context(|| format!("parsing {} (expected `this_host = \"...\"`)", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let parsed: ThisHostFile = toml::from_str(&text).with_context(|| {
+        format!(
+            "parsing {} (expected `this_host = \"...\"`)",
+            path.display()
+        )
+    })?;
     Ok(Some(parsed.this_host))
 }
 
@@ -668,8 +663,7 @@ impl Config {
             self.agents.iter().map(|a| a.name.as_str()).collect();
 
         // [[hosts]] uniqueness + agent.host resolution.
-        let mut seen_host_names: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
+        let mut seen_host_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for h in &self.hosts {
             if !seen_host_names.insert(h.name.as_str()) {
                 return Err(anyhow!(
@@ -824,7 +818,10 @@ impl Config {
                 .as_deref()
                 .or(self.this_host.as_deref())
                 .unwrap_or("<local>");
-            bosses_per_host.entry(host_key).or_default().push(a.name.as_str());
+            bosses_per_host
+                .entry(host_key)
+                .or_default()
+                .push(a.name.as_str());
         }
         for (host, names) in &bosses_per_host {
             if names.len() > 1 {
@@ -843,20 +840,14 @@ impl Config {
     /// otherwise `this_host` (the local machine). Returns `None` only
     /// when neither is known — local-only mode pre-remote-channels.
     pub fn agent_host<'a>(&'a self, agent: &'a Agent) -> Option<&'a str> {
-        agent
-            .host
-            .as_deref()
-            .or(self.this_host.as_deref())
+        agent.host.as_deref().or(self.this_host.as_deref())
     }
 
     /// v0.6.0: resolve which runtime an agent uses. Priority:
     /// explicit `agent.runtime` → `project.runtime` → `Runtime::Claude`
     /// (backward compat default).
     pub fn agent_runtime(&self, agent: &Agent) -> crate::runtime::Runtime {
-        agent
-            .runtime
-            .or(self.project.runtime)
-            .unwrap_or_default()
+        agent.runtime.or(self.project.runtime).unwrap_or_default()
     }
 
     /// True when every participant of the channel lives on `this_host`
@@ -1335,7 +1326,9 @@ platform = "wsl"
 swarm_boss = true"#,
             );
         let err = Config::load_str_for_test(&body).unwrap_err();
-        assert!(err.to_string().contains("multiple agents flagged as swarm_boss"));
+        assert!(err
+            .to_string()
+            .contains("multiple agents flagged as swarm_boss"));
     }
 
     /// v0.3.6 S2: one boss per host across a multi-host swarm is OK.
@@ -1376,7 +1369,11 @@ swarm_boss = true
         let tmp = tempfile::TempDir::new().unwrap();
         let cfg_path = tmp.path().join("giga-harness.toml");
         std::fs::write(&cfg_path, body).unwrap();
-        std::fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
         let cfg = Config::load(&cfg_path).unwrap();
         assert_eq!(cfg.agents.iter().filter(|a| a.swarm_boss).count(), 2);
     }
@@ -1729,7 +1726,10 @@ tailnet_hostname = "wsl-a-dup.tail0000.ts.net""#,
         cfg.this_host = Some("wsl-a".into());
         cfg.validate().unwrap();
         let ch = &cfg.channels[0];
-        assert!(cfg.channel_is_local(ch), "alice is on wsl-a (this_host) -> local fast-path");
+        assert!(
+            cfg.channel_is_local(ch),
+            "alice is on wsl-a (this_host) -> local fast-path"
+        );
     }
 
     #[test]
@@ -1738,7 +1738,10 @@ tailnet_hostname = "wsl-a-dup.tail0000.ts.net""#,
         cfg.this_host = Some("wsl-a".into());
         cfg.validate().unwrap();
         let ch = &cfg.channels[0];
-        assert!(!cfg.channel_is_local(ch), "alice@wsl-a + bob@wsl-b spans hosts -> slice path");
+        assert!(
+            !cfg.channel_is_local(ch),
+            "alice@wsl-a + bob@wsl-b spans hosts -> slice path"
+        );
     }
 
     #[test]
@@ -1826,13 +1829,15 @@ name = "wsl-b"
 tailnet_hostname = "wsl-b.tail0.ts.net"
 paths.wsl_inbox = "/home/alice/projects/inbox"
 "#,
-            minimal().replace(
-                "platform = \"wsl\"\n\n[[agents]]",
-                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
-            ).replace(
-                "platform = \"wsl\"\n\n[[channels]]",
-                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
-            )
+            minimal()
+                .replace(
+                    "platform = \"wsl\"\n\n[[agents]]",
+                    "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
+                )
+                .replace(
+                    "platform = \"wsl\"\n\n[[channels]]",
+                    "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
+                )
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
@@ -1865,13 +1870,15 @@ name = "wsl-b"
 tailnet_hostname = "b.tail0.ts.net"
 remote_inbox_dir = "/legacy/path"
 "#,
-            minimal().replace(
-                "platform = \"wsl\"\n\n[[agents]]",
-                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
-            ).replace(
-                "platform = \"wsl\"\n\n[[channels]]",
-                "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
-            )
+            minimal()
+                .replace(
+                    "platform = \"wsl\"\n\n[[agents]]",
+                    "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",
+                )
+                .replace(
+                    "platform = \"wsl\"\n\n[[channels]]",
+                    "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[channels]]",
+                )
         );
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-a".into());
@@ -1894,7 +1901,10 @@ remote_inbox_dir = "/legacy/path"
     #[test]
     fn inbox_for_host_side_no_host_context_uses_global() {
         let cfg = Config::load_str_for_test(minimal()).unwrap();
-        assert_eq!(cfg.inbox_for_host_side(None, "wsl"), Some(PathBuf::from("/tmp/i")));
+        assert_eq!(
+            cfg.inbox_for_host_side(None, "wsl"),
+            Some(PathBuf::from("/tmp/i"))
+        );
     }
 
     #[test]
@@ -1932,7 +1942,11 @@ participants = ["a", "b"]
         let mut cfg: Config = toml::from_str(&body).unwrap();
         cfg.this_host = Some("wsl-b".into());
         cfg.validate().unwrap();
-        let ch = cfg.channels.iter().find(|c| c.file == "alice-bob.md").unwrap();
+        let ch = cfg
+            .channels
+            .iter()
+            .find(|c| c.file == "alice-bob.md")
+            .unwrap();
         let path = cfg.channel_path(ch).unwrap();
         assert!(
             path.starts_with("/home/alice/projects/inbox"),
@@ -1974,8 +1988,14 @@ participants = ["a", "b"]
     /// watch.rs can dispatch on it.
     #[test]
     fn parse_broadcast_prefix_recognizes_giga_rearm() {
-        assert_eq!(parse_broadcast_prefix("[giga-rearm] giga upgraded"), Some(BroadcastPrefix::GigaRearm));
-        assert_eq!(parse_broadcast_prefix("[GIGA-REARM] case insensitive"), Some(BroadcastPrefix::GigaRearm));
+        assert_eq!(
+            parse_broadcast_prefix("[giga-rearm] giga upgraded"),
+            Some(BroadcastPrefix::GigaRearm)
+        );
+        assert_eq!(
+            parse_broadcast_prefix("[GIGA-REARM] case insensitive"),
+            Some(BroadcastPrefix::GigaRearm)
+        );
         // After timestamp wrapper.
         assert_eq!(
             parse_broadcast_prefix("[design 2026-06-02 12:00 PST] [giga-rearm] please"),
@@ -1985,9 +2005,18 @@ participants = ["a", "b"]
 
     #[test]
     fn parse_broadcast_prefix_recognizes_fyi() {
-        assert_eq!(parse_broadcast_prefix("[fyi] host-c came online"), Some(BroadcastPrefix::Fyi));
-        assert_eq!(parse_broadcast_prefix("[FYI] case insensitive"), Some(BroadcastPrefix::Fyi));
-        assert_eq!(parse_broadcast_prefix("  [ fyi ]  whitespace tolerant"), Some(BroadcastPrefix::Fyi));
+        assert_eq!(
+            parse_broadcast_prefix("[fyi] host-c came online"),
+            Some(BroadcastPrefix::Fyi)
+        );
+        assert_eq!(
+            parse_broadcast_prefix("[FYI] case insensitive"),
+            Some(BroadcastPrefix::Fyi)
+        );
+        assert_eq!(
+            parse_broadcast_prefix("  [ fyi ]  whitespace tolerant"),
+            Some(BroadcastPrefix::Fyi)
+        );
     }
 
     #[test]
@@ -2003,7 +2032,10 @@ participants = ["a", "b"]
 
     #[test]
     fn parse_broadcast_prefix_recognizes_all() {
-        assert_eq!(parse_broadcast_prefix("[all] hello everyone"), Some(BroadcastPrefix::All));
+        assert_eq!(
+            parse_broadcast_prefix("[all] hello everyone"),
+            Some(BroadcastPrefix::All)
+        );
     }
 
     #[test]
@@ -2016,9 +2048,8 @@ participants = ["a", "b"]
     fn parse_broadcast_prefix_skips_timestamp_header() {
         // The convention from CLAUDE.md is "[<agent> YYYY-MM-DD HH:MM PST]".
         // The parser must skip past that to find the broadcast prefix.
-        let parsed = parse_broadcast_prefix(
-            "[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge",
-        );
+        let parsed =
+            parse_broadcast_prefix("[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge");
         match parsed {
             Some(BroadcastPrefix::Ack(list)) => assert_eq!(list, vec!["alice"]),
             other => panic!("expected Ack after timestamp prefix, got {other:?}"),

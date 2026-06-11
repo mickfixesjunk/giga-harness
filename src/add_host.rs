@@ -98,7 +98,9 @@ pub fn run(args: Args) -> Result<()> {
         }
         if let Some(name) = &local_host_name {
             println!("  + first-host migration: would also register local host `{name}`,");
-            println!("    set host = \"{name}\" on existing host-less agents, and write this_host.toml");
+            println!(
+                "    set host = \"{name}\" on existing host-less agents, and write this_host.toml"
+            );
         }
         if !args.no_bootstrap {
             println!("  + would also bootstrap (mkdir + rsync swarm dir + ensure this_host.toml on peer)");
@@ -182,7 +184,10 @@ pub fn run(args: Args) -> Result<()> {
         println!("(--no-bootstrap: skipping peer push; run `giga sync --once` later or use add-agent --host {} to trigger it)", args.name);
     } else {
         println!();
-        println!("bootstrapping `{}` (mkdir + rsync swarm dir + ensure this_host.toml)...", args.name);
+        println!(
+            "bootstrapping `{}` (mkdir + rsync swarm dir + ensure this_host.toml)...",
+            args.name
+        );
         match sync::bootstrap_peer(&revalidated, &args.name, &args.config) {
             Ok(()) => println!("  + bootstrap complete"),
             Err(e) => {
@@ -316,7 +321,11 @@ host = "host-a"
     }
 
     fn this_host_a(tmp: &TempDir) {
-        fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
     }
 
     fn args(config: PathBuf, name: &str) -> Args {
@@ -380,11 +389,15 @@ host = "host-a"
         let b = cfg.hosts.iter().find(|h| h.name == "host-b").unwrap();
         assert_eq!(b.ssh_user.as_deref(), Some("bob"));
         assert_eq!(
-            b.remote_config_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            b.remote_config_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             Some("/home/bob/.giga/configs/t".into())
         );
         assert_eq!(
-            b.remote_inbox_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            b.remote_inbox_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             Some("/home/bob/inbox".into())
         );
     }
@@ -426,7 +439,8 @@ platform = "wsl"
         // Both hosts registered.
         let cfg = Config::load(&p).unwrap();
         assert_eq!(cfg.hosts.len(), 2);
-        let names: std::collections::HashSet<&str> = cfg.hosts.iter().map(|h| h.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> =
+            cfg.hosts.iter().map(|h| h.name.as_str()).collect();
         assert!(names.contains("peer-host"));
         assert!(names.contains("operator-host"));
 
@@ -434,13 +448,18 @@ platform = "wsl"
         // local host on which add-host was run).
         assert!(cfg.agents.iter().all(|a| a.host.is_some()));
         assert!(
-            cfg.agents.iter().all(|a| a.host.as_deref() == Some("operator-host")),
+            cfg.agents
+                .iter()
+                .all(|a| a.host.as_deref() == Some("operator-host")),
             "all pre-existing agents should be assigned to the local host on first migration"
         );
 
         // v0.3.9: this_host.local.toml was written (new name).
         let this_host_path = tmp.path().join(crate::config::THIS_HOST_FILE);
-        assert!(this_host_path.exists(), "this_host.local.toml must exist after first migration");
+        assert!(
+            this_host_path.exists(),
+            "this_host.local.toml must exist after first migration"
+        );
         let contents = fs::read_to_string(&this_host_path).unwrap();
         assert!(contents.contains("operator-host"));
     }
@@ -455,7 +474,11 @@ platform = "wsl"
         let original_agent_count = Config::load(&p).unwrap().agents.len();
         run(args(p.clone(), "host-b")).unwrap();
         let cfg = Config::load(&p).unwrap();
-        assert_eq!(cfg.hosts.len(), 2, "added host-b alongside host-a, no extra entries");
+        assert_eq!(
+            cfg.hosts.len(),
+            2,
+            "added host-b alongside host-a, no extra entries"
+        );
         assert_eq!(cfg.agents.len(), original_agent_count, "agents untouched");
     }
 

@@ -98,9 +98,9 @@ pub fn for_config(cfg: &Config) -> Result<Box<dyn Transport>> {
         "rsync+tailscale" => Ok(Box::new(
             crate::transports::rsync_tailscale::RsyncTailscaleTransport,
         )),
-        "git" => Ok(Box::new(
-            crate::transports::git::GitTransport::from_config(cfg)?,
-        )),
+        "git" => Ok(Box::new(crate::transports::git::GitTransport::from_config(
+            cfg,
+        )?)),
         other => Err(anyhow!(
             "unknown transport `{other}` — supported: local, rsync+tailscale, git"
         )),
@@ -203,7 +203,9 @@ kind = "carrier-pigeon"
             Ok(_) => panic!("expected unknown-transport error"),
             Err(e) => e,
         };
-        assert!(err.to_string().contains("unknown transport `carrier-pigeon`"));
+        assert!(err
+            .to_string()
+            .contains("unknown transport `carrier-pigeon`"));
     }
 
     #[test]

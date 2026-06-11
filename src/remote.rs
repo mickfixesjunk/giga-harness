@@ -65,12 +65,9 @@ pub fn run_passthrough(cfg: &Config, peer: &str, args: &[String]) -> Result<i32>
     // convention. The transport layer doesn't carry the operator's
     // current --config arg, so we look the swarm up in the registry to
     // find where the canonical config lives locally.
-    let local_config_dir = registry_config_dir(&cfg.project.name)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let remote_dir = host
-        .remote_config_dir
-        .clone()
-        .unwrap_or(local_config_dir);
+    let local_config_dir =
+        registry_config_dir(&cfg.project.name).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let remote_dir = host.remote_config_dir.clone().unwrap_or(local_config_dir);
     let remote_cmd = build_remote_command(&remote_dir, args);
     let wrapped = format!(
         "bash -lc {}",
@@ -145,8 +142,8 @@ fn build_remote_command(config_dir: &Path, remote_args: &[String]) -> String {
         .map(|a| shell_escape::unix::escape(a.into()).into_owned())
         .collect();
     let dir_unix = config_dir.display().to_string().replace('\\', "/");
-    let escaped_dir = shell_escape::unix::escape(std::borrow::Cow::Borrowed(dir_unix.as_str()))
-        .into_owned();
+    let escaped_dir =
+        shell_escape::unix::escape(std::borrow::Cow::Borrowed(dir_unix.as_str())).into_owned();
     format!("cd {escaped_dir} && giga {}", escaped_args.join(" "))
 }
 
@@ -190,7 +187,11 @@ mod tests {
     fn build_remote_command_quotes_paths_and_args() {
         let cmd = build_remote_command(
             Path::new("/home/alice/.giga/configs/remote-test"),
-            &["sweep".to_string(), "--owed-by".to_string(), "test-a".to_string()],
+            &[
+                "sweep".to_string(),
+                "--owed-by".to_string(),
+                "test-a".to_string(),
+            ],
         );
         // Basic shape: cd <quoted-path> && giga sweep --owed-by test-a
         assert!(cmd.starts_with("cd "));
@@ -233,14 +234,11 @@ mod tests {
         let hosts_toml: String = host_names
             .iter()
             .map(|n| {
-                format!(
-                    "[[hosts]]\nname = \"{n}\"\ntailnet_hostname = \"{n}.tail0.ts.net\"\n"
-                )
+                format!("[[hosts]]\nname = \"{n}\"\ntailnet_hostname = \"{n}.tail0.ts.net\"\n")
             })
             .collect();
-        let body = format!(
-            "[project]\nname = \"t\"\n[paths]\nwsl_inbox = \"/tmp/i\"\n{hosts_toml}"
-        );
+        let body =
+            format!("[project]\nname = \"t\"\n[paths]\nwsl_inbox = \"/tmp/i\"\n{hosts_toml}");
         let mut cfg: Config = toml::from_str(&body).unwrap();
         // Pretend we are the first host so validate() passes.
         if let Some(first) = host_names.first() {

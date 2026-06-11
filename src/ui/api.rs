@@ -103,9 +103,7 @@ pub async fn list_swarms() -> Json<Vec<SwarmSummary>> {
     Json(entries.iter().map(summarize_swarm).collect())
 }
 
-pub async fn get_swarm(
-    AxumPath(name): AxumPath<String>,
-) -> Result<Json<SwarmDetail>, StatusCode> {
+pub async fn get_swarm(AxumPath(name): AxumPath<String>) -> Result<Json<SwarmDetail>, StatusCode> {
     let reg = registry::load().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let entry = reg
         .entries
@@ -156,8 +154,8 @@ pub async fn get_swarm_timeline(
         .iter()
         .find(|e| e.name == name)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
-    let cfg = Config::load(&entry.config)
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cfg =
+        Config::load(&entry.config).map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut all: Vec<TimelinePost> = Vec::new();
     for ch in &cfg.channels {
@@ -355,8 +353,7 @@ pub async fn post_to_channel(
     // pre-check that the channel is declared in this swarm so
     // arbitrary file appends are blocked even before post::run is
     // reached.
-    let cfg = Config::load(&entry.config)
-        .map_err(|e| internal(&format!("config load: {e:#}")))?;
+    let cfg = Config::load(&entry.config).map_err(|e| internal(&format!("config load: {e:#}")))?;
     let _ = cfg
         .channels
         .iter()
@@ -382,7 +379,10 @@ pub async fn post_to_channel(
         // Participant/waiting-on validation errors are the user's
         // fault, not 500s — surface as 400 with the original error.
         if msg.contains("is not a participant") || msg.contains("WAITING ON target") {
-            (axum::http::StatusCode::BAD_REQUEST, Json(PostError { error: msg }))
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(PostError { error: msg }),
+            )
         } else {
             internal(&msg)
         }
@@ -398,14 +398,18 @@ pub async fn post_to_channel(
 fn not_found(msg: &str) -> (axum::http::StatusCode, Json<PostError>) {
     (
         axum::http::StatusCode::NOT_FOUND,
-        Json(PostError { error: msg.to_string() }),
+        Json(PostError {
+            error: msg.to_string(),
+        }),
     )
 }
 
 fn internal(msg: &str) -> (axum::http::StatusCode, Json<PostError>) {
     (
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        Json(PostError { error: msg.to_string() }),
+        Json(PostError {
+            error: msg.to_string(),
+        }),
     )
 }
 
@@ -689,7 +693,8 @@ pub async fn add_agent(
         argv.push("--dry-run".into());
     }
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let out = run_giga(&argv_refs).map_err(|e| internal(&format!("spawn giga add-agent: {e:#}")))?;
+    let out =
+        run_giga(&argv_refs).map_err(|e| internal(&format!("spawn giga add-agent: {e:#}")))?;
     Ok(Json(out))
 }
 
@@ -808,11 +813,7 @@ fn detail_from(entry: &registry::Entry, cfg: &Config) -> SwarmDetail {
         .find(|s| s.name == session_name)
         .map(|s| s.windows.iter().map(|w| w.name.clone()).collect())
         .unwrap_or_default();
-    let watcher_agents: Vec<String> = snapshot
-        .watchers
-        .iter()
-        .map(|w| w.agent.clone())
-        .collect();
+    let watcher_agents: Vec<String> = snapshot.watchers.iter().map(|w| w.agent.clone()).collect();
     SwarmDetail {
         name: entry.name.clone(),
         config_path: entry.config.clone(),
@@ -949,7 +950,10 @@ mod tests {
         // .txt should be skipped even though it's newer.
         fs::write(tmp.path().join("zzz.txt"), "newer").unwrap();
         let latest = newest_md_mtime(tmp.path()).unwrap();
-        let a_mtime = fs::metadata(tmp.path().join("a.md")).unwrap().modified().unwrap();
+        let a_mtime = fs::metadata(tmp.path().join("a.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(latest, a_mtime);
     }
 
@@ -968,6 +972,9 @@ mod tests {
         assert_eq!(summary.name, "missing");
         assert_eq!(summary.agent_count, 0);
         assert_eq!(summary.channel_count, 0);
-        assert!(summary.load_error.is_some(), "expected load_error for missing config");
+        assert!(
+            summary.load_error.is_some(),
+            "expected load_error for missing config"
+        );
     }
 }

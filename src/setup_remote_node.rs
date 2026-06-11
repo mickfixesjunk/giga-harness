@@ -85,9 +85,7 @@ pub fn run(args: Args) -> Result<()> {
 
 fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
     // -------- 1. WSL check --------
-    step(1, 6, "WSL detection", dry, || {
-        wsl_check()
-    })?;
+    step(1, 6, "WSL detection", dry, || wsl_check())?;
 
     // -------- 2. rsync --------
     step(2, 6, "rsync (for slice file transport)", dry, || {
@@ -95,29 +93,35 @@ fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
     })?;
 
     // -------- 3. Tailscale install --------
-    step(3, 6, "Tailscale (for SSH-over-tailnet transport)", dry, || {
-        if which::which("tailscale").is_ok() {
-            println!("    already installed");
-            return Ok(());
-        }
-        println!("    installing Tailscale via the official install.sh...");
-        // Tailscale's installer handles sudo internally + asks no questions.
-        let status = Command::new("bash")
-            .arg("-c")
-            .arg("curl -fsSL https://tailscale.com/install.sh | sh")
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .context("invoking Tailscale install.sh")?;
-        if !status.success() {
-            return Err(anyhow!(
-                "Tailscale install.sh exited {}; see output above",
-                status.code().unwrap_or(-1)
-            ));
-        }
-        Ok(())
-    })?;
+    step(
+        3,
+        6,
+        "Tailscale (for SSH-over-tailnet transport)",
+        dry,
+        || {
+            if which::which("tailscale").is_ok() {
+                println!("    already installed");
+                return Ok(());
+            }
+            println!("    installing Tailscale via the official install.sh...");
+            // Tailscale's installer handles sudo internally + asks no questions.
+            let status = Command::new("bash")
+                .arg("-c")
+                .arg("curl -fsSL https://tailscale.com/install.sh | sh")
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+                .context("invoking Tailscale install.sh")?;
+            if !status.success() {
+                return Err(anyhow!(
+                    "Tailscale install.sh exited {}; see output above",
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            Ok(())
+        },
+    )?;
 
     // -------- 4. tailscale up (interactive) --------
     step(4, 6, "Joining your tailnet (interactive)", dry, || {
@@ -125,7 +129,9 @@ fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
             println!("    already logged into your tailnet");
             return Ok(());
         }
-        println!("    running `sudo tailscale up` — visit the URL it prints to authorize this node");
+        println!(
+            "    running `sudo tailscale up` — visit the URL it prints to authorize this node"
+        );
         let status = Command::new("sudo")
             .args(["tailscale", "up"])
             .stdin(Stdio::inherit())
@@ -143,11 +149,17 @@ fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
     })?;
 
     // -------- 5. Tailscale SSH --------
-    step(5, 6, "Enabling Tailscale SSH (no keypair exchange needed)", dry, || {
-        run_sudo(&["tailscale", "set", "--ssh"])?;
-        println!("    Tailscale SSH enabled");
-        Ok(())
-    })?;
+    step(
+        5,
+        6,
+        "Enabling Tailscale SSH (no keypair exchange needed)",
+        dry,
+        || {
+            run_sudo(&["tailscale", "set", "--ssh"])?;
+            println!("    Tailscale SSH enabled");
+            Ok(())
+        },
+    )?;
 
     // -------- 6. Inbox dir --------
     inbox_dir_step(6, 6, inbox_dir, dry)?;
@@ -250,31 +262,37 @@ fn ensure_rsync() -> Result<()> {
 }
 
 fn inbox_dir_step(n: u32, total: u32, inbox_dir: &Path, dry: bool) -> Result<()> {
-    step(n, total, &format!("Inbox dir at {}", inbox_dir.display()), dry, || {
-        if inbox_dir.exists() {
-            let has_md = std::fs::read_dir(inbox_dir)
-                .ok()
-                .map(|rd| {
-                    rd.flatten()
-                        .any(|e| e.path().extension().map(|e| e == "md").unwrap_or(false))
-                })
-                .unwrap_or(false);
-            if has_md {
-                println!(
-                    "    note: {} already contains .md files (existing swarm?). \
+    step(
+        n,
+        total,
+        &format!("Inbox dir at {}", inbox_dir.display()),
+        dry,
+        || {
+            if inbox_dir.exists() {
+                let has_md = std::fs::read_dir(inbox_dir)
+                    .ok()
+                    .map(|rd| {
+                        rd.flatten()
+                            .any(|e| e.path().extension().map(|e| e == "md").unwrap_or(false))
+                    })
+                    .unwrap_or(false);
+                if has_md {
+                    println!(
+                        "    note: {} already contains .md files (existing swarm?). \
                      Remote slice files won't collide (separate filenames per host).",
-                    inbox_dir.display()
-                );
-            } else {
-                println!("    already exists");
+                        inbox_dir.display()
+                    );
+                } else {
+                    println!("    already exists");
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        std::fs::create_dir_all(inbox_dir)
-            .with_context(|| format!("creating {}", inbox_dir.display()))?;
-        println!("    created");
-        Ok(())
-    })
+            std::fs::create_dir_all(inbox_dir)
+                .with_context(|| format!("creating {}", inbox_dir.display()))?;
+            println!("    created");
+            Ok(())
+        },
+    )
 }
 
 fn print_tailscale_summary(inbox_dir: &Path, dry: bool) {
@@ -282,7 +300,8 @@ fn print_tailscale_summary(inbox_dir: &Path, dry: bool) {
     println!("================================================================================");
     println!("Remote node bootstrap complete on {}.", hostname());
     println!();
-    let ts_name = tailnet_hostname().unwrap_or_else(|_| "<run `tailscale status` to find it>".into());
+    let ts_name =
+        tailnet_hostname().unwrap_or_else(|_| "<run `tailscale status` to find it>".into());
     println!("This host's tailnet hostname:  {ts_name}");
     println!("Inbox directory:               {}", inbox_dir.display());
     println!();
@@ -304,7 +323,10 @@ fn print_tailscale_summary(inbox_dir: &Path, dry: bool) {
 fn print_git_summary(inbox_dir: &Path, repo: &str, dry: bool) {
     println!();
     println!("================================================================================");
-    println!("Remote node bootstrap complete on {} (git transport).", hostname());
+    println!(
+        "Remote node bootstrap complete on {} (git transport).",
+        hostname()
+    );
     println!();
     println!("State repo:                   {repo}");
     println!("Inbox directory:              {}", inbox_dir.display());

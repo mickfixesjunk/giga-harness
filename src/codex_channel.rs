@@ -56,8 +56,7 @@ pub fn run(args: Args) -> Result<()> {
     let inbox_dir = args.channel_dir.join("inbox");
     let outbox_dir = args.channel_dir.join("outbox");
     let processed_dir = args.channel_dir.join("processed");
-    fs::create_dir_all(&inbox_dir)
-        .with_context(|| format!("creating {}", inbox_dir.display()))?;
+    fs::create_dir_all(&inbox_dir).with_context(|| format!("creating {}", inbox_dir.display()))?;
     fs::create_dir_all(&outbox_dir)
         .with_context(|| format!("creating {}", outbox_dir.display()))?;
     fs::create_dir_all(&processed_dir)
@@ -131,7 +130,14 @@ pub fn run(args: Args) -> Result<()> {
                     channel = state.name,
                     path = state.path.display(),
                 );
-                write_envelope(&inbox_dir, &project_name, &args.me, &state.name, from, &text)?;
+                write_envelope(
+                    &inbox_dir,
+                    &project_name,
+                    &args.me,
+                    &state.name,
+                    from,
+                    &text,
+                )?;
             }
 
             if let Some(home) = &giga_home {
@@ -184,7 +190,10 @@ fn refresh_tracked(
             eof
         };
         if start < eof {
-            eprintln!("codex-channel: catching up on `{name}` ({} bytes)", eof - start);
+            eprintln!(
+                "codex-channel: catching up on `{name}` ({} bytes)",
+                eof - start
+            );
         } else {
             eprintln!("codex-channel: tracking `{name}` at EOF");
         }
@@ -268,7 +277,9 @@ pub(crate) fn write_envelope(
     }
     fs::rename(&tmp_path, &final_path)
         .with_context(|| format!("publishing {}", final_path.display()))?;
-    eprintln!("codex-channel: delivered {channel} -> {}", final_path.display());
+    eprintln!(
+        "codex-channel: delivered {channel} -> {}",
+        final_path.display()
+    );
     Ok(())
 }
-

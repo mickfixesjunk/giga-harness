@@ -135,7 +135,12 @@ fn escape_wt_semicolons(s: &str) -> String {
     out
 }
 
-fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool, stagger_seconds: u64) -> Result<()> {
+fn launch_wt(
+    panes: &[Pane],
+    session_name: &str,
+    new_window: bool,
+    stagger_seconds: u64,
+) -> Result<()> {
     // Compose wt.exe invocations — one tab per agent.
     //
     // Admin panes get a SEPARATE wt.exe call with `-w new`. This is
@@ -231,7 +236,9 @@ fn launch_wt(panes: &[Pane], session_name: &str, new_window: bool, stagger_secon
                 .arg("--admin");
             append_windows_tab_cmd(&mut cmd, pane);
         }
-        let status = cmd.status().context("spawning Windows Terminal (admin tabs)")?;
+        let status = cmd
+            .status()
+            .context("spawning Windows Terminal (admin tabs)")?;
         if !status.success() {
             anyhow::bail!("wt.exe exited with status {status} (admin tabs)");
         }
@@ -332,7 +339,12 @@ fn append_windows_tab_cmd(cmd: &mut Command, pane: &Pane) {
         .arg(escape_wt_semicolons(&spawn));
 }
 
-fn launch_tmux(panes: &[Pane], session_name: &str, incremental: bool, stagger_seconds: u64) -> Result<()> {
+fn launch_tmux(
+    panes: &[Pane],
+    session_name: &str,
+    incremental: bool,
+    stagger_seconds: u64,
+) -> Result<()> {
     // When incremental (--only), attach to an existing session if one
     // is alive and add windows to it; otherwise create a new session.
     // When not incremental (full launch), preserve the historical
@@ -606,18 +618,12 @@ mod tests {
     #[test]
     fn decide_multiplexer_falls_through_to_tmux_without_wt() {
         // Pure-Linux host: no wt.exe, tmux installed.
-        assert_eq!(
-            decide_multiplexer(false, true, false),
-            Multiplexer::Tmux,
-        );
+        assert_eq!(decide_multiplexer(false, true, false), Multiplexer::Tmux,);
     }
 
     #[test]
     fn decide_multiplexer_returns_none_when_neither_available() {
-        assert_eq!(
-            decide_multiplexer(false, false, false),
-            Multiplexer::None,
-        );
+        assert_eq!(decide_multiplexer(false, false, false), Multiplexer::None,);
     }
 
     #[test]

@@ -107,19 +107,13 @@ pub fn run(args: Args) -> Result<()> {
     let body =
         crate::init::render_agent_claudemd(&cfg_after, agent_after, &config_dir, &abs_config)?;
     let agents_md = agent_after.workdir.join("AGENTS.md");
-    fs::write(&agents_md, body)
-        .with_context(|| format!("writing {}", agents_md.display()))?;
+    fs::write(&agents_md, body).with_context(|| format!("writing {}", agents_md.display()))?;
     println!("  + AGENTS.md re-rendered for `{}`", new_runtime.as_str());
 
     // 5. Prepend the takeover block to HANDOVER.md so it lands at the
     //    top of the new agent's read on session start.
     let handover_path = agent_after.workdir.join("HANDOVER.md");
-    let block = render_takeover_block(
-        &slug,
-        old_runtime,
-        new_runtime,
-        session_hint.as_deref(),
-    );
+    let block = render_takeover_block(&slug, old_runtime, new_runtime, session_hint.as_deref());
     prepend_to_file(&handover_path, &block)
         .with_context(|| format!("updating {}", handover_path.display()))?;
     println!("  + HANDOVER.md updated (takeover block at top)");
@@ -129,7 +123,10 @@ pub fn run(args: Args) -> Result<()> {
     //    its own turn-1 plan with no other context.
     println!();
     println!("== takeover prompt (the new agent should follow this) ==");
-    println!("{}", takeover_prompt(&slug, old_runtime, new_runtime, session_hint.as_deref()));
+    println!(
+        "{}",
+        takeover_prompt(&slug, old_runtime, new_runtime, session_hint.as_deref())
+    );
 
     Ok(())
 }
@@ -145,7 +142,10 @@ fn detect_slug_from_cwd(cfg: &Config) -> Result<String> {
         .agents
         .iter()
         .filter(|a| {
-            let wd = a.workdir.canonicalize().unwrap_or_else(|_| a.workdir.clone());
+            let wd = a
+                .workdir
+                .canonicalize()
+                .unwrap_or_else(|_| a.workdir.clone());
             wd == cwd_canon
         })
         .collect();
@@ -189,7 +189,9 @@ pub(crate) fn locate_session_file(runtime: Runtime, workdir: &Path) -> Option<Pa
 /// the `--giga` sequence). Each session is one `<uuid>.jsonl`. We
 /// return the most-recently-modified file under that dir.
 fn locate_claude_session(home: &Path, workdir: &Path) -> Option<PathBuf> {
-    let canon = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let canon = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
     let encoded: String = canon
         .to_string_lossy()
         .chars()
@@ -205,7 +207,10 @@ fn locate_claude_session(home: &Path, workdir: &Path) -> Option<PathBuf> {
 /// 2026-06-03). We point at the global file; the new agent can grep
 /// for cwd-relevant lines.
 fn locate_agy_session(home: &Path, _workdir: &Path) -> Option<PathBuf> {
-    let p = home.join(".gemini").join("antigravity-cli").join("history.jsonl");
+    let p = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("history.jsonl");
     p.exists().then_some(p)
 }
 
@@ -214,7 +219,9 @@ fn locate_agy_session(home: &Path, _workdir: &Path) -> Option<PathBuf> {
 /// whichever exists. The exact convention may need correction as Codex
 /// evolves.
 fn locate_codex_session(home: &Path, workdir: &Path) -> Option<PathBuf> {
-    let canon = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let canon = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
     let encoded = canon.to_string_lossy().replace('/', "-");
     for candidate in [
         home.join(".codex").join("projects").join(&encoded),
@@ -249,11 +256,7 @@ fn most_recent_jsonl(dir: &Path) -> Option<PathBuf> {
 /// Edit the canonical TOML in-place: set `[[agents]]` where name=slug
 /// to `runtime = <new>`. Preserves comments + formatting via
 /// `toml_edit`. Modeled on `teleport::update_toml_agent_host`.
-fn update_agent_runtime_in_toml(
-    config: &Path,
-    slug: &str,
-    new_runtime: Runtime,
-) -> Result<()> {
+fn update_agent_runtime_in_toml(config: &Path, slug: &str, new_runtime: Runtime) -> Result<()> {
     let original =
         fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
     let mut doc: DocumentMut = original
@@ -278,8 +281,7 @@ fn update_agent_runtime_in_toml(
             "agent `{slug}` not found in [[agents]] (TOML may have been edited concurrently)"
         ));
     }
-    fs::write(config, doc.to_string())
-        .with_context(|| format!("writing {}", config.display()))?;
+    fs::write(config, doc.to_string()).with_context(|| format!("writing {}", config.display()))?;
     Ok(())
 }
 
@@ -460,7 +462,10 @@ mod tests {
             .map(|c| if c == '/' || c == '.' { '-' } else { c })
             .collect();
         // Must contain the `--giga` double-dash signature (`/.giga` → `--giga`).
-        assert!(encoded.contains("--giga"), "encoding lost `.` -> `-`: {encoded}");
+        assert!(
+            encoded.contains("--giga"),
+            "encoding lost `.` -> `-`: {encoded}"
+        );
         let proj_dir = tmp_home
             .path()
             .join(".claude")
@@ -515,8 +520,14 @@ mod tests {
         fs::write(&cfg_path, original).unwrap();
         update_agent_runtime_in_toml(&cfg_path, "alice", Runtime::Claude).unwrap();
         let after = fs::read_to_string(&cfg_path).unwrap();
-        assert!(after.contains("# top comment"), "lost top comment:\n{after}");
-        assert!(after.contains("# before agent"), "lost mid comment:\n{after}");
+        assert!(
+            after.contains("# top comment"),
+            "lost top comment:\n{after}"
+        );
+        assert!(
+            after.contains("# before agent"),
+            "lost mid comment:\n{after}"
+        );
         assert!(
             after.contains("runtime = \"claude\""),
             "runtime not flipped to claude:\n{after}",
@@ -558,9 +569,18 @@ mod tests {
         assert!(prompt.contains("coder"), "missing slug:\n{prompt}");
         assert!(prompt.contains("agy"), "missing old runtime:\n{prompt}");
         assert!(prompt.contains("claude"), "missing new runtime:\n{prompt}");
-        assert!(prompt.contains("HANDOVER.md"), "missing handover ref:\n{prompt}");
-        assert!(prompt.contains("AGENTS.md"), "missing AGENTS.md ref:\n{prompt}");
-        assert!(prompt.contains("[coder]"), "missing reply-prefix rule:\n{prompt}");
+        assert!(
+            prompt.contains("HANDOVER.md"),
+            "missing handover ref:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("AGENTS.md"),
+            "missing AGENTS.md ref:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("[coder]"),
+            "missing reply-prefix rule:\n{prompt}"
+        );
     }
 
     #[test]
@@ -585,9 +605,15 @@ mod tests {
     #[test]
     fn render_takeover_block_labels_both_runtimes_and_points_at_agents_md() {
         let block = render_takeover_block("coder", Runtime::Agy, Runtime::Claude, None);
-        assert!(block.contains("TAKEOVER"), "missing TAKEOVER header:\n{block}");
+        assert!(
+            block.contains("TAKEOVER"),
+            "missing TAKEOVER header:\n{block}"
+        );
         assert!(block.contains("agy"), "old runtime missing:\n{block}");
         assert!(block.contains("claude"), "new runtime missing:\n{block}");
-        assert!(block.contains("AGENTS.md"), "AGENTS.md pointer missing:\n{block}");
+        assert!(
+            block.contains("AGENTS.md"),
+            "AGENTS.md pointer missing:\n{block}"
+        );
     }
 }

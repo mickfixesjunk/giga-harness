@@ -80,7 +80,9 @@ fn busy_lock_path(giga_home: Option<&Path>, me: &str) -> Option<PathBuf> {
 /// is not. So we never let lock-state ambiguity buffer events forever.
 fn agent_is_busy(lock: Option<&PathBuf>) -> bool {
     let Some(lock) = lock else { return false };
-    let Ok(meta) = fs::metadata(lock) else { return false };
+    let Ok(meta) = fs::metadata(lock) else {
+        return false;
+    };
     match meta.modified() {
         Ok(mtime) => mtime
             .elapsed()
@@ -236,9 +238,7 @@ pub fn run_multi(
             tracked.keys().cloned().collect::<Vec<_>>().join(", "),
         );
     }
-    eprintln!(
-        "watch: broadcast stagger = {stagger_seconds}s (0 = instant fanout)"
-    );
+    eprintln!("watch: broadcast stagger = {stagger_seconds}s (0 = instant fanout)");
     // v0.6.2 diagnostic: per-broadcast-channel, print this agent's slot
     // and the expected delay so the operator can verify stagger is
     // engaged WITHOUT waiting for a broadcast to fire. If this section
@@ -275,8 +275,11 @@ pub fn run_multi(
     // the loop below. Keyed by (channel, sender, tag_timestamp) so
     // the same stale wait fires at most one Monitor notification per
     // supersede — zero LLM cost beyond first detection.
-    let mut surfaced_waits: std::collections::HashSet<(String, String, chrono::DateTime<chrono::Utc>)> =
-        std::collections::HashSet::new();
+    let mut surfaced_waits: std::collections::HashSet<(
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    )> = std::collections::HashSet::new();
     let rescan_seconds = run_stale_wait_scan(
         config_path,
         me,
@@ -391,8 +394,7 @@ pub fn run_multi(
                             continue; // not addressed to us
                         }
                         // Staggered slot within the addressed set.
-                        let recipients: Vec<&str> =
-                            addressed.iter().map(|s| s.as_str()).collect();
+                        let recipients: Vec<&str> = addressed.iter().map(|s| s.as_str()).collect();
                         let delay = config::fanout_delay_seconds(me, &recipients, stagger_seconds);
                         let ready_at = now + Duration::from_secs(delay);
                         // v0.6.2 diagnostic: per-broadcast log the
@@ -682,9 +684,7 @@ mod tests {
 
     #[test]
     fn real_header_passes() {
-        assert!(is_header_line(
-            "[design] online — 2026-05-28T14:30:00Z"
-        ));
+        assert!(is_header_line("[design] online — 2026-05-28T14:30:00Z"));
     }
 
     #[test]
@@ -703,7 +703,9 @@ mod tests {
             "[alice] — relocate the FULL stack (NOT a feature — fits the freeze)."
         ));
         // Em-dash exactly straddling the 20-from-end boundary.
-        assert!(!is_header_line("[design] aaaaaaaaaaaaaaaa — bbbbbbbbbbbbbbbb"));
+        assert!(!is_header_line(
+            "[design] aaaaaaaaaaaaaaaa — bbbbbbbbbbbbbbbb"
+        ));
         // A real header with an em-dash in the subject still passes (ASCII tail intact).
         assert!(is_header_line(
             "[design] bench — results — 2026-05-28T14:30:00Z"
@@ -818,7 +820,10 @@ mod tests {
     /// v0.6.0: missing file = no, not panic.
     #[test]
     fn is_waiting_on_me_returns_false_for_missing_file() {
-        assert!(!is_waiting_on_me(Path::new("/nonexistent/__giga_test"), "anyone"));
+        assert!(!is_waiting_on_me(
+            Path::new("/nonexistent/__giga_test"),
+            "anyone"
+        ));
     }
 }
 
@@ -916,13 +921,18 @@ fn run_stale_wait_scan(
     }
 
     let mut total_new = 0usize;
-    let mut current_keys: std::collections::HashSet<(String, String, chrono::DateTime<chrono::Utc>)> =
-        std::collections::HashSet::new();
+    let mut current_keys: std::collections::HashSet<(
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    )> = std::collections::HashSet::new();
     // Deterministic order so emission is stable across re-arms.
     let mut names: Vec<&str> = tracked.keys().map(|s| s.as_str()).collect();
     names.sort();
     for name in names {
-        let Some(state) = tracked.get(name) else { continue };
+        let Some(state) = tracked.get(name) else {
+            continue;
+        };
         let threshold = per_channel_threshold
             .get(name)
             .copied()
@@ -955,9 +965,7 @@ fn run_stale_wait_scan(
             );
         }
         if total_new > 0 {
-            eprintln!(
-                "watch: {total_new} stale wait(s) surfaced above"
-            );
+            eprintln!("watch: {total_new} stale wait(s) surfaced above");
         }
     }
 
@@ -1051,9 +1059,7 @@ fn self_rearm() {
         // exec() only returns on FAILURE. On success, the current
         // process is replaced — anything below this line never runs.
         let err = std::process::Command::new(&exe).args(&args).exec();
-        eprintln!(
-            "watch: self-rearm exec failed ({err}) — falling through to wake-up rearm"
-        );
+        eprintln!("watch: self-rearm exec failed ({err}) — falling through to wake-up rearm");
     }
     #[cfg(not(unix))]
     {

@@ -103,7 +103,10 @@ pub fn run(args: Args) -> Result<()> {
                     ch.file,
                 )
             })?;
-            (slice_path(&merged_path, this_host), Some(merged_path.clone()))
+            (
+                slice_path(&merged_path, this_host),
+                Some(merged_path.clone()),
+            )
         }
         _ => (merged_path.clone(), None),
     };
@@ -164,7 +167,11 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    println!("posted to {} ({} bytes)", primary_path.display(), block.len());
+    println!(
+        "posted to {} ({} bytes)",
+        primary_path.display(),
+        block.len()
+    );
     Ok(())
 }
 
@@ -360,7 +367,8 @@ mod tests {
             .create(true)
             .open(&path)
             .unwrap();
-        f.lock().expect("file must be unlocked after append_with_lock returns");
+        f.lock()
+            .expect("file must be unlocked after append_with_lock returns");
     }
 
     /// v0.4.4: when the file doesn't yet exist, append_with_lock
@@ -501,7 +509,9 @@ mod tests {
 
         let hosts_toml: String = host_names
             .iter()
-            .map(|n| format!("[[hosts]]\nname = \"{n}\"\ntailnet_hostname = \"{n}.tail0.ts.net\"\n"))
+            .map(|n| {
+                format!("[[hosts]]\nname = \"{n}\"\ntailnet_hostname = \"{n}.tail0.ts.net\"\n")
+            })
             .collect();
         let toml = format!(
             r#"
@@ -570,7 +580,10 @@ participants = ["alice", "bob"]
         let slice = inbox.join("alice-bob.wsl-a.md");
         let merged = inbox.join("alice-bob.md");
         assert!(slice.exists(), "slice file should be created (for sync)");
-        assert!(merged.exists(), "merged file should be created (for local watcher)");
+        assert!(
+            merged.exists(),
+            "merged file should be created (for local watcher)"
+        );
 
         // Frame must be identical in both files: it's the same write_all
         // bytes constructed once.
@@ -680,7 +693,10 @@ participants = ["alice", "bob"]
         .unwrap();
 
         let merged = inbox.join("alice-bob.md");
-        assert!(merged.exists(), "local channel writes directly to merged path");
+        assert!(
+            merged.exists(),
+            "local channel writes directly to merged path"
+        );
         let body = fs::read_to_string(&merged).unwrap();
         assert!(body.contains("[alice] hi"));
         // And no slice file was created (we're in fast-path mode):

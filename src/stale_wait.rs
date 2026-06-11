@@ -56,12 +56,7 @@ pub struct StaleWait {
 ///
 /// Pure function: takes content + clock-now and returns a Vec —
 /// no I/O, deterministic, easy to test.
-pub fn scan(
-    content: &str,
-    me: &str,
-    now: DateTime<Utc>,
-    threshold_minutes: u64,
-) -> Vec<StaleWait> {
+pub fn scan(content: &str, me: &str, now: DateTime<Utc>, threshold_minutes: u64) -> Vec<StaleWait> {
     // Per-sender state: their LATEST unresolved WAITING ON: me with
     // its timestamp + subject. Overwritten on supersede; removed on
     // resolution.
@@ -243,9 +238,7 @@ mod tests {
     }
 
     fn msg(sender: &str, subject: &str, ts_str: &str, footer: &str) -> String {
-        format!(
-            "===\n[{sender}] {subject} — {ts_str}\n===\n\nbody\n\n{footer}\n===\n\n"
-        )
+        format!("===\n[{sender}] {subject} — {ts_str}\n===\n\nbody\n\n{footer}\n===\n\n")
     }
 
     /// Basic case: sender posts WAITING ON: me, no response, past
@@ -277,7 +270,10 @@ mod tests {
         );
         let now = ts("2026-06-05T00:15:00Z");
         let out = scan(&ch, "bob", now, 30);
-        assert!(out.is_empty(), "15m wait shouldn't surface under a 30m threshold: {out:?}");
+        assert!(
+            out.is_empty(),
+            "15m wait shouldn't surface under a 30m threshold: {out:?}"
+        );
     }
 
     /// Receiver responding clears the wait.
@@ -285,8 +281,18 @@ mod tests {
     fn receiver_response_resolves_wait() {
         let ch = format!(
             "{}{}",
-            msg("alice", "PR #43", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
-            msg("bob", "reviewed", "2026-06-05T00:10:00Z", "(Informational, no response required.)"),
+            msg(
+                "alice",
+                "PR #43",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
+            msg(
+                "bob",
+                "reviewed",
+                "2026-06-05T00:10:00Z",
+                "(Informational, no response required.)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
@@ -298,12 +304,25 @@ mod tests {
     fn sender_informational_closure_resolves_wait() {
         let ch = format!(
             "{}{}",
-            msg("alice", "PR #43", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
-            msg("alice", "nvm, merged it", "2026-06-05T00:05:00Z", "(Informational, no response required.)"),
+            msg(
+                "alice",
+                "PR #43",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
+            msg(
+                "alice",
+                "nvm, merged it",
+                "2026-06-05T00:05:00Z",
+                "(Informational, no response required.)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
-        assert!(out.is_empty(), "sender informational should resolve: {out:?}");
+        assert!(
+            out.is_empty(),
+            "sender informational should resolve: {out:?}"
+        );
     }
 
     /// Sender pivoting to a different recipient resolves the wait on
@@ -312,12 +331,25 @@ mod tests {
     fn sender_pivot_to_other_recipient_resolves_original_wait() {
         let ch = format!(
             "{}{}",
-            msg("alice", "PR #43", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
-            msg("alice", "actually carol can review", "2026-06-05T00:05:00Z", "WAITING ON: carol (review)"),
+            msg(
+                "alice",
+                "PR #43",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
+            msg(
+                "alice",
+                "actually carol can review",
+                "2026-06-05T00:05:00Z",
+                "WAITING ON: carol (review)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
-        assert!(out.is_empty(), "sender pivoting away should resolve bob's wait: {out:?}");
+        assert!(
+            out.is_empty(),
+            "sender pivoting away should resolve bob's wait: {out:?}"
+        );
     }
 
     /// Sender re-posting WAITING ON: me SUPERSEDES with new timestamp.
@@ -326,8 +358,18 @@ mod tests {
     fn sender_repost_supersedes_with_latest_timestamp() {
         let ch = format!(
             "{}{}",
-            msg("alice", "first ping", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
-            msg("alice", "second ping", "2026-06-05T00:20:00Z", "WAITING ON: bob (still)"),
+            msg(
+                "alice",
+                "first ping",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
+            msg(
+                "alice",
+                "second ping",
+                "2026-06-05T00:20:00Z",
+                "WAITING ON: bob (still)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
@@ -342,8 +384,18 @@ mod tests {
     fn multiple_senders_each_get_own_entry() {
         let ch = format!(
             "{}{}",
-            msg("alice", "thing A", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
-            msg("carol", "thing C", "2026-06-05T00:10:00Z", "WAITING ON: bob (review)"),
+            msg(
+                "alice",
+                "thing A",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
+            msg(
+                "carol",
+                "thing C",
+                "2026-06-05T00:10:00Z",
+                "WAITING ON: bob (review)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
@@ -401,7 +453,12 @@ mod tests {
     fn message_without_footer_leaves_state_untouched() {
         let ch = format!(
             "{}{}",
-            msg("alice", "ping", "2026-06-05T00:00:00Z", "WAITING ON: bob (review)"),
+            msg(
+                "alice",
+                "ping",
+                "2026-06-05T00:00:00Z",
+                "WAITING ON: bob (review)"
+            ),
             // carol posts something with no footer (malformed/old-convention).
             "===\n[carol] random — 2026-06-05T00:10:00Z\n===\n\nbody only no footer\n===\n\n",
         );
@@ -461,11 +518,19 @@ mod tests {
             msg("alice", "A", "2026-06-05T00:00:00Z", "WAITING ON: bob (x)"),
             msg("carol", "C", "2026-06-05T00:01:00Z", "WAITING ON: bob (y)"),
             msg("dave", "D", "2026-06-05T00:02:00Z", "WAITING ON: bob (z)"),
-            msg("bob", "ack all", "2026-06-05T00:30:00Z", "(Informational, no response required.)"),
+            msg(
+                "bob",
+                "ack all",
+                "2026-06-05T00:30:00Z",
+                "(Informational, no response required.)"
+            ),
         );
         let now = ts("2026-06-05T01:00:00Z");
         let out = scan(&ch, "bob", now, 30);
-        assert!(out.is_empty(), "receiver's single post should clear all pending: {out:?}");
+        assert!(
+            out.is_empty(),
+            "receiver's single post should clear all pending: {out:?}"
+        );
     }
 
     /// `scan_file` returns empty on missing file (never crashes the

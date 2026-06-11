@@ -233,10 +233,7 @@ pub fn run(args: Args) -> Result<()> {
                  from a Windows shell manually."
             );
         }
-    } else if has_local_windows
-        && cfg!(target_os = "linux")
-        && args.skip_windows
-    {
+    } else if has_local_windows && cfg!(target_os = "linux") && args.skip_windows {
         println!(
             "  (--skip-windows: skipping WSL→Windows interop install.ps1; \
              Windows-side giga.exe NOT upgraded)"
@@ -292,9 +289,7 @@ pub fn run(args: Args) -> Result<()> {
             // (disarm + install + rearm all skipped). Linux peers
             // are unaffected.
             if peer_platform == "windows" && args.skip_windows {
-                println!(
-                    "  (--skip-windows: skipping `{peer}` (Windows peer))"
-                );
+                println!("  (--skip-windows: skipping `{peer}` (Windows peer))");
                 continue;
             }
 
@@ -343,7 +338,9 @@ pub fn run(args: Args) -> Result<()> {
 
             match install_remote(&giga_exe, &abs_config, peer, peer_platform, args.dry_run) {
                 Ok(()) => println!("  + {peer}: upgraded ({peer_platform})"),
-                Err(e) => eprintln!("  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"),
+                Err(e) => eprintln!(
+                    "  ! {peer}: upgrade failed ({e:#}) — run install on that host manually"
+                ),
             }
 
             // Post-install re-arm for Windows peers — targeted at
@@ -576,24 +573,23 @@ fn install_remote(
     peer_platform: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let (shell_program, shell_args, installer_cmd): (&str, &[&str], String) = if peer_platform
-        == "windows"
-    {
-        (
-            "powershell.exe",
-            &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
-            format!(
+    let (shell_program, shell_args, installer_cmd): (&str, &[&str], String) =
+        if peer_platform == "windows" {
+            (
+                "powershell.exe",
+                &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
+                format!(
                 "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
                  iwr -useb {INSTALL_PS1_URL} | iex"
             ),
-        )
-    } else {
-        (
-            "bash",
-            &["-c"],
-            format!("curl -sSfL {INSTALL_SH_URL} | bash"),
-        )
-    };
+            )
+        } else {
+            (
+                "bash",
+                &["-c"],
+                format!("curl -sSfL {INSTALL_SH_URL} | bash"),
+            )
+        };
     if dry_run {
         println!(
             "  [dry-run] would: giga remote --host {peer} -- {shell_program} {} '{installer_cmd}'",
@@ -732,14 +728,17 @@ fn windows_pre_install_disarm(
             println!("    [dry-run] would post disarm to {ch}");
             continue;
         }
-        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body) {
+        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body)
+        {
             eprintln!("    ! disarm post to {ch} failed ({e:#})");
         }
     }
     if dry_run {
         println!("    [dry-run] would sleep {operator_wait_secs}s for watchers to TaskStop (then run install)");
     } else {
-        println!("  -> sleeping {operator_wait_secs}s for watchers to TaskStop + release giga.exe lock");
+        println!(
+            "  -> sleeping {operator_wait_secs}s for watchers to TaskStop + release giga.exe lock"
+        );
         std::thread::sleep(std::time::Duration::from_secs(operator_wait_secs));
     }
     Ok(())
@@ -758,9 +757,8 @@ fn windows_post_install_rearm(
     dry_run: bool,
 ) -> Result<()> {
     let ack_list = windows_agents.join(",");
-    let subject = format!(
-        "[ack: {ack_list}] giga.exe upgraded on `{peer}` — please re-arm your watcher"
-    );
+    let subject =
+        format!("[ack: {ack_list}] giga.exe upgraded on `{peer}` — please re-arm your watcher");
     let body = format!(
         "install.ps1 completed on host `{peer}`. Please re-arm your inbox \
          watcher with the standard Monitor invocation from your AGENTS.md — \
@@ -776,7 +774,8 @@ fn windows_post_install_rearm(
             println!("    [dry-run] would post rearm to {ch}");
             continue;
         }
-        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body) {
+        if let Err(e) = post_with_subject_body(giga_exe, config, posting_agent, ch, &subject, &body)
+        {
             eprintln!("    ! rearm post to {ch} failed ({e:#})");
         }
     }
@@ -847,10 +846,7 @@ fn post_with_subject_body(
 ///
 /// `dry_run` short-circuits the lookup: no install happened, the
 /// previous path is still valid.
-fn resolve_fresh_giga_binary(
-    dry_run: bool,
-    previous: &std::path::Path,
-) -> std::path::PathBuf {
+fn resolve_fresh_giga_binary(dry_run: bool, previous: &std::path::Path) -> std::path::PathBuf {
     if dry_run {
         return previous.to_path_buf();
     }
@@ -897,7 +893,12 @@ fn infer_host_platform(cfg: &Config, host: &str) -> &'static str {
 /// behavior is backward-compatible during the v0.6.2 → v0.6.3
 /// transition. From the FIRST upgrade onto a v0.6.3+ swarm onward,
 /// rearm broadcasts are silent end-to-end.
-fn post_rearm(giga_exe: &std::path::Path, config: &std::path::Path, as_agent: &str, channel: &str) -> Result<()> {
+fn post_rearm(
+    giga_exe: &std::path::Path,
+    config: &std::path::Path,
+    as_agent: &str,
+    channel: &str,
+) -> Result<()> {
     let subject = "[giga-rearm] giga upgraded — please re-arm your inbox watcher";
     let body = "giga has been upgraded to the latest release on all hosts. \
                 v0.6.3+ watchers self-rearm silently via in-place execve on \
@@ -960,7 +961,10 @@ fn resolve_default_posting_agent(cfg: &Config, broadcast_channels: &[&str]) -> O
     //    channel. Resolves the "no swarm_boss flagged" case (e.g.,
     //    swarms that use tmux daemons instead).
     let first_channel = broadcast_channels.first()?;
-    let channel = cfg.channels.iter().find(|c| &c.file.as_str() == first_channel)?;
+    let channel = cfg
+        .channels
+        .iter()
+        .find(|c| &c.file.as_str() == first_channel)?;
     for participant_name in &channel.participants {
         let agent = cfg.agents.iter().find(|a| &a.name == participant_name);
         if let Some(a) = agent {
@@ -1264,7 +1268,10 @@ host = "host-a"
         );
         let mut windows_hosts = windows_agents_on_host(&cfg, "host-b");
         windows_hosts.sort();
-        assert_eq!(windows_hosts, vec!["win-agent-1".to_string(), "win-agent-2".to_string()]);
+        assert_eq!(
+            windows_hosts,
+            vec!["win-agent-1".to_string(), "win-agent-2".to_string()]
+        );
         // host-a is not Windows → empty.
         assert!(windows_agents_on_host(&cfg, "host-a").is_empty());
         // local host with no agents at all → empty.

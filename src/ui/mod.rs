@@ -55,7 +55,8 @@ pub fn run(args: Args) -> Result<()> {
 /// the next `giga ui` invocation can detect "already running"
 /// instead of binding a second server and getting EADDRINUSE.
 fn pid_file_path() -> Result<PathBuf> {
-    let home = crate::cursor::giga_home()
-        .ok_or_else(|| anyhow::anyhow!("could not resolve ~/.giga (neither $HOME nor %USERPROFILE% set)"))?;
+    let home = crate::cursor::giga_home().ok_or_else(|| {
+        anyhow::anyhow!("could not resolve ~/.giga (neither $HOME nor %USERPROFILE% set)")
+    })?;
     Ok(home.join("ui.pid"))
 }

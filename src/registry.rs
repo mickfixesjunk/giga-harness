@@ -349,7 +349,7 @@ mod tests {
                 name: "ghost".into(),
                 config: PathBuf::from("/nonexistent/giga-harness.toml"),
                 code_roots: vec![code_root.path().to_path_buf()],
-                    archived: false,
+                archived: false,
             }],
         };
         assert!(find_match(&reg, code_root.path()).is_none());

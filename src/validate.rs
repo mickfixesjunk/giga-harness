@@ -182,11 +182,7 @@ mod tests {
     fn looks_like_channel_accepts_handoff_txt_style() {
         // handoff.txt (legacy channel naming) uses the same header.
         let tmp = TempDir::new().unwrap();
-        let p = write_file(
-            tmp.path(),
-            "handoff.txt",
-            "# alice ↔ bob shared inbox\n",
-        );
+        let p = write_file(tmp.path(), "handoff.txt", "# alice ↔ bob shared inbox\n");
         assert!(looks_like_channel(&p));
     }
 }

@@ -63,7 +63,8 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     } else {
         Vec::new()
     };
-    let local_channels: Vec<&crate::config::Channel> = if let Some(this) = cfg.this_host.as_deref() {
+    let local_channels: Vec<&crate::config::Channel> = if let Some(this) = cfg.this_host.as_deref()
+    {
         cfg.channels
             .iter()
             .filter(|c| {
@@ -187,10 +188,12 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
             let bridge_dir = host_workdir.join("codex-channel");
             for sub in ["inbox", "outbox", "processed"] {
                 let p = bridge_dir.join(sub);
-                fs::create_dir_all(&p)
-                    .with_context(|| format!("mkdir -p {}", p.display()))?;
+                fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
             }
-            println!("  [codex] {} (inbox/outbox/processed)", bridge_dir.display());
+            println!(
+                "  [codex] {} (inbox/outbox/processed)",
+                bridge_dir.display()
+            );
         }
 
         // Symlink the project config into the workdir so the agent's
@@ -297,15 +300,9 @@ pub fn run_with(config_path: &Path, do_trust: bool) -> Result<()> {
     let has_boss = cfg.agents.iter().any(|a| a.swarm_boss);
     if !has_boss && !cfg.agents.is_empty() {
         println!();
-        println!(
-            "  NOTE: no swarm_boss flagged. The boss runs sync + merger Monitors and"
-        );
-        println!(
-            "        supervises worker-agent compaction. Promote one with:"
-        );
-        println!(
-            "          giga set-swarm-boss <slug>"
-        );
+        println!("  NOTE: no swarm_boss flagged. The boss runs sync + merger Monitors and");
+        println!("        supervises worker-agent compaction. Promote one with:");
+        println!("          giga set-swarm-boss <slug>");
         println!(
             "        (any wsl-platform agent works; design / coordinator agents are typical choices)"
         );
@@ -428,9 +425,7 @@ pub(crate) fn render_agent_claudemd(
                 .session_start_snippet()
                 .replace("{{AGENT}}", &agent.name),
         );
-        s.push_str(&format!(
-            "\nYour channels: {channel_list}.\n\n",
-        ));
+        s.push_str(&format!("\nYour channels: {channel_list}.\n\n",));
     }
 
     // Bench-coord pointer.
@@ -620,7 +615,13 @@ platform = "wsl"
     fn claudemd_always_contains_identity_callout() {
         let cfg = config_with_one_agent(None);
         let tmp = tempfile::TempDir::new().unwrap();
-        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &tmp.path().join("giga-harness.toml")).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
         assert!(
             body.contains("You are the `design` agent"),
             "identity callout missing — agent won't self-identify in replies"
@@ -635,7 +636,13 @@ platform = "wsl"
     fn claudemd_contains_code_root_callout_when_set() {
         let cfg = config_with_one_agent(Some("/code/myproj"));
         let tmp = tempfile::TempDir::new().unwrap();
-        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &tmp.path().join("giga-harness.toml")).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
         assert!(
             body.contains("Code root:") && body.contains("/code/myproj"),
             "code_root callout missing or path wrong:\n{}",
@@ -647,7 +654,13 @@ platform = "wsl"
     fn claudemd_omits_code_root_callout_when_unset() {
         let cfg = config_with_one_agent(None);
         let tmp = tempfile::TempDir::new().unwrap();
-        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &tmp.path().join("giga-harness.toml")).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
         assert!(
             !body.contains("Code root:"),
             "code_root callout should not appear when field is unset",
@@ -682,7 +695,13 @@ platform = "wsl"
 claudemd_template = "agents/design.md"
 "#;
         let cfg = Config::load_str_for_test(cfg_text).unwrap();
-        let body = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &tmp.path().join("giga-harness.toml")).unwrap();
+        let body = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
         assert!(body.contains(tpl_body), "custom template body was modified");
         assert!(
             body.contains("You are the `design` agent"),
@@ -746,11 +765,18 @@ participants = ["alice", "bob"]
         );
         let config_path = tmp.path().join("giga-harness.toml");
         fs::write(&config_path, cfg_text).unwrap();
-        fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
 
         run_with(&config_path, false).unwrap();
 
-        assert!(wsl_inbox.exists(), "wsl_inbox should be created (local wsl channel)");
+        assert!(
+            wsl_inbox.exists(),
+            "wsl_inbox should be created (local wsl channel)"
+        );
         assert!(
             !windows_inbox.exists(),
             "windows_inbox should NOT be created on a wsl-only peer; quality F9"
@@ -787,7 +813,13 @@ participants = ["code", "design"]
 "#;
         let cfg = Config::load_str_for_test(body).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        let claudemd = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &tmp.path().join("giga-harness.toml")).unwrap();
+        let claudemd = render_agent_claudemd(
+            &cfg,
+            &cfg.agents[0],
+            tmp.path(),
+            &tmp.path().join("giga-harness.toml"),
+        )
+        .unwrap();
         assert!(claudemd.contains("code-design.md"));
         assert!(claudemd.contains("giga watch --as design"));
     }
@@ -819,7 +851,11 @@ swarm_boss = true
         let tmp = tempfile::TempDir::new().unwrap();
         let cfg_path = tmp.path().join("giga-harness.toml");
         fs::write(&cfg_path, body).unwrap();
-        fs::write(tmp.path().join("this_host.toml"), "this_host = \"host-a\"\n").unwrap();
+        fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
         let cfg = Config::load(&cfg_path).unwrap();
 
         let claudemd = render_agent_claudemd(&cfg, &cfg.agents[0], tmp.path(), &cfg_path).unwrap();
@@ -889,7 +925,11 @@ host = "host-b"
         );
         let config_path = tmp.path().join("giga-harness.toml");
         fs::write(&config_path, cfg_text).unwrap();
-        fs::write(tmp.path().join("this_host.local.toml"), "this_host = \"host-a\"\n").unwrap();
+        fs::write(
+            tmp.path().join("this_host.local.toml"),
+            "this_host = \"host-a\"\n",
+        )
+        .unwrap();
 
         run_with(&config_path, false).unwrap();
 
@@ -976,11 +1016,26 @@ swarm_boss = true
         // No placeholder — a hand-written `## Session Start` section
         // between two others must be swapped out, neighbors preserved.
         let body = "## Channels\n\n- a.md\n\n## Session Start\n\n1. Arm the Monitor.\n2. Standby.\n\n## Convention\n\nWAITING ON tag.\n";
-        let out = inject_session_start(body, "## Session Start (do this first)\n\nRUNTIME SNIPPET.\n");
-        assert!(out.contains("RUNTIME SNIPPET."), "snippet not injected:\n{out}");
-        assert!(!out.contains("Arm the Monitor."), "old section survived:\n{out}");
-        assert!(out.contains("## Channels") && out.contains("- a.md"), "preceding section lost");
-        assert!(out.contains("## Convention") && out.contains("WAITING ON tag."), "following section lost");
+        let out = inject_session_start(
+            body,
+            "## Session Start (do this first)\n\nRUNTIME SNIPPET.\n",
+        );
+        assert!(
+            out.contains("RUNTIME SNIPPET."),
+            "snippet not injected:\n{out}"
+        );
+        assert!(
+            !out.contains("Arm the Monitor."),
+            "old section survived:\n{out}"
+        );
+        assert!(
+            out.contains("## Channels") && out.contains("- a.md"),
+            "preceding section lost"
+        );
+        assert!(
+            out.contains("## Convention") && out.contains("WAITING ON tag."),
+            "following section lost"
+        );
         // exactly one Session Start heading remains
         assert_eq!(out.matches("Session Start").count(), 1);
     }
@@ -1085,7 +1140,11 @@ claudemd_template = "agents/design.md"
             &tmp.path().join("giga-harness.toml"),
         )
         .unwrap();
-        assert!(body.contains("Monitor` TOOL") || body.contains("Monitor TOOL") || body.contains("`Monitor`"));
+        assert!(
+            body.contains("Monitor` TOOL")
+                || body.contains("Monitor TOOL")
+                || body.contains("`Monitor`")
+        );
         assert!(body.contains("giga watch --as design"));
         assert!(!body.contains("--agy") && !body.contains("--codex"));
     }

@@ -162,15 +162,15 @@ pub fn run(args: Args) -> Result<()> {
             println!("auto-bootstrap: pushing canonical TOML to `{host}`...");
             let bootstrap_ok = match sync::bootstrap_peer(&revalidated, host, &args.config) {
                 Ok(()) => {
-                    println!(
-                        "  + canonical TOML synced to `{host}` (and this_host.toml ensured)"
-                    );
+                    println!("  + canonical TOML synced to `{host}` (and this_host.toml ensured)");
                     true
                 }
                 Err(e) => {
                     eprintln!("  ! auto-bootstrap failed: {e:#}");
                     eprintln!("    The local config is correct; the peer just isn't synced yet.");
-                    eprintln!("    Run `giga sync --once` once everything is reachable to recover.");
+                    eprintln!(
+                        "    Run `giga sync --once` once everything is reachable to recover."
+                    );
                     false
                 }
             };
@@ -184,7 +184,10 @@ pub fn run(args: Args) -> Result<()> {
             if bootstrap_ok {
                 println!("auto-scaffold: running `giga init` on `{host}`...");
                 match sync::run_remote_giga_init(&revalidated, host, &args.config) {
-                    Ok(()) => println!("  + remote init complete — `{}`'s workdir + AGENTS.md ready on `{host}`", args.name),
+                    Ok(()) => println!(
+                        "  + remote init complete — `{}`'s workdir + AGENTS.md ready on `{host}`",
+                        args.name
+                    ),
                     Err(e) => {
                         eprintln!("  ! remote giga init failed: {e:#}");
                         eprintln!("    The peer has the TOML; run `giga remote --host {host} init` manually to scaffold.");
@@ -301,11 +304,12 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
         // either args.host (multi-host setup) or None (local-only).
         let new_host = args.host.as_deref();
         let collision = cfg.agents.iter().find(|a| {
-            a.swarm_boss && match (a.host.as_deref(), new_host) {
-                (Some(h1), Some(h2)) => h1 == h2,
-                (None, None) => true,
-                _ => false,
-            }
+            a.swarm_boss
+                && match (a.host.as_deref(), new_host) {
+                    (Some(h1), Some(h2)) => h1 == h2,
+                    (None, None) => true,
+                    _ => false,
+                }
         });
         if let Some(other) = collision {
             return Err(anyhow!(

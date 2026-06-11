@@ -62,7 +62,11 @@ pub fn snapshot() -> ProcessSnapshot {
 pub fn tmux_sessions() -> Result<Vec<TmuxSession>, std::io::Error> {
     let sessions_raw = run(&["tmux", "list-sessions", "-F", "#{session_name}"])?;
     let mut sessions = Vec::new();
-    for name in sessions_raw.lines().map(str::trim).filter(|s| !s.is_empty()) {
+    for name in sessions_raw
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let windows_raw = run(&[
             "tmux",
             "list-windows",
@@ -227,9 +231,15 @@ mod tests {
  65255 giga watch --as codex-review --codex\n";
         let parsed = parse_ps_output(raw);
         assert_eq!(parsed.len(), 3);
-        assert!(parsed.iter().any(|p| p.agent == "airflow" && p.runtime == "agy"));
-        assert!(parsed.iter().any(|p| p.agent == "superdeduper" && p.runtime == "claude"));
-        assert!(parsed.iter().any(|p| p.agent == "codex-review" && p.runtime == "codex"));
+        assert!(parsed
+            .iter()
+            .any(|p| p.agent == "airflow" && p.runtime == "agy"));
+        assert!(parsed
+            .iter()
+            .any(|p| p.agent == "superdeduper" && p.runtime == "claude"));
+        assert!(parsed
+            .iter()
+            .any(|p| p.agent == "codex-review" && p.runtime == "codex"));
     }
 
     #[test]
@@ -248,7 +258,10 @@ mod tests {
 
     #[test]
     fn extract_as_slug_picks_token_after_as_flag() {
-        assert_eq!(extract_as_slug("giga watch --as alice"), Some("alice".into()));
+        assert_eq!(
+            extract_as_slug("giga watch --as alice"),
+            Some("alice".into())
+        );
         assert_eq!(
             extract_as_slug("giga watch --as code-review-bridge --codex"),
             Some("code-review-bridge".into())

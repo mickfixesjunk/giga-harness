@@ -120,10 +120,10 @@ pub struct Args {
 /// rsync without re-consulting the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncCommand {
-    pub peer_target: String,        // user@tailnet_hostname:path
+    pub peer_target: String, // user@tailnet_hostname:path
     pub local_path: PathBuf,
-    pub use_append_verify: bool,    // true for append-only slice files
-    pub kind: &'static str,         // "slice" | "toml" — for logging
+    pub use_append_verify: bool, // true for append-only slice files
+    pub kind: &'static str,      // "slice" | "toml" — for logging
 }
 
 /// v0.3.6: process-global quiet flag set by `sync::run` before the
@@ -234,9 +234,7 @@ pub fn run(args: Args) -> Result<()> {
                     cfg = new_cfg;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "sync: config reload failed ({e}) — keeping previous snapshot"
-                    );
+                    eprintln!("sync: config reload failed ({e}) — keeping previous snapshot");
                 }
             }
         }
@@ -276,7 +274,10 @@ pub fn tick_once(cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
             Err(e) => {
                 // Errors always emit even under --quiet — that's the
                 // critical signal a swarm_boss agent needs to notice.
-                eprintln!("sync: {} push failed ({e}) — will retry next tick", cmd.kind);
+                eprintln!(
+                    "sync: {} push failed ({e}) — will retry next tick",
+                    cmd.kind
+                );
                 failed += 1;
             }
         }
@@ -315,15 +316,12 @@ fn cfg_canonical_path(cfg: &Config) -> Result<PathBuf> {
     if let Some(p) = &cfg.source_path {
         return Ok(p.clone());
     }
-    if let Some(p) = crate::registry::load()
-        .ok()
-        .and_then(|r| {
-            r.entries
-                .into_iter()
-                .find(|e| e.name == cfg.project.name)
-                .map(|e| e.config)
-        })
-    {
+    if let Some(p) = crate::registry::load().ok().and_then(|r| {
+        r.entries
+            .into_iter()
+            .find(|e| e.name == cfg.project.name)
+            .map(|e| e.config)
+    }) {
         return Ok(p);
     }
     Ok(PathBuf::from("giga-harness.toml"))
@@ -349,15 +347,14 @@ pub fn compute_sync_plan(
 ) -> Vec<SyncCommand> {
     let mut plan = Vec::new();
 
-    let peers: Vec<&Host> = cfg
-        .hosts
-        .iter()
-        .filter(|h| h.name != this_host)
-        .collect();
+    let peers: Vec<&Host> = cfg.hosts.iter().filter(|h| h.name != this_host).collect();
 
     // Local config + inbox dirs — used as the default when a peer
     // hasn't overridden them.
-    let local_config_dir = canonical_config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let local_config_dir = canonical_config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
     let local_inbox_dir = cfg
         .paths
         .wsl_inbox
@@ -404,9 +401,7 @@ pub fn compute_sync_plan(
             .unwrap_or_else(|| local_config_dir.clone());
         for agent in &cfg.agents {
             let template_name = format!("{}.md", agent.name);
-            let local_template = local_config_dir
-                .join(templates_subdir)
-                .join(&template_name);
+            let local_template = local_config_dir.join(templates_subdir).join(&template_name);
             if !local_template.exists() {
                 continue;
             }
@@ -799,8 +794,14 @@ mod tests {
     #[test]
     fn rsync_ssh_e_arg_includes_connect_timeout() {
         let arg = rsync_ssh_e_arg();
-        assert!(arg.contains("ConnectTimeout"), "missing ConnectTimeout: {arg}");
-        assert!(arg.contains("ServerAliveInterval"), "missing ServerAliveInterval: {arg}");
+        assert!(
+            arg.contains("ConnectTimeout"),
+            "missing ConnectTimeout: {arg}"
+        );
+        assert!(
+            arg.contains("ServerAliveInterval"),
+            "missing ServerAliveInterval: {arg}"
+        );
         // First token must be `ssh` because rsync's -e parses this as
         // a command line; the rest are flags for that command.
         assert!(arg.starts_with("ssh "), "must start with `ssh`: {arg}");
@@ -914,7 +915,11 @@ participants = ["alice", "bob"]
         let cfg = Config::load(&config_path).unwrap();
         let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
         let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
-        assert_eq!(toml_pushes.len(), 1, "one toml push per peer; one peer here");
+        assert_eq!(
+            toml_pushes.len(),
+            1,
+            "one toml push per peer; one peer here"
+        );
         // The peer_target uses forward slashes (Linux peer) regardless of
         // operator OS — normalize the expected suffix the same way the
         // production code does before comparing.
@@ -945,12 +950,11 @@ participants = ["alice", "bob"]
 
         let template_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "template").collect();
         // Fixture has 2 agents (alice, bob), 1 peer (wsl-b) → 2 template pushes.
-        assert_eq!(
-            template_pushes.len(),
-            2,
-            "one template per agent per peer"
-        );
-        let targets: Vec<&str> = template_pushes.iter().map(|c| c.peer_target.as_str()).collect();
+        assert_eq!(template_pushes.len(), 2, "one template per agent per peer");
+        let targets: Vec<&str> = template_pushes
+            .iter()
+            .map(|c| c.peer_target.as_str())
+            .collect();
         assert!(targets.iter().any(|t| t.ends_with("/agents/alice.md")));
         assert!(targets.iter().any(|t| t.ends_with("/agents/bob.md")));
         for cmd in &template_pushes {
@@ -979,7 +983,11 @@ participants = ["alice", "bob"]
         let cfg = Config::load(&config_path).unwrap();
         let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
         let slice_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "slice").collect();
-        assert_eq!(slice_pushes.len(), 1, "one slice push per peer for the bilateral");
+        assert_eq!(
+            slice_pushes.len(),
+            1,
+            "one slice push per peer for the bilateral"
+        );
         assert!(slice_pushes[0].use_append_verify, "slices are append-only");
         // We're wsl-a so the slice is alice-bob.wsl-a.md
         assert!(slice_pushes[0]
@@ -1032,7 +1040,10 @@ participants = ["alice", "bob"]
         let cfg = Config::load(&config_path).unwrap();
         let plan = compute_sync_plan(&cfg, "wsl-a", &config_path);
         let slice_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "slice").collect();
-        assert!(slice_pushes.is_empty(), "local-only channels need no slice push");
+        assert!(
+            slice_pushes.is_empty(),
+            "local-only channels need no slice push"
+        );
         // TOML push still happens (peer might have other reasons to receive).
         let toml_pushes: Vec<_> = plan.iter().filter(|c| c.kind == "toml").collect();
         assert_eq!(toml_pushes.len(), 1);
@@ -1192,7 +1203,11 @@ host = "wsl-only"
             inbox = inbox.to_string_lossy(),
         );
         fs::write(&config_path, toml).unwrap();
-        fs::write(tmp.path().join("this_host.toml"), "this_host = \"wsl-only\"\n").unwrap();
+        fs::write(
+            tmp.path().join("this_host.toml"),
+            "this_host = \"wsl-only\"\n",
+        )
+        .unwrap();
         let cfg = Config::load(&config_path).unwrap();
         let plan = compute_sync_plan(&cfg, "wsl-only", &config_path);
         assert!(plan.is_empty());
@@ -1339,7 +1354,11 @@ host = "wsl-only"
         let plan_before = compute_sync_plan(&cfg_before, "wsl-a", &config_path);
         let slice_pushes_before: Vec<_> =
             plan_before.iter().filter(|c| c.kind == "slice").collect();
-        assert_eq!(slice_pushes_before.len(), 1, "fixture starts with 1 cross-host channel");
+        assert_eq!(
+            slice_pushes_before.len(),
+            1,
+            "fixture starts with 1 cross-host channel"
+        );
 
         // Mutate the on-disk config to add another cross-host channel
         // (simulates `giga add-channel` or `giga add-agent` after the
@@ -1364,8 +1383,7 @@ participants = ["alice", "carol"]
 
         let cfg_after = Config::load(&config_path).unwrap();
         let plan_after = compute_sync_plan(&cfg_after, "wsl-a", &config_path);
-        let slice_pushes_after: Vec<_> =
-            plan_after.iter().filter(|c| c.kind == "slice").collect();
+        let slice_pushes_after: Vec<_> = plan_after.iter().filter(|c| c.kind == "slice").collect();
         assert_eq!(
             slice_pushes_after.len(),
             2,

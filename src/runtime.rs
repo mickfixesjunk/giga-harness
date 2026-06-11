@@ -215,9 +215,18 @@ mod tests {
 
     #[test]
     fn watcher_invocation_includes_runtime_flag() {
-        assert_eq!(Runtime::Claude.watcher_invocation("alice"), "giga watch --as alice");
-        assert_eq!(Runtime::Agy.watcher_invocation("alice"), "giga watch --as alice --agy");
-        assert_eq!(Runtime::Codex.watcher_invocation("alice"), "giga watch --as alice --codex");
+        assert_eq!(
+            Runtime::Claude.watcher_invocation("alice"),
+            "giga watch --as alice"
+        );
+        assert_eq!(
+            Runtime::Agy.watcher_invocation("alice"),
+            "giga watch --as alice --agy"
+        );
+        assert_eq!(
+            Runtime::Codex.watcher_invocation("alice"),
+            "giga watch --as alice --codex"
+        );
     }
 
     #[test]
@@ -227,8 +236,16 @@ mod tests {
         // test guards against accidentally emptying the file.
         for r in [Runtime::Claude, Runtime::Codex, Runtime::Agy] {
             let body = r.session_start_snippet();
-            assert!(!body.trim().is_empty(), "{} snippet must not be empty", r.as_str());
-            assert!(body.contains("{{AGENT}}"), "{} snippet must use {{AGENT}} placeholder", r.as_str());
+            assert!(
+                !body.trim().is_empty(),
+                "{} snippet must not be empty",
+                r.as_str()
+            );
+            assert!(
+                body.contains("{{AGENT}}"),
+                "{} snippet must use {{AGENT}} placeholder",
+                r.as_str()
+            );
         }
     }
 
@@ -299,8 +316,14 @@ mod tests {
             "agy intro must not reference Claude's Monitor/Bash tools:\n{agy}",
         );
         // Runtime-specific guidance present.
-        assert!(codex.contains("bridge"), "codex intro should mention bridge pane:\n{codex}");
-        assert!(agy.contains("run_command"), "agy intro should mention run_command:\n{agy}");
+        assert!(
+            codex.contains("bridge"),
+            "codex intro should mention bridge pane:\n{codex}"
+        );
+        assert!(
+            agy.contains("run_command"),
+            "agy intro should mention run_command:\n{agy}"
+        );
         // v0.6.10 regression guard: every intro must tell the agent
         // AGENTS.md lives in CWD (relative ./AGENTS.md). Burned on
         // agy/coder 2026-06-02 — agy searched the entire filesystem

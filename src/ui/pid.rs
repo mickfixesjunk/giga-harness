@@ -51,8 +51,7 @@ pub fn is_alive(path: &Path) -> bool {
 
 pub fn acquire(path: &Path) -> Result<Guard> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir -p {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
     }
     if let Ok(text) = fs::read_to_string(path) {
         if let Ok(pid) = text.trim().parse::<i32>() {
@@ -73,7 +72,9 @@ pub fn acquire(path: &Path) -> Result<Guard> {
     }
     fs::write(path, std::process::id().to_string())
         .with_context(|| format!("writing pid file {}", path.display()))?;
-    Ok(Guard { path: path.to_path_buf() })
+    Ok(Guard {
+        path: path.to_path_buf(),
+    })
 }
 
 #[cfg(unix)]

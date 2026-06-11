@@ -366,13 +366,26 @@ fn local_watcher_cursor_persists_across_restart() {
     stop_watcher(w1_handle);
 
     let log1_body = fs::read_to_string(&log1).unwrap();
-    let log1_count = log1_body.lines().filter(|l| l.contains("[bob] first-")).count();
-    assert_eq!(log1_count, 3, "first watcher should see 3 posts; got {log1_count}\nlog:\n{log1_body}");
+    let log1_count = log1_body
+        .lines()
+        .filter(|l| l.contains("[bob] first-"))
+        .count();
+    assert_eq!(
+        log1_count, 3,
+        "first watcher should see 3 posts; got {log1_count}\nlog:\n{log1_body}"
+    );
 
     // Second round: post 2 NEW messages, restart watcher. It should
     // resume from the persisted cursor and NOT re-deliver the first 3.
     for i in 0..2 {
-        giga_post(&fx.home, &fx.config_path, "bob", &format!("second-{i}"), "x").unwrap();
+        giga_post(
+            &fx.home,
+            &fx.config_path,
+            "bob",
+            &format!("second-{i}"),
+            "x",
+        )
+        .unwrap();
     }
     let log2 = fx._tmp.path().join("watch2.log");
     let w2_handle = spawn_watcher(&fx, &log2);
