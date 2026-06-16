@@ -179,7 +179,7 @@ pub fn run(args: Args) -> Result<()> {
         // daemon launches are silently invisible — the push set is the
         // startup snapshot. Reload failure (transient TOML race) keeps
         // the current cfg, matching watch + merger behavior.
-        if tick % RELOAD_EVERY_N_TICKS == 0 {
+        if tick.is_multiple_of(RELOAD_EVERY_N_TICKS) {
             match Config::load(&args.config) {
                 Ok(new_cfg) => {
                     cfg = new_cfg;

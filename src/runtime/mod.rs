@@ -31,11 +31,12 @@ pub mod codex;
 
 /// Which agent runtime this swarm or this individual agent uses.
 /// Default is `Claude` for backward compat with every pre-v0.6.0 swarm.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Runtime {
     /// Anthropic Claude Code CLI. Default. Monitor-tool watcher
     /// integration; busy-lock hooks integrate cleanly.
+    #[default]
     Claude,
     /// OpenAI Codex CLI. REPL-shaped, no background-task primitive.
     /// Watcher runs as a separate "bridge" pane via `giga watch --codex`
@@ -49,12 +50,6 @@ pub enum Runtime {
     /// schema), running `giga watch --agy` (exits 0 on WAITING ON me,
     /// which triggers AGY's task-completion wakeup).
     Agy,
-}
-
-impl Default for Runtime {
-    fn default() -> Self {
-        Runtime::Claude
-    }
 }
 
 impl Runtime {
@@ -80,39 +75,12 @@ impl Runtime {
         }
     }
 
-    /// Watcher invocation for this runtime — the command the runtime's
-    /// Session Start template tells the agent (or operator pane) to
-    /// run. For Claude: stdout-based Monitor. For Agy: --agy mode.
-    /// For Codex: --codex mode in a separate pane (the agent's CLI
-    /// doesn't see the watcher directly).
-    pub fn watcher_invocation(&self, agent_slug: &str) -> String {
-        match self {
-            Runtime::Claude => format!("giga watch --as {agent_slug}"),
-            Runtime::Agy => format!("giga watch --as {agent_slug} --agy"),
-            Runtime::Codex => format!("giga watch --as {agent_slug} --codex"),
-        }
-    }
-
     /// True when this runtime needs a separate "bridge" tmux pane
     /// alongside the CLI pane. Codex is the only one today — its CLI
     /// has no background-task primitive so the watcher must run in a
     /// sidecar process that drops envelopes into the codex inbox dir.
     pub fn needs_bridge_pane(&self) -> bool {
         matches!(self, Runtime::Codex)
-    }
-
-    /// Number of tmux panes this runtime's agent occupies on launch:
-    /// 2 for runtimes that need a separate bridge pane (codex), 1
-    /// otherwise (claude / agy run the watcher in-session). The launcher
-    /// branches on `needs_bridge_pane` directly today; this convenience
-    /// accessor is consumed in a later phase.
-    #[allow(dead_code)]
-    pub fn pane_count(&self) -> u8 {
-        if self.needs_bridge_pane() {
-            2
-        } else {
-            1
-        }
     }
 
     /// The instruction snippet for this runtime's `AGENTS.md` Session
@@ -226,22 +194,6 @@ mod tests {
         assert!(!Runtime::Claude.needs_bridge_pane());
         assert!(!Runtime::Agy.needs_bridge_pane());
         assert!(Runtime::Codex.needs_bridge_pane());
-    }
-
-    #[test]
-    fn watcher_invocation_includes_runtime_flag() {
-        assert_eq!(
-            Runtime::Claude.watcher_invocation("alice"),
-            "giga watch --as alice"
-        );
-        assert_eq!(
-            Runtime::Agy.watcher_invocation("alice"),
-            "giga watch --as alice --agy"
-        );
-        assert_eq!(
-            Runtime::Codex.watcher_invocation("alice"),
-            "giga watch --as alice --codex"
-        );
     }
 
     #[test]

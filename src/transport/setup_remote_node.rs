@@ -4,11 +4,11 @@
 //! The full UX:
 //!
 //!   1. On the NEW node (bare WSL with nothing installed):
-//!        curl -fsSL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
-//!        giga setup --remote-node
+//!      curl -fsSL https://github.com/mickfixesjunk/giga-harness/releases/latest/download/install.sh | bash
+//!      giga setup --remote-node
 //!
 //!   2. On the OPERATOR host (already in the swarm):
-//!        giga add-agent --host <new-node> --name <agent> --peer <local-agent>
+//!      giga add-agent --host <new-node> --name <agent> --peer <local-agent>
 //!
 //!   3. Done.
 //!
@@ -85,7 +85,7 @@ pub fn run(args: Args) -> Result<()> {
 
 fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
     // -------- 1. WSL check --------
-    step(1, 6, "WSL detection", dry, || wsl_check())?;
+    step(1, 6, "WSL detection", dry, wsl_check)?;
 
     // -------- 2. rsync --------
     step(2, 6, "rsync (for slice file transport)", dry, || {
@@ -174,7 +174,7 @@ fn run_tailscale(inbox_dir: &Path, dry: bool) -> Result<()> {
 
 fn run_git(inbox_dir: &Path, repo: &str, dry: bool) -> Result<()> {
     // -------- 1. WSL check --------
-    step(1, 5, "WSL detection", dry, || wsl_check())?;
+    step(1, 5, "WSL detection", dry, wsl_check)?;
 
     // -------- 2. git --------
     step(2, 5, "git (for state-repo transport)", dry, || {

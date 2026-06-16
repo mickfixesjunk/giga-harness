@@ -89,6 +89,18 @@ pub trait Transport: Send + Sync {
     ///
     /// Best-effort: callers warn on failure rather than blocking local
     /// success (peer may be offline; sync recovers later).
+    ///
+    /// NOTE (Phase 13): not yet dispatched through `dyn Transport` in
+    /// production — `mutate::peer_bootstrap` still calls the rsync-shaped
+    /// free fn `sync::bootstrap_peer` directly for ALL transports. Routing
+    /// this through the trait would change behavior for the git transport
+    /// (its impl commits+pushes via `tick` rather than rsyncing), so the
+    /// behavior-preserving refactor keeps the existing dispatch and leaves
+    /// this seam in place + tested (see `local::tests`). The `allow` is
+    /// scoped to the one trait method that has impls + a test but no
+    /// production caller yet; remove it when the dispatcher is switched to
+    /// the trait (a deliberate, behavior-changing follow-up).
+    #[allow(dead_code)]
     fn bootstrap_peer(&self, cfg: &Config, peer: &str, config_path: &Path) -> Result<()>;
 
     // ----- Command-on-peer (optional capability) -----

@@ -20,17 +20,6 @@ use std::path::{Path, PathBuf};
 
 use super::WatchMode;
 
-/// Outcome of a single `deliver`. The live agy-exit mechanism is the
-/// [`NotificationSink::exit_on_waiting_on_me`] predicate checked by the
-/// caller; this enum names the two terminal outcomes for callers that
-/// want to reason about delivery vs. exit explicitly.
-#[allow(dead_code)]
-pub enum SinkOutcome {
-    Delivered,
-    /// agy WAITING-ON-me → watcher should exit 0.
-    Exit,
-}
-
 pub trait NotificationSink {
     /// Emit one ready notification line (already formatted "inbox <ch>: <line>").
     fn deliver(&mut self, line: &str);

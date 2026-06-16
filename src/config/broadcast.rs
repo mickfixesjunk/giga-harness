@@ -127,7 +127,6 @@ mod tests {
         assert_eq!(fanout_delay_seconds("bob", &["alice", "bob"], 0), 0);
     }
 
-    #[test]
     /// v0.6.3: `[giga-rearm]` triggers the silent watcher self-rearm
     /// path. parse_broadcast_prefix returns the new variant so
     /// watch.rs can dispatch on it.

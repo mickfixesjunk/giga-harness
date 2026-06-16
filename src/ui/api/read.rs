@@ -463,7 +463,7 @@ fn newest_md_mtime(dir: &Path) -> Option<std::time::SystemTime> {
             Ok(t) => t,
             Err(_) => continue,
         };
-        if latest.map_or(true, |l| mtime > l) {
+        if latest.is_none_or(|l| mtime > l) {
             latest = Some(mtime);
         }
     }

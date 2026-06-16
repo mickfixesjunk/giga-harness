@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cargo cache
         uses: actions/cache@v4
@@ -37,6 +39,15 @@ jobs:
 
       - name: Test (release profile)
         run: cargo test --release
+
+      # Clippy lint gate — BLOCKING. Enforces warning-cleanliness (no
+      # dead code, no clippy lints) on every push/PR; `-D warnings`
+      # turns any lint into a build failure that fails CI. Scoped to the
+      # Linux runner (one canonical pass is enough; the lints are
+      # OS-independent) and runs after build so toolchain/cache are warm.
+      - name: Clippy (-D warnings)
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Format check
         # Soft check — warn-only. Style nits aren't release-blockers.

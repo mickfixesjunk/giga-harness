@@ -53,8 +53,8 @@ pub fn run(config_path: &Path, owed_by_filter: Option<&str>) -> Result<()> {
     };
 
     println!(
-        "{:<35} {:<15} {:<50} {}",
-        "channel", "last_from", "subject", "waiting_on"
+        "{:<35} {:<15} {:<50} waiting_on",
+        "channel", "last_from", "subject"
     );
     println!("{}", "-".repeat(120));
     for r in &filtered {

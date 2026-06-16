@@ -358,9 +358,7 @@ mod tests {
         fs::create_dir_all(&claude_dir).unwrap();
         (
             TempDir::new_in(tmp.path()).unwrap(), // keep parent alive
-            ClaudePaths {
-                home: tmp.into_path(),
-            },
+            ClaudePaths { home: tmp.keep() },
         )
     }
 
@@ -368,14 +366,6 @@ mod tests {
         let p = paths.cred_file();
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, body).unwrap();
-    }
-
-    fn args(op: Op, account: Option<&str>) -> Args {
-        Args {
-            runtime: "claude".into(),
-            account: account.map(String::from),
-            op,
-        }
     }
 
     #[test]

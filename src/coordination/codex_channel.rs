@@ -89,7 +89,7 @@ pub fn run(args: Args) -> Result<()> {
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
-        if tick % RELOAD_EVERY_N_TICKS == 0 {
+        if tick.is_multiple_of(RELOAD_EVERY_N_TICKS) {
             refresh_tracked(
                 &args.config,
                 &args.me,

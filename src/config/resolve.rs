@@ -426,7 +426,7 @@ side = "wsl"
 participants = ["a", "b"]
 "#,
             minimal()
-                .trim_end_matches(|c: char| c == '\n')
+                .trim_end_matches('\n')
                 .replace(
                     "platform = \"wsl\"\n\n[[agents]]",
                     "platform = \"wsl\"\nhost = \"wsl-a\"\n\n[[agents]]",

@@ -88,17 +88,17 @@ impl Command {
                     })?;
                     std::process::exit(code);
                 }
-                scaffold::launch::run(
-                    &config,
+                scaffold::launch::run(scaffold::launch::LaunchArgs {
+                    config_path: &config,
                     skip_init,
                     dry_run,
-                    &only,
+                    only: &only,
                     new_window,
-                    &terminal,
+                    terminal: &terminal,
                     stagger_per_agent_seconds,
                     ui,
                     ui_port,
-                )
+                })
             }
             Command::Hosts { config, available } => {
                 // When the user didn't override --config and we can't resolve

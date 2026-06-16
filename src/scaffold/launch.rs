@@ -9,17 +9,34 @@ use crate::config::Config;
 use crate::scaffold::init;
 use crate::scaffold::terminal::{self, Multiplexer, Pane};
 
-pub fn run(
-    config_path: &Path,
-    skip_init: bool,
-    dry_run: bool,
-    only: &[String],
-    new_window: bool,
-    terminal: &str,
-    stagger_per_agent_seconds: u64,
-    ui: bool,
-    ui_port: u16,
-) -> Result<()> {
+/// Inputs to [`run`]. Bundled into a struct (mirroring
+/// `transport::remote::Args`) so the launch entry point stays under
+/// clippy's argument-count limit and the dispatch call site reads as a
+/// named record rather than a long positional tuple.
+pub struct LaunchArgs<'a> {
+    pub config_path: &'a Path,
+    pub skip_init: bool,
+    pub dry_run: bool,
+    pub only: &'a [String],
+    pub new_window: bool,
+    pub terminal: &'a str,
+    pub stagger_per_agent_seconds: u64,
+    pub ui: bool,
+    pub ui_port: u16,
+}
+
+pub fn run(args: LaunchArgs) -> Result<()> {
+    let LaunchArgs {
+        config_path,
+        skip_init,
+        dry_run,
+        only,
+        new_window,
+        terminal,
+        stagger_per_agent_seconds,
+        ui,
+        ui_port,
+    } = args;
     if !skip_init {
         init::run(config_path)?;
         println!();
@@ -345,10 +362,7 @@ pub fn run(
 /// Monitors at startup — so suppress the tmux daemon panes here to
 /// avoid duplicate daemons. Per-host scoped: a peer host's swarm_boss
 /// doesn't affect this host's launch decision.
-fn should_spawn_daemons(cfg: &crate::config::Config, _incremental: bool) -> bool {
-    should_spawn_daemons_v2(cfg, &[])
-}
-
+///
 /// v0.6.5: refined daemon-spawn rule. Daemons
 /// are needed only when there's actual cross-host work to coordinate.
 /// Per-rule decision:
@@ -692,12 +706,9 @@ host = "host-a"
         )
         .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
+        // Full launch on a multi-host swarm (no boss) spawns daemons.
         assert!(
-            should_spawn_daemons(&cfg, true),
-            "incremental + multi-host must still spawn daemons"
-        );
-        assert!(
-            should_spawn_daemons(&cfg, false),
+            should_spawn_daemons_v2(&cfg, &[]),
             "full launch on multi-host spawns daemons (baseline)"
         );
     }
@@ -720,8 +731,8 @@ role = "."
 platform = "wsl"
 "#;
         let cfg = crate::config::Config::load_str_for_test(body).unwrap();
-        assert!(!should_spawn_daemons(&cfg, false));
-        assert!(!should_spawn_daemons(&cfg, true));
+        assert!(!should_spawn_daemons_v2(&cfg, &[]));
+        assert!(!should_spawn_daemons_v2(&cfg, &["alice".to_string()]));
     }
 
     /// v0.3.6 S5 (SWARM_BOSS_DESIGN.md): when an agent on this host
@@ -769,11 +780,11 @@ host = "host-a"
         .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
         assert!(
-            !should_spawn_daemons(&cfg, false),
+            !should_spawn_daemons_v2(&cfg, &[]),
             "swarm_boss on this_host -> tmux daemons suppressed"
         );
         assert!(
-            !should_spawn_daemons(&cfg, true),
+            !should_spawn_daemons_v2(&cfg, &["agent-a".to_string()]),
             "swarm_boss suppression applies in --only mode too"
         );
     }
@@ -822,7 +833,7 @@ swarm_boss = true
         .unwrap();
         let cfg = crate::config::Config::load(&cfg_path).unwrap();
         assert!(
-            should_spawn_daemons(&cfg, false),
+            should_spawn_daemons_v2(&cfg, &[]),
             "boss only on peer host -> we still need our own tmux daemons"
         );
     }

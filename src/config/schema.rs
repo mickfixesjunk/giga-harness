@@ -292,20 +292,12 @@ pub struct BroadcastConfig {
     /// fanout window for a swarm with N recipients = N × stagger.
     #[serde(default = "default_broadcast_stagger")]
     pub stagger_seconds: u64,
-    /// Treat broadcasts without a `[fyi]` / `[ack: ...]` / `[all]`
-    /// subject prefix as `[all]`. Set to `"named-only"` to enforce
-    /// explicit addressing (no prefix = post error; future use).
-    /// Today only `"all"` is wired through; the field exists so the
-    /// schema is forward-compatible.
-    #[serde(default = "default_broadcast_recipients")]
-    pub default_recipients: String,
 }
 
 impl Default for BroadcastConfig {
     fn default() -> Self {
         Self {
             stagger_seconds: default_broadcast_stagger(),
-            default_recipients: default_broadcast_recipients(),
         }
     }
 }
@@ -317,10 +309,6 @@ fn default_broadcast_stagger() -> u64 {
     // urgent traffic but the safety/UX tradeoff favors not blowing
     // Anthropic per-account rate-limits during rearm storms.
     30
-}
-
-fn default_broadcast_recipients() -> String {
-    "all".to_string()
 }
 
 /// v0.6.16: watcher behavior config — currently houses the stale-wait
@@ -559,15 +547,11 @@ platform = "wsl"
         // broadcast fanout.
         let cfg = Config::load_str_for_test(minimal()).unwrap();
         assert_eq!(cfg.broadcast.stagger_seconds, 30);
-        assert_eq!(cfg.broadcast.default_recipients, "all");
     }
 
     #[test]
     fn broadcast_config_overrides_via_toml() {
-        let body = format!(
-            "{}\n[broadcast]\nstagger_seconds = 5\ndefault_recipients = \"all\"\n",
-            minimal()
-        );
+        let body = format!("{}\n[broadcast]\nstagger_seconds = 5\n", minimal());
         let cfg = Config::load_str_for_test(&body).unwrap();
         assert_eq!(cfg.broadcast.stagger_seconds, 5);
     }

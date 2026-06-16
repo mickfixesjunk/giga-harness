@@ -19,14 +19,6 @@
 //! Modules are one-concept-per-file and individually unit-tested so the
 //! primitives can be verified in isolation.
 
-// TEMP (removed in Phase 13): a few primitives (the Tailer, config_dir /
-// walk_up, capture) are intentionally consumed by LATER structural phases
-// (coordination in 8; config/registry in 5/12), so they read as dead code
-// until then. Suppressing here keeps intervening builds clean enough to
-// spot genuine regressions; Phase 13's `-D warnings` clippy gate re-checks
-// for anything actually unused once every caller is wired.
-#![allow(dead_code)]
-
 pub mod append;
 pub mod atomic_io;
 pub mod dirs;

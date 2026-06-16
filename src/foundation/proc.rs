@@ -1,4 +1,4 @@
-//! Subprocess substrate: run-and-check, capture, shell escaping.
+//! Subprocess substrate: run-and-check, shell escaping.
 //!
 //! The harness shells out a lot — rsync, ssh, git, tmux, `cmd.exe`, and
 //! `giga` itself. Roughly a dozen call sites each hand-rolled the same
@@ -25,24 +25,6 @@ pub fn run_checked(cmd: &mut Command, what: &str) -> Result<()> {
         return Err(anyhow!("{what} exited {}", status.code().unwrap_or(-1)));
     }
     Ok(())
-}
-
-/// Run `cmd` and return its stdout as a lossy string, erroring (with
-/// `what` as context) if it exits non-zero. stdin is nulled; stderr is
-/// captured and folded into the error message on failure.
-pub fn capture(cmd: &mut Command, what: &str) -> Result<String> {
-    let out = cmd
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("invoking {what}"))?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "{what} exited {}: {}",
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// POSIX shell-escape `s` for safe interpolation into a remote command
@@ -95,20 +77,6 @@ mod tests {
     fn run_checked_errors_on_failure() {
         let err = run_checked(&mut Command::new("false"), "false").unwrap_err();
         assert!(err.to_string().contains("false exited"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn capture_returns_stdout() {
-        let mut cmd = Command::new("printf");
-        cmd.arg("hello");
-        assert_eq!(capture(&mut cmd, "printf").unwrap(), "hello");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn capture_errors_on_nonzero() {
-        assert!(capture(&mut Command::new("false"), "false").is_err());
     }
 
     #[test]

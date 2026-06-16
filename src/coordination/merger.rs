@@ -38,9 +38,6 @@ use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 /// Per-channel merge state — one merged file + N slice files (one per
 /// host that has at least one participant on this channel).
 struct ChannelMergeState {
-    /// Channel filename, e.g. "design-code-2.md". Used as the
-    /// merge-cursor namespace key.
-    name: String,
     /// Absolute path to `<channel>.md`, the merged file the watcher
     /// tails. The merger is the sole writer to this file.
     merged_path: PathBuf,
@@ -96,7 +93,7 @@ pub fn run(config_path: &Path, once: bool, quiet: bool) -> Result<()> {
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
-        if tick % RELOAD_EVERY_N_TICKS == 0 {
+        if tick.is_multiple_of(RELOAD_EVERY_N_TICKS) {
             refresh_tracked(config_path, &mut tracked, giga_home.as_deref());
         }
         merge_tick(&mut tracked, giga_home.as_deref());
@@ -179,7 +176,6 @@ fn refresh_tracked(
         let entry = tracked
             .entry(name.clone())
             .or_insert_with(|| ChannelMergeState {
-                name: name.clone(),
                 merged_path: merged_path.clone(),
                 slices: HashMap::new(),
             });

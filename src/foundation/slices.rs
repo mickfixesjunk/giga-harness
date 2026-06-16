@@ -24,15 +24,6 @@ pub fn slice_path(merged: &Path, host: &str) -> PathBuf {
     parent.join(format!("{stem}.{host}.md"))
 }
 
-/// Just the slice file *name* (`<channel>.<host>.md`) for a merged
-/// channel path — the basename of [`slice_path`].
-pub fn slice_filename(merged: &Path, host: &str) -> String {
-    slice_path(merged, host)
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,14 +59,6 @@ mod tests {
         assert_eq!(
             slice_path(Path::new("design-code.md"), "wsl-a"),
             PathBuf::from("design-code.wsl-a.md")
-        );
-    }
-
-    #[test]
-    fn filename_is_basename_of_slice_path() {
-        assert_eq!(
-            slice_filename(Path::new("/dir/design-code.md"), "wsl-a"),
-            "design-code.wsl-a.md"
         );
     }
 }

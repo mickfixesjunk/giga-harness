@@ -313,7 +313,7 @@ pub fn run_multi(
     loop {
         thread::sleep(POLL_INTERVAL);
         tick = tick.wrapping_add(1);
-        if tick % RELOAD_EVERY_N_TICKS == 0 {
+        if tick.is_multiple_of(RELOAD_EVERY_N_TICKS) {
             refresh_tracked(config_path, me, &mut tracked, giga_home.as_deref());
         }
         // v0.6.17: periodic stale-wait re-scan. Cheap (local file I/O,
@@ -324,7 +324,7 @@ pub fn run_multi(
         // session), a wait that crossed the threshold AFTER arm time,
         // and a mid-turn API kill where the agent restarted into a
         // new watcher session.
-        if rescan_every_n_ticks > 0 && tick % rescan_every_n_ticks == 0 {
+        if rescan_every_n_ticks > 0 && tick.is_multiple_of(rescan_every_n_ticks) {
             run_stale_wait_scan(
                 config_path,
                 me,
@@ -632,108 +632,6 @@ fn refresh_tracked(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Header-detection tests now live with the parser in
-    // `foundation::frame` (the watcher self-filter is `frame::is_header_line`).
-
-    #[test]
-    fn busy_when_no_giga_home_is_never_busy() {
-        // No home -> no lock path -> gating disabled -> behaves as before.
-        assert!(!agent_is_busy(busy_lock_path(None, "design").as_ref()));
-    }
-
-    #[test]
-    fn busy_when_lock_absent_is_idle() {
-        let dir = std::env::temp_dir().join(format!("giga-watch-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let lock = busy_lock_path(Some(&dir), "design");
-        // busy/design.lock does not exist -> idle.
-        assert!(!agent_is_busy(lock.as_ref()));
-    }
-
-    #[test]
-    fn busy_when_fresh_lock_present() {
-        let dir = std::env::temp_dir().join(format!("giga-watch-busy-{}", std::process::id()));
-        let busy = dir.join("busy");
-        fs::create_dir_all(&busy).unwrap();
-        let lock = busy_lock_path(Some(&dir), "design").unwrap();
-        fs::write(&lock, b"").unwrap(); // just-created -> fresh
-        assert!(agent_is_busy(Some(&lock)));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn busy_when_stale_lock_is_idle() {
-        // A lock older than the stale window must read as idle (flush), so
-        // a missed Stop-hook can't make the agent permanently deaf.
-        let dir = std::env::temp_dir().join(format!("giga-watch-stale-{}", std::process::id()));
-        let busy = dir.join("busy");
-        fs::create_dir_all(&busy).unwrap();
-        let lock = busy_lock_path(Some(&dir), "design").unwrap();
-        fs::write(&lock, b"").unwrap();
-        // Backdate mtime well past BUSY_LOCK_STALE_AFTER.
-        let stale = std::time::SystemTime::now() - BUSY_LOCK_STALE_AFTER - Duration::from_secs(60);
-        fs::File::options()
-            .write(true)
-            .open(&lock)
-            .unwrap()
-            .set_modified(stale)
-            .unwrap();
-        assert!(!agent_is_busy(Some(&lock)));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// v0.6.0: is_waiting_on_me returns true when the LATEST message
-    /// on the channel has a `WAITING ON: <me>` footer.
-    #[test]
-    fn is_waiting_on_me_detects_direct_addressed_footer() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("ch.md");
-        fs::write(&path, "===\n[design] hello — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n").unwrap();
-        assert!(is_waiting_on_me(&path, "research"));
-        assert!(!is_waiting_on_me(&path, "design"));
-    }
-
-    /// v0.6.0: informational footer means NO ONE is waited on.
-    #[test]
-    fn is_waiting_on_me_returns_false_for_informational() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("ch.md");
-        fs::write(&path, "===\n[design] FYI — 2026-06-02T00:00:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n").unwrap();
-        assert!(!is_waiting_on_me(&path, "research"));
-        assert!(!is_waiting_on_me(&path, "design"));
-    }
-
-    /// v0.6.0: only the LAST message matters — older WAITING ON lines
-    /// don't trigger if a subsequent message is informational or
-    /// addresses someone else.
-    #[test]
-    fn is_waiting_on_me_only_considers_latest_message() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("ch.md");
-        fs::write(
-            &path,
-            "===\n[design] first — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n\n\
-             ===\n[research] reply — 2026-06-02T00:01:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n",
-        )
-        .unwrap();
-        // The LATEST message is informational → research is no longer waited on.
-        assert!(!is_waiting_on_me(&path, "research"));
-    }
-
-    /// v0.6.0: missing file = no, not panic.
-    #[test]
-    fn is_waiting_on_me_returns_false_for_missing_file() {
-        assert!(!is_waiting_on_me(
-            Path::new("/nonexistent/__giga_test"),
-            "anyone"
-        ));
-    }
-}
-
 /// v0.4.0: append a `[fyi]` broadcast to a per-agent local archive
 /// instead of firing it as a Monitor notification (BROADCAST_FANOUT_DESIGN.md
 /// Idea C). Best-effort — failures are logged to stderr but don't
@@ -888,9 +786,9 @@ fn slot_for(this_agent: &str, recipients: &[&str]) -> usize {
 /// agent's Claude session is genuinely never woken. Zero API calls
 /// across the whole upgrade-rearm path.
 ///
-/// On Windows, exec-in-place isn't available; we fall back to spawn
-/// + exit. Monitor sees the parent die and reports it (which costs
-/// an API call to the agent), but the agent's next turn can re-arm
+/// On Windows, exec-in-place isn't available; we fall back to
+/// spawn + exit. Monitor sees the parent die and reports it (which
+/// costs an API call to the agent), but the agent's next turn can re-arm
 /// from CLAUDE.md / AGENTS.md as before. Worse than POSIX, but
 /// matches today's behavior on Windows.
 ///
@@ -929,5 +827,107 @@ fn self_rearm() {
         // CLAUDE.md/AGENTS.md instructions (today's wake-up flow).
         let _ = std::process::Command::new(&exe).args(&args).spawn();
         std::process::exit(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Header-detection tests now live with the parser in
+    // `foundation::frame` (the watcher self-filter is `frame::is_header_line`).
+
+    #[test]
+    fn busy_when_no_giga_home_is_never_busy() {
+        // No home -> no lock path -> gating disabled -> behaves as before.
+        assert!(!agent_is_busy(busy_lock_path(None, "design").as_ref()));
+    }
+
+    #[test]
+    fn busy_when_lock_absent_is_idle() {
+        let dir = std::env::temp_dir().join(format!("giga-watch-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let lock = busy_lock_path(Some(&dir), "design");
+        // busy/design.lock does not exist -> idle.
+        assert!(!agent_is_busy(lock.as_ref()));
+    }
+
+    #[test]
+    fn busy_when_fresh_lock_present() {
+        let dir = std::env::temp_dir().join(format!("giga-watch-busy-{}", std::process::id()));
+        let busy = dir.join("busy");
+        fs::create_dir_all(&busy).unwrap();
+        let lock = busy_lock_path(Some(&dir), "design").unwrap();
+        fs::write(&lock, b"").unwrap(); // just-created -> fresh
+        assert!(agent_is_busy(Some(&lock)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn busy_when_stale_lock_is_idle() {
+        // A lock older than the stale window must read as idle (flush), so
+        // a missed Stop-hook can't make the agent permanently deaf.
+        let dir = std::env::temp_dir().join(format!("giga-watch-stale-{}", std::process::id()));
+        let busy = dir.join("busy");
+        fs::create_dir_all(&busy).unwrap();
+        let lock = busy_lock_path(Some(&dir), "design").unwrap();
+        fs::write(&lock, b"").unwrap();
+        // Backdate mtime well past BUSY_LOCK_STALE_AFTER.
+        let stale = std::time::SystemTime::now() - BUSY_LOCK_STALE_AFTER - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+        assert!(!agent_is_busy(Some(&lock)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// v0.6.0: is_waiting_on_me returns true when the LATEST message
+    /// on the channel has a `WAITING ON: <me>` footer.
+    #[test]
+    fn is_waiting_on_me_detects_direct_addressed_footer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(&path, "===\n[design] hello — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n").unwrap();
+        assert!(is_waiting_on_me(&path, "research"));
+        assert!(!is_waiting_on_me(&path, "design"));
+    }
+
+    /// v0.6.0: informational footer means NO ONE is waited on.
+    #[test]
+    fn is_waiting_on_me_returns_false_for_informational() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(&path, "===\n[design] FYI — 2026-06-02T00:00:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n").unwrap();
+        assert!(!is_waiting_on_me(&path, "research"));
+        assert!(!is_waiting_on_me(&path, "design"));
+    }
+
+    /// v0.6.0: only the LAST message matters — older WAITING ON lines
+    /// don't trigger if a subsequent message is informational or
+    /// addresses someone else.
+    #[test]
+    fn is_waiting_on_me_only_considers_latest_message() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("ch.md");
+        fs::write(
+            &path,
+            "===\n[design] first — 2026-06-02T00:00:00Z\n===\n\nbody\n\nWAITING ON: research (status)\n===\n\n\
+             ===\n[research] reply — 2026-06-02T00:01:00Z\n===\n\nbody\n\n(Informational, no response required.)\n===\n",
+        )
+        .unwrap();
+        // The LATEST message is informational → research is no longer waited on.
+        assert!(!is_waiting_on_me(&path, "research"));
+    }
+
+    /// v0.6.0: missing file = no, not panic.
+    #[test]
+    fn is_waiting_on_me_returns_false_for_missing_file() {
+        assert!(!is_waiting_on_me(
+            Path::new("/nonexistent/__giga_test"),
+            "anyone"
+        ));
     }
 }

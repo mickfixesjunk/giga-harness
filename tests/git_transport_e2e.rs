@@ -26,7 +26,10 @@ struct GitFixture {
     inbox_a: PathBuf,
     inbox_b: PathBuf,
     clone_a: PathBuf,
-    clone_b: PathBuf,
+    // Kept for fixture symmetry with `clone_a`; only `clone_a` is read
+    // back off the fixture in assertions, so the underscore silences the
+    // dead-field lint without dropping the parallel structure.
+    _clone_b: PathBuf,
 }
 
 /// Build a 2-host swarm fixture using a bare local git repo as the
@@ -150,7 +153,7 @@ participants = ["alice", "bob"]
         inbox_a,
         inbox_b,
         clone_a,
-        clone_b,
+        _clone_b: clone_b,
     }
 }
 

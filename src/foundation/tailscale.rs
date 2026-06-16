@@ -47,11 +47,6 @@ impl TailnetStatus {
     pub fn self_dns_name(&self) -> Option<String> {
         self.self_node.as_ref().map(|n| n.dns_name.clone())
     }
-
-    /// Whether the tailnet backend is up and authenticated.
-    pub fn is_running(&self) -> bool {
-        self.backend_state.as_deref() == Some("Running")
-    }
 }
 
 /// Parse `tailscale status --json` bytes. Pure — testable without the
@@ -194,10 +189,16 @@ mod tests {
 
     #[test]
     fn reads_backend_state() {
-        assert!(parse_status(SAMPLE).unwrap().is_running());
+        assert_eq!(
+            parse_status(SAMPLE).unwrap().backend_state.as_deref(),
+            Some("Running")
+        );
         let needs =
             br#"{"BackendState":"NeedsLogin","Self":{"DNSName":"x.","HostName":"x","OS":"linux"}}"#;
-        assert!(!parse_status(needs).unwrap().is_running());
+        assert_eq!(
+            parse_status(needs).unwrap().backend_state.as_deref(),
+            Some("NeedsLogin")
+        );
     }
 
     #[test]

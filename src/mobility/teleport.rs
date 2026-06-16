@@ -61,7 +61,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // 1. ensure HANDOVER.md exists on source (touch if missing) so
     //    rsync has something to carry over.
-    let source_ssh = build_ssh_target(&plan.source)?;
+    let source_ssh = build_ssh_target(plan.source)?;
     let source_handover_unix = format!(
         "{}/HANDOVER.md",
         crate::foundation::paths::unix_join(&plan.source_workdir, "").trim_end_matches('/'),
@@ -93,7 +93,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // 6. SSH target: giga init --only <agent>.
     if let Err(e) =
-        run_remote_giga(&plan.target, &abs_config, &["init"]).context("giga init on target")
+        run_remote_giga(plan.target, &abs_config, &["init"]).context("giga init on target")
     {
         eprintln!(
             "  ! init on target failed ({e:#}) — run `giga remote --host {} -- init` manually",
@@ -104,12 +104,8 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // 7. SSH target: giga launch --only <agent>.
-    if let Err(e) = run_remote_giga(
-        &plan.target,
-        &abs_config,
-        &["launch", "--only", &plan.agent],
-    )
-    .context("giga launch on target")
+    if let Err(e) = run_remote_giga(plan.target, &abs_config, &["launch", "--only", &plan.agent])
+        .context("giga launch on target")
     {
         eprintln!("  ! launch on target failed ({e:#}) — run `giga remote --host {} -- launch --only {}` manually", plan.target.name, plan.agent);
     } else {
@@ -136,7 +132,7 @@ pub fn run(args: Args) -> Result<()> {
         println!("  giga remote --host {} -- bash -lc 'tmux kill-window -t giga-{}:{}-cli; tmux kill-window -t giga-{}:{}-bridge'", plan.source.name, cfg.project.name, plan.agent, cfg.project.name, plan.agent);
         println!(")");
     } else {
-        match kill_old_pane(&plan.source, &cfg.project.name, &plan.agent) {
+        match kill_old_pane(plan.source, &cfg.project.name, &plan.agent) {
             Ok(()) => println!("  + source pane(s) killed on `{}`", plan.source.name),
             Err(e) => eprintln!("  ! source pane kill failed ({e:#}) — verify with `giga remote --host {} -- bash -lc 'tmux list-windows -t giga-{}'`", plan.source.name, cfg.project.name),
         }

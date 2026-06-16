@@ -6,27 +6,13 @@
 //! self-rearms by re-exec'ing. They all need to resolve "which binary am
 //! I" the same way; this is that resolution, once.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Resolve the path to *this* `giga` binary for re-invocation:
 /// `current_exe()`, falling back to the bare name `giga` (which the
 /// child's PATH lookup can still resolve).
 pub fn giga_binary() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("giga"))
-}
-
-/// A `Command` for the giga binary with `args` applied. The caller
-/// configures stdio and runs it. Binary resolved via [`giga_binary`].
-pub fn giga_command<I, S>(args: I) -> Command
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let mut cmd = Command::new(giga_binary());
-    cmd.args(args);
-    cmd
 }
 
 /// Resolve the giga binary *after a self-overwriting install*.
@@ -69,15 +55,5 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let resolved = fresh_giga_binary(false, tmp.path());
         assert!(resolved == which::which("giga").unwrap_or_else(|_| tmp.path().to_path_buf()));
-    }
-
-    #[test]
-    fn giga_command_carries_args() {
-        let cmd = giga_command(["sweep", "--owed-by", "design"]);
-        let argv: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(argv, vec!["sweep", "--owed-by", "design"]);
     }
 }

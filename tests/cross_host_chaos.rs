@@ -12,6 +12,7 @@
 //!   - Real `--append-verify` atomicity (rsync's own guarantee)
 //!   - Tailscale SSH connection failures
 //!   - SSH user auth failures
+//!
 //! These are covered by the live 2-host smoke (REMOTE_DESIGN.md §6
 //! step 10) and by sync.rs unit tests (planner is pure).
 //!

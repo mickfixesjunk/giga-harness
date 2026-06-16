@@ -230,7 +230,7 @@ pub enum Resolved {
 /// the default name → [`Resolved::DefaultMissing`]; failure on an
 /// explicit path → [`Resolved::ExplicitError`].
 pub fn resolve_config_or(provided: PathBuf) -> Resolved {
-    let was_default = provided == PathBuf::from("giga-harness.toml");
+    let was_default = provided == Path::new("giga-harness.toml");
     match resolve_config(provided) {
         Ok(c) => Resolved::Found(c),
         Err(e) if was_default => Resolved::DefaultMissing(e),

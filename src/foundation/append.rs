@@ -35,6 +35,7 @@ pub fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path);
     let mut f = match open_result {
         Ok(f) => f,
@@ -103,6 +104,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&p)
             .unwrap();
         f.lock()

@@ -201,14 +201,14 @@ pub fn run(args: Args) -> Result<()> {
 /// remediation operators most often want (the absolute path that the
 /// tilde was trying to spell). Pure — testable.
 fn reject_tilde(flag: &str, path: &str) -> Result<()> {
-    if path.starts_with('~') {
+    if let Some(after_tilde) = path.strip_prefix('~') {
         let abs_hint = if let Some(home) = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .and_then(|h| h.into_string().ok())
         {
             path.replacen('~', &home, 1)
         } else {
-            format!("/home/<user>{}", &path[1..])
+            format!("/home/<user>{after_tilde}")
         };
         return Err(anyhow!(
             "{flag} contains a literal `~` — this won't expand at `giga launch` time \
@@ -648,7 +648,7 @@ purpose = "All-hands."
     }
 
     #[test]
-    fn reject_tilde_inlines_home_in_remediation_when_HOME_set() {
+    fn reject_tilde_inlines_home_in_remediation_when_home_set() {
         // Save + restore HOME so we don't break other tests.
         let orig = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", "/home/quality-test") };
