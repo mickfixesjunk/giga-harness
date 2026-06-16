@@ -21,6 +21,7 @@ mod claude_operator;
 mod codex_channel;
 mod config;
 mod cursor;
+mod foundation;
 mod fs_paths;
 mod hosts;
 mod init;
