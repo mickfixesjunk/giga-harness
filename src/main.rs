@@ -14,23 +14,21 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod accounts;
 mod claude_operator;
 mod config;
 mod coordination;
 mod foundation;
 mod fs_paths;
+mod mobility;
 mod mutate;
 mod registry;
 mod runtime;
 mod scaffold;
 mod setup;
-mod switch;
-mod takeover;
-mod teleport;
 mod transport;
 mod trust;
 mod ui;
-mod upgrade;
 mod validate;
 
 #[derive(Parser)]
@@ -789,7 +787,7 @@ fn main() -> Result<()> {
             // v0.6.41: explicit --bare flag skips all swarm-aware
             // machinery (the UI's upgrade button uses this).
             if bare {
-                return upgrade::run_bare(dry_run);
+                return mobility::upgrade::run_bare(dry_run);
             }
             // v0.6.30: `giga upgrade` should work CWD-independently —
             // the binary install is system-level, not per-swarm. If
@@ -798,7 +796,7 @@ fn main() -> Result<()> {
             // to a bare install rather than erroring out. The disarm/
             // rearm dance is only meaningful when a swarm is in scope.
             match registry::resolve_config(config) {
-                Ok(config) => upgrade::run(upgrade::Args {
+                Ok(config) => mobility::upgrade::run(mobility::upgrade::Args {
                     config,
                     as_agent: r#as,
                     skip_peers,
@@ -806,7 +804,7 @@ fn main() -> Result<()> {
                     skip_windows,
                     dry_run,
                 }),
-                Err(_) => upgrade::run_bare(dry_run),
+                Err(_) => mobility::upgrade::run_bare(dry_run),
             }
         }
         Command::Ui { bind, port } => ui::run(ui::Args { bind, port }),
@@ -819,7 +817,7 @@ fn main() -> Result<()> {
             config,
         } => {
             let config = registry::resolve_config(config)?;
-            teleport::run(teleport::Args {
+            mobility::teleport::run(mobility::teleport::Args {
                 agent,
                 to,
                 from,
@@ -838,7 +836,7 @@ fn main() -> Result<()> {
             let to_runtime = runtime::Runtime::parse(&to).ok_or_else(|| {
                 anyhow::anyhow!("unknown --to runtime `{to}` — valid: claude, codex, agy")
             })?;
-            takeover::run(takeover::Args {
+            mobility::takeover::run(mobility::takeover::Args {
                 config,
                 as_agent,
                 to_runtime,
@@ -994,17 +992,17 @@ fn main() -> Result<()> {
             add,
         } => {
             let op = if setup {
-                switch::Op::Setup
+                accounts::switch::Op::Setup
             } else if add {
-                switch::Op::Add
+                accounts::switch::Op::Add
             } else if list {
-                switch::Op::List
+                accounts::switch::Op::List
             } else if account.is_some() {
-                switch::Op::Switch
+                accounts::switch::Op::Switch
             } else {
-                switch::Op::Status
+                accounts::switch::Op::Status
             };
-            switch::run(switch::Args {
+            accounts::switch::run(accounts::switch::Args {
                 runtime,
                 account,
                 op,

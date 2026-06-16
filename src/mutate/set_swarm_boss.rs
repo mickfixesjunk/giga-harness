@@ -112,8 +112,8 @@ pub fn run(args: Args) -> Result<()> {
 /// `[[agents]]` where name=slug. Routes through the shared rollback
 /// helper (preserves comments + formatting, reload+validates, restores
 /// the original on a would-be-invalid result). Mirrors
-/// `teleport::update_toml_agent_host` and
-/// `takeover::update_agent_runtime_in_toml`.
+/// `mobility::teleport::update_toml_agent_host` and
+/// `mobility::takeover::update_agent_runtime_in_toml`.
 fn update_agent_swarm_boss_in_toml(
     config: &std::path::Path,
     slug: &str,
