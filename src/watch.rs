@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write; // Stdout::flush (agy force-flush mode)
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,6 +29,8 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::config::{self, BroadcastPrefix, Config};
 use crate::cursor;
+use crate::foundation::frame;
+use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 
 /// v0.6.0: watch delivery mode. Default = Claude (stdout lines for
 /// Monitor tool). `--agy` = stdout lines + flush + exit-on-WAITING-ON-me.
@@ -41,11 +43,10 @@ pub enum WatchMode {
     Codex,
 }
 
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
-/// How many poll ticks between config rereads. 5 ticks * 3s = ~15s,
-/// which is a tight enough window that a freshly-added channel feels
-/// "instant" without thrashing the disk.
-const RELOAD_EVERY_N_TICKS: u64 = 5;
+// POLL_INTERVAL (3s) and RELOAD_EVERY_N_TICKS (5 ticks ≈ 15s, tight
+// enough that a freshly-added channel feels "instant" without thrashing
+// the disk) are imported from foundation::tail — the single source shared
+// with the merger and codex bridge.
 
 /// A busy-lock older than this is treated as idle (flush). This is the
 /// fail-safe for a missed unlock: if an agent's turn crashes before its
@@ -119,10 +120,10 @@ pub fn run_single(channel: &Path, me: &str, mode: WatchMode) -> Result<()> {
         if cur < last {
             last = cur;
         } else if cur > last {
-            if let Ok(delta) = read_delta(channel, last, cur) {
+            if let Ok(delta) = tail::read_delta_lossy(channel, last, cur) {
                 last = cur;
                 for line in delta.lines() {
-                    if !is_header_line(line) {
+                    if !frame::is_header_line(line) {
                         continue;
                     }
                     if line.starts_with(&me_tag) {
@@ -337,14 +338,14 @@ pub fn run_multi(
                 }
                 continue;
             }
-            let delta = match read_delta(&state.path, state.last_size, cur) {
+            let delta = match tail::read_delta_lossy(&state.path, state.last_size, cur) {
                 Ok(d) => d,
                 Err(_) => continue,
             };
             state.last_size = cur;
             let is_broadcast = config::is_broadcast_channel(&state.name);
             for line in delta.lines() {
-                if !is_header_line(line) {
+                if !frame::is_header_line(line) {
                     continue;
                 }
                 if line.starts_with(&me_tag) {
@@ -643,94 +644,12 @@ fn refresh_tracked(
     }
 }
 
-fn is_header_line(line: &str) -> bool {
-    // Header blocks look like `[sender] subject — UTC-ISO-8601-timestamp`.
-    if !line.starts_with('[') || !line.contains("] ") {
-        return false;
-    }
-    // Channel files include a literal example header in the convention
-    // preamble with a `<sender>` placeholder — filter that out.
-    if line.starts_with("[<") {
-        return false;
-    }
-    // Real headers always end with a UTC timestamp produced by
-    // `%Y-%m-%dT%H:%M:%SZ` — exactly 20 ASCII bytes, e.g.
-    // `2026-05-28T14:30:00Z`. Body lines that open with `[agent] —`
-    // (agents addressing the recipient inline) don't have this tail
-    // and would otherwise leak past the --as self-filter, causing echo
-    // notifications.
-    //
-    // Index the WHOLE line's bytes (`as_bytes()`), NOT a `&str` byte-slice
-    // like `line[line.len()-20..]` — the latter panics when the 20-bytes-
-    // from-end boundary lands inside a multibyte char (e.g. an em-dash in
-    // the subject/body). The timestamp tail is pure ASCII, so checking the
-    // last 20 bytes is correct regardless of multibyte chars earlier in the line.
-    let bytes = line.as_bytes();
-    if bytes.len() < 20 {
-        return false;
-    }
-    let tail = &bytes[bytes.len() - 20..];
-    tail[19] == b'Z'
-        && tail[4] == b'-'
-        && tail[7] == b'-'
-        && tail[10] == b'T'
-        && tail[13] == b':'
-        && tail[16] == b':'
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn real_header_passes() {
-        assert!(is_header_line("[design] online — 2026-05-28T14:30:00Z"));
-    }
-
-    #[test]
-    fn body_line_addressing_recipient_is_rejected() {
-        // This is the echo-bug trigger: agent body opens with [recipient] —
-        assert!(!is_header_line("[web] — explicit GO for the new feature"));
-        assert!(!is_header_line("[alice] — first: v0.2.29 bench results"));
-    }
-
-    #[test]
-    fn multibyte_char_at_tail_boundary_does_not_panic() {
-        // Regression: `line[line.len()-20..]` panicked when the 20-bytes-from-end
-        // boundary fell inside a multibyte char (em-dash). A body line ending with
-        // em-dashes near the tail must be rejected WITHOUT panicking.
-        assert!(!is_header_line(
-            "[alice] — relocate the FULL stack (NOT a feature — fits the freeze)."
-        ));
-        // Em-dash exactly straddling the 20-from-end boundary.
-        assert!(!is_header_line(
-            "[design] aaaaaaaaaaaaaaaa — bbbbbbbbbbbbbbbb"
-        ));
-        // A real header with an em-dash in the subject still passes (ASCII tail intact).
-        assert!(is_header_line(
-            "[design] bench — results — 2026-05-28T14:30:00Z"
-        ));
-    }
-
-    #[test]
-    fn preamble_placeholder_is_rejected() {
-        assert!(!is_header_line("[<sender>] <subject> — <UTC...>"));
-    }
-
-    #[test]
-    fn non_bracket_line_is_rejected() {
-        assert!(!is_header_line("just some body text"));
-        assert!(!is_header_line("==="));
-        assert!(!is_header_line("WAITING ON: web"));
-    }
-
-    #[test]
-    fn header_with_em_dash_in_subject_passes() {
-        // Subject itself may contain em-dashes — still valid.
-        assert!(is_header_line(
-            "[design] bench — results — 2026-05-28T14:30:00Z"
-        ));
-    }
+    // Header-detection tests now live with the parser in
+    // `foundation::frame` (the watcher self-filter is `frame::is_header_line`).
 
     #[test]
     fn busy_when_no_giga_home_is_never_busy() {
@@ -827,14 +746,6 @@ mod tests {
     }
 }
 
-fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
-    let mut f = fs::File::open(path)?;
-    f.seek(SeekFrom::Start(from))?;
-    let mut buf = vec![0u8; (to - from) as usize];
-    f.read_exact(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
 /// v0.4.0: extract the subject text from a header line like
 /// `[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge — 2026-06-01T12:00:00Z`.
 /// Returns the slice between the first `]` (closing the agent/timestamp
@@ -857,14 +768,12 @@ fn extract_subject(header_line: &str) -> &str {
 /// affect the watch loop.
 fn append_fyi_archive(giga_home: &Path, agent: &str, channel: &str, header: &str) {
     let archive_path = giga_home.join(format!("fyi-archive.{agent}.log"));
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let ts = crate::foundation::timefmt::now_iso8601();
     let line = format!("[{ts}] {channel}: {header}\n");
-    let result = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&archive_path)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
-    if let Err(e) = result {
+    // v0.6.x: route through the locked append. Previously this used an
+    // UNLOCKED OpenOptions::append, which could tear against a concurrent
+    // writer to the same archive.
+    if let Err(e) = crate::foundation::append::append_with_lock(&archive_path, line.as_bytes()) {
         eprintln!(
             "watch: failed to append FYI to {} ({e}) — message will not be surfaced",
             archive_path.display(),
@@ -976,35 +885,12 @@ fn is_waiting_on_me(path: &Path, me: &str) -> bool {
     let Ok(body) = fs::read_to_string(path) else {
         return false;
     };
-    let lines: Vec<&str> = body.lines().collect();
-    // Find the last header line — they look like `[<sender>] <subject>
-    // — <UTC timestamp>`. The is_header_line predicate is already
-    // defined in this module.
-    let mut last_header_idx = None;
-    for (i, line) in lines.iter().enumerate() {
-        if is_header_line(line) {
-            last_header_idx = Some(i);
-        }
-    }
-    let Some(idx) = last_header_idx else {
-        return false;
-    };
-    // Scan FORWARD from the last header for WAITING ON or the
-    // informational footer (which means no one is waited on).
-    for line in lines.iter().skip(idx + 1) {
-        if let Some(rest) = line.trim_start().strip_prefix("WAITING ON: ") {
-            let who = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            return who == me;
-        }
-        if line.contains("Informational, no response required") {
-            return false;
-        }
-    }
-    false
+    // The latest frame's footer is `WAITING ON: <me>` (informational
+    // synonyms and a different target both read as "not waiting on me").
+    matches!(
+        frame::last_header_block(&body).as_ref().and_then(|lf| lf.waiting_on()),
+        Some(who) if who == me
+    )
 }
 
 /// v0.6.2: compute the agent's slot index in the alphabetically-sorted

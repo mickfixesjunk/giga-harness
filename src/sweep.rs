@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::config::Config;
+use crate::foundation::frame;
 
 pub fn run(config_path: &Path, owed_by_filter: Option<&str>) -> Result<()> {
     let cfg = Config::load(config_path)?;
@@ -26,16 +27,21 @@ pub fn run(config_path: &Path, owed_by_filter: Option<&str>) -> Result<()> {
             continue;
         }
         let body = fs::read_to_string(&path).unwrap_or_default();
-        let last = last_header_block(&body);
-        rows.push(
-            last.unwrap_or_else(|| Row {
+        let row = match frame::last_header_block(&body) {
+            Some(lf) => Row {
+                channel: ch.file.clone(),
+                last_from: lf.header.sender.clone(),
+                subject: lf.header.subject.clone(),
+                waiting_on: lf.waiting_on().map(|s| s.to_string()),
+            },
+            None => Row {
                 channel: ch.file.clone(),
                 last_from: "(empty)".into(),
                 subject: "—".into(),
                 waiting_on: None,
-            })
-            .with_channel(ch.file.clone()),
-        );
+            },
+        };
+        rows.push(row);
     }
 
     let filtered: Vec<&Row> = if let Some(who) = owed_by_filter {
@@ -75,71 +81,6 @@ struct Row {
     last_from: String,
     subject: String,
     waiting_on: Option<String>,
-}
-
-impl Row {
-    fn with_channel(mut self, c: String) -> Self {
-        self.channel = c;
-        self
-    }
-}
-
-/// Walk the file backwards to find the most recent header line:
-///   `[sender] subject — timestamp`
-/// Then scan forward in the same block for a WAITING ON line.
-fn last_header_block(body: &str) -> Option<Row> {
-    let lines: Vec<&str> = body.lines().collect();
-    let mut last_header_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(stripped) = line.strip_prefix('[') {
-            if let Some(end) = stripped.find("] ") {
-                // Sanity: looks like `[name] subject` — accept.
-                if end > 0 && stripped.len() > end + 2 {
-                    last_header_idx = Some(i);
-                }
-            }
-        }
-    }
-    let idx = last_header_idx?;
-    let header = lines[idx];
-    let inner = &header[1..];
-    let bracket_end = inner.find("] ")?;
-    let sender = &inner[..bracket_end];
-    let rest = &inner[bracket_end + 2..];
-    let subject = rest
-        .rsplit_once('—')
-        .map(|(s, _)| s.trim().to_string())
-        .unwrap_or_else(|| rest.to_string());
-
-    let mut waiting_on: Option<String> = None;
-    for line in lines.iter().skip(idx + 1) {
-        if let Some(rest) = line.strip_prefix("WAITING ON: ") {
-            let who = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            // Treat synonyms-for-informational as not-waiting.
-            let lower = who.to_ascii_lowercase();
-            let synonymous = matches!(
-                lower.as_str(),
-                "nobody" | "none" | "no-one" | "noone" | "n/a" | "informational"
-            );
-            if !who.is_empty() && !synonymous {
-                waiting_on = Some(who.to_string());
-            }
-            break;
-        }
-        if line.contains("Informational, no response required") {
-            break;
-        }
-    }
-    Some(Row {
-        channel: String::new(),
-        last_from: sender.to_string(),
-        subject,
-        waiting_on,
-    })
 }
 
 fn trunc(s: &str, n: usize) -> String {

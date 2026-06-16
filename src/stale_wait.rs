@@ -29,9 +29,11 @@
 //! in the two incidents that prompted this feature) is fully covered
 //! by the one-shot scan.
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
+
+use crate::foundation::frame::{self, Footer};
 
 /// One unresolved wait surfaced to the operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +67,12 @@ pub fn scan(content: &str, me: &str, now: DateTime<Utc>, threshold_minutes: u64)
     let lines: Vec<&str> = content.lines().collect();
     let mut i = 0;
     while i < lines.len() {
-        if let Some((sender, subject, ts)) = parse_header(lines[i]) {
+        if let Some(frame::Header {
+            sender,
+            subject,
+            ts,
+        }) = frame::parse_header(lines[i])
+        {
             let footer = find_footer_in_message(&lines, i + 1);
             if sender == me {
                 // Receiver posted → resolves every pending wait on
@@ -157,71 +164,18 @@ pub fn format_notification(channel: &str, wait: &StaleWait) -> String {
 
 // --- parsing helpers -----------------------------------------------
 
-/// Parse a header line of the form `[<sender>] <subject> — <UTC ISO ts>`.
-/// Returns (sender, subject, ts) on success.
-///
-/// The timestamp is the LAST 20 ASCII bytes of the line. The subject
-/// is everything between the closing `]` and the ` — <timestamp>`
-/// separator. We split from the right with rsplitn so an em-dash in
-/// the subject (which is common — agents use em-dashes in subjects)
-/// doesn't confuse the parser.
-fn parse_header(line: &str) -> Option<(String, String, DateTime<Utc>)> {
-    if !line.starts_with('[') {
-        return None;
-    }
-    // Skip the `[<placeholder>]` example header in the channel
-    // preamble — matches is_header_line in watch.rs.
-    if line.starts_with("[<") {
-        return None;
-    }
-    let bracket_end = line.find("] ")?;
-    let sender = line[1..bracket_end].to_string();
-    if sender.is_empty() {
-        return None;
-    }
-    let after_bracket = &line[bracket_end + 2..];
-    // Split from the right on ` — ` (space + em-dash + space).
-    let mut rsplit = after_bracket.rsplitn(2, " — ");
-    let ts_str = rsplit.next()?;
-    let subject = rsplit.next()?;
-    // Timestamp must be exactly 20 ASCII bytes ending in Z.
-    if ts_str.len() != 20 || !ts_str.ends_with('Z') {
-        return None;
-    }
-    let naive = NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%SZ").ok()?;
-    let ts = naive.and_utc();
-    Some((sender, subject.to_string(), ts))
-}
-
-enum Footer {
-    WaitingOn(String),
-    Informational,
-}
-
-/// Walk forward from `start` until we hit either a footer or the
-/// next message header. Returns None if neither is found (the
-/// message is malformed — treat as no-op upstream).
+/// Walk forward from `start` until we hit either a footer or the next
+/// message header. Returns None if neither is found (the message is
+/// malformed — treat as no-op upstream). Header detection + footer
+/// parsing both come from [`crate::foundation::frame`].
 fn find_footer_in_message(lines: &[&str], start: usize) -> Option<Footer> {
     for line in lines.iter().skip(start) {
-        if parse_header(line).is_some() {
-            // Next message started without a footer in the previous
-            // one — give up on the previous one.
+        if frame::is_header_line(line) {
+            // Next message started without a footer in the previous one.
             return None;
         }
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("WAITING ON: ") {
-            let who = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if who.is_empty() {
-                return None;
-            }
-            return Some(Footer::WaitingOn(who.to_string()));
-        }
-        if line.contains("Informational, no response required") {
-            return Some(Footer::Informational);
+        if let Some(f) = frame::parse_footer(line) {
+            return Some(f);
         }
     }
     None
@@ -232,9 +186,7 @@ mod tests {
     use super::*;
 
     fn ts(s: &str) -> DateTime<Utc> {
-        NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ")
-            .unwrap()
-            .and_utc()
+        crate::foundation::timefmt::parse_ts(s).unwrap()
     }
 
     fn msg(sender: &str, subject: &str, ts_str: &str, footer: &str) -> String {
@@ -468,27 +420,23 @@ mod tests {
         assert_eq!(out[0].sender, "alice");
     }
 
-    /// Em-dashes in the subject must not break the parser (rsplitn
-    /// on the LAST ` — ` keeps the subject intact).
+    /// Em-dashes in the subject must not break the parser (split on the
+    /// LAST ` — ` keeps the subject intact). Exercised here against the
+    /// shared `frame::parse_header` the scan now uses.
     #[test]
     fn em_dash_in_subject_does_not_confuse_parser() {
         let line = "[alice] big — refactor — review request — 2026-06-05T00:00:00Z";
-        let parsed = parse_header(line).expect("should parse");
-        assert_eq!(parsed.0, "alice");
-        assert_eq!(parsed.1, "big — refactor — review request");
-        assert_eq!(
-            parsed.2,
-            NaiveDateTime::parse_from_str("2026-06-05T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ")
-                .unwrap()
-                .and_utc()
-        );
+        let h = frame::parse_header(line).expect("should parse");
+        assert_eq!(h.sender, "alice");
+        assert_eq!(h.subject, "big — refactor — review request");
+        assert_eq!(h.ts, ts("2026-06-05T00:00:00Z"));
     }
 
     /// The placeholder `[<sender>] ...` convention preamble must NOT
     /// be parsed as a real header.
     #[test]
     fn placeholder_header_is_not_parsed() {
-        assert!(parse_header("[<sender>] <subject> — <timestamp>").is_none());
+        assert!(frame::parse_header("[<sender>] <subject> — <timestamp>").is_none());
     }
 
     /// format_notification matches the spec example shape.

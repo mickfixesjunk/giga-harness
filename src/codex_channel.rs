@@ -2,20 +2,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
 use crate::cursor;
+use crate::foundation::frame;
+use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
-const RELOAD_EVERY_N_TICKS: u64 = 5;
 pub(crate) static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct Args {
@@ -114,14 +113,14 @@ pub fn run(args: Args) -> Result<()> {
             }
 
             let from = state.last_size;
-            let delta = match read_delta(&state.path, from, cur) {
+            let delta = match tail::read_delta_lossy(&state.path, from, cur) {
                 Ok(d) => d,
                 Err(_) => continue,
             };
             state.last_size = cur;
 
             for line in delta.lines() {
-                if !is_header_line(line) || line.starts_with(&me_tag) {
+                if !frame::is_header_line(line) || line.starts_with(&me_tag) {
                     continue;
                 }
                 let text = format!(
@@ -216,30 +215,6 @@ fn refresh_tracked(
         tracked.remove(&name);
         eprintln!("codex-channel: dropped `{name}`");
     }
-}
-
-fn is_header_line(line: &str) -> bool {
-    if !line.starts_with('[') || !line.contains("] ") || line.starts_with("[<") {
-        return false;
-    }
-    if line.len() < 20 {
-        return false;
-    }
-    let tail = line[line.len() - 20..].as_bytes();
-    tail[19] == b'Z'
-        && tail[4] == b'-'
-        && tail[7] == b'-'
-        && tail[10] == b'T'
-        && tail[13] == b':'
-        && tail[16] == b':'
-}
-
-fn read_delta(path: &Path, from: u64, to: u64) -> Result<String> {
-    let mut f = fs::File::open(path)?;
-    f.seek(SeekFrom::Start(from))?;
-    let mut buf = vec![0u8; (to - from) as usize];
-    f.read_exact(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 pub(crate) fn write_envelope(

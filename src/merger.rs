@@ -25,18 +25,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
 
 use anyhow::Result;
 
 use crate::config::Config;
 use crate::cursor;
-
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
-const RELOAD_EVERY_N_TICKS: u64 = 5;
+use crate::foundation::append::append_with_lock;
+use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 
 /// Per-channel merge state — one merged file + N slice files (one per
 /// host that has at least one participant on this channel).
@@ -127,7 +124,7 @@ fn merge_tick(tracked: &mut HashMap<String, ChannelMergeState>, giga_home: Optio
                 continue;
             }
             // Read the new bytes from the slice...
-            let delta = match read_delta(&slice.path, slice.last_size, cur) {
+            let delta = match tail::read_delta(&slice.path, slice.last_size, cur) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!(
@@ -273,21 +270,13 @@ fn derive_slice_path(merged: &Path, host: &str) -> PathBuf {
     parent.join(format!("{stem}.{host}.md"))
 }
 
-fn read_delta(path: &Path, from: u64, to: u64) -> Result<Vec<u8>> {
-    let mut f = fs::File::open(path)?;
-    f.seek(SeekFrom::Start(from))?;
-    let mut buf = vec![0u8; (to - from) as usize];
-    f.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
 fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     // v0.3.5: lock during append so concurrent post dual-writes to
     // this same merged file can't interleave bytes within a single
     // frame. See REMOTE_DUAL_WRITE_DESIGN.md §5 — POSIX O_APPEND is
     // atomic only up to PIPE_BUF (4KB), and merger ticks can carry
-    // multi-frame deltas larger than that.
-    crate::post::append_with_lock(path, bytes)
+    // multi-frame deltas larger than that. Shared impl in foundation::append.
+    append_with_lock(path, bytes)
 }
 
 #[cfg(test)]

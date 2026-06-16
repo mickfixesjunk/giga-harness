@@ -89,6 +89,27 @@ mod tests {
     }
 
     #[test]
+    fn append_releases_lock_cleanly() {
+        // After the call returns, the file must NOT be left locked — a
+        // subsequent open+lock must succeed without contention. (v0.4.4
+        // Bug 11: the read+write open is what makes LockFileEx work on
+        // Windows; this guards that the lock is also released.)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("under-lock.md");
+        append_with_lock(&p, b"first\n").unwrap();
+        append_with_lock(&p, b"second\n").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "first\nsecond\n");
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&p)
+            .unwrap();
+        f.lock()
+            .expect("file must be unlocked after append_with_lock returns");
+    }
+
+    #[test]
     fn append_plain_creates_then_appends() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = tmp.path().join("ch.md");
