@@ -1,7 +1,7 @@
 //! v0.2's default — rsync over Tailscale SSH. This is a thin adapter:
-//! the actual rsync planning + execution lives in `crate::sync`
+//! the actual rsync planning + execution lives in `crate::transport::sync`
 //! (which the v0.2 release shipped, unchanged); the SSH passthrough
-//! for `giga remote --host` lives in `crate::remote`.
+//! for `giga remote --host` lives in `crate::transport::remote`.
 //!
 //! Stage 1 of the v0.3.0 plug refactor keeps those modules' bodies
 //! where they are (well-tested + working in prod) and just wraps them
@@ -10,10 +10,10 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::config::Config;
-use crate::transport::Transport;
+use crate::transport::{RemoteExec, TickCtx, Transport};
 
 pub struct RsyncTailscaleTransport;
 
@@ -22,20 +22,31 @@ impl Transport for RsyncTailscaleTransport {
         "rsync+tailscale"
     }
 
-    fn tick(&self, cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
-        crate::sync::tick_once(cfg, this_host, dry_run)
+    fn self_check(&self) -> Result<()> {
+        if which::which("rsync").is_err() {
+            return Err(anyhow!(
+                "rsync not found on PATH. Install it with: sudo apt install rsync"
+            ));
+        }
+        Ok(())
+    }
+
+    fn tick(&self, ctx: &TickCtx) -> Result<()> {
+        crate::transport::sync::tick_once(ctx.cfg, ctx.this_host, ctx.dry_run, ctx.quiet)
     }
 
     fn bootstrap_peer(&self, cfg: &Config, peer: &str, config_path: &Path) -> Result<()> {
-        crate::sync::bootstrap_peer(cfg, peer, config_path)
+        crate::transport::sync::bootstrap_peer(cfg, peer, config_path)
     }
 
-    fn supports_remote_exec(&self) -> bool {
-        true
+    fn remote_exec(&self) -> Option<&dyn RemoteExec> {
+        Some(self)
     }
+}
 
+impl RemoteExec for RsyncTailscaleTransport {
     fn run_remote(&self, cfg: &Config, peer: &str, args: &[String]) -> Result<i32> {
-        crate::remote::run_passthrough(cfg, peer, args)
+        crate::transport::remote::run_passthrough(cfg, peer, args)
     }
 }
 
@@ -49,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn supports_remote_exec_true() {
-        assert!(RsyncTailscaleTransport.supports_remote_exec());
+    fn remote_exec_is_some() {
+        assert!(RsyncTailscaleTransport.remote_exec().is_some());
     }
 }

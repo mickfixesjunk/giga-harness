@@ -13,7 +13,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 
 use crate::config::Config;
-use crate::transport::Transport;
+use crate::transport::{TickCtx, Transport};
 
 pub struct LocalTransport;
 
@@ -22,7 +22,7 @@ impl Transport for LocalTransport {
         "local"
     }
 
-    fn tick(&self, _cfg: &Config, _this_host: &str, _dry_run: bool) -> Result<()> {
+    fn tick(&self, _ctx: &TickCtx) -> Result<()> {
         Ok(())
     }
 
@@ -32,10 +32,6 @@ impl Transport for LocalTransport {
              Add `[transport]` with kind = \"rsync+tailscale\" or \"git\" + register peers \
              via `giga add-host` to go multi-host."
         ))
-    }
-
-    fn supports_remote_exec(&self) -> bool {
-        false
     }
 }
 
@@ -59,8 +55,21 @@ wsl_inbox = "/tmp/i"
     #[test]
     fn tick_is_noop() {
         let t = LocalTransport;
-        assert!(t.tick(&empty_cfg(), "this", false).is_ok());
-        assert!(t.tick(&empty_cfg(), "this", true).is_ok()); // dry-run also no-op
+        let cfg = empty_cfg();
+        let ctx = TickCtx {
+            cfg: &cfg,
+            this_host: "this",
+            dry_run: false,
+            quiet: false,
+        };
+        assert!(t.tick(&ctx).is_ok());
+        let ctx_dry = TickCtx {
+            cfg: &cfg,
+            this_host: "this",
+            dry_run: true,
+            quiet: false,
+        };
+        assert!(t.tick(&ctx_dry).is_ok()); // dry-run also no-op
     }
 
     #[test]
@@ -76,16 +85,7 @@ wsl_inbox = "/tmp/i"
     }
 
     #[test]
-    fn supports_remote_exec_false() {
-        assert!(!LocalTransport.supports_remote_exec());
-    }
-
-    #[test]
-    fn run_remote_errors_with_default_message() {
-        let t = LocalTransport;
-        let err = t
-            .run_remote(&empty_cfg(), "wsl-b", &["sweep".into()])
-            .unwrap_err();
-        assert!(err.to_string().contains("--host commands not supported"));
+    fn remote_exec_is_none() {
+        assert!(LocalTransport.remote_exec().is_none());
     }
 }

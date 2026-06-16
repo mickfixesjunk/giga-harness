@@ -23,11 +23,52 @@ use anyhow::{anyhow, Result};
 
 use crate::config::Config;
 
+// Concrete transport plugs + the transport-adjacent command modules,
+// all reorganized under `src/transport/` (the trait + factory live in
+// this file).
+pub mod git;
+pub mod hosts;
+pub mod local;
+pub mod remote;
+pub mod rsync_tailscale;
+pub mod setup_remote_node;
+pub mod sync;
+
+/// Per-tick context handed to [`Transport::tick`]. Bundles the inputs a
+/// plug needs for one sync sweep — replaces the old
+/// `(cfg, this_host, dry_run)` parameter triple and the process-global
+/// QUIET static that used to live in `sync.rs` (the `quiet` flag now
+/// rides along here instead of being read from a static).
+pub struct TickCtx<'a> {
+    pub cfg: &'a Config,
+    pub this_host: &'a str,
+    pub dry_run: bool,
+    pub quiet: bool,
+}
+
+/// Optional capability: run a giga subcommand synchronously on a peer.
+/// Separated out of [`Transport`] so the "can this transport do remote
+/// exec?" question is answered by `Transport::remote_exec()` returning
+/// `Some`/`None` rather than a `supports_remote_exec()` bool paired with
+/// a default-erroring `run_remote`. Only transports that genuinely
+/// support `giga remote --host` (today: rsync+tailscale) implement it.
+pub trait RemoteExec {
+    fn run_remote(&self, cfg: &Config, peer: &str, args: &[String]) -> Result<i32>;
+}
+
 /// Pluggable swarm-state transport. See module docs.
 pub trait Transport: Send + Sync {
     /// Short stable identifier for logs + error messages. Matches the
     /// `[transport.kind]` TOML value (e.g. "git", "rsync+tailscale").
     fn name(&self) -> &'static str;
+
+    /// Fail-fast prerequisite check, run once before the daemon's tick
+    /// loop starts (skipped under `--dry-run`). Plugs that depend on an
+    /// external binary (rsync, git) override this to verify it's on PATH
+    /// and return a clear install hint if not. Default: no prereqs.
+    fn self_check(&self) -> Result<()> {
+        Ok(())
+    }
 
     // ----- Slice-and-merge sync (mandatory) -----
 
@@ -35,11 +76,11 @@ pub trait Transport: Send + Sync {
     /// TOML to wherever peers can pick them up; pull peer slices into
     /// local inbox. Idempotent. Daemon retries on next tick if Err.
     ///
-    /// `dry_run = true` should print the plan to stderr without making
-    /// any persistent changes (used by `giga sync --once --dry-run` for
-    /// operator debugging). Plugs MAY ignore the flag if their work is
-    /// hard to enumerate without doing it.
-    fn tick(&self, cfg: &Config, this_host: &str, dry_run: bool) -> Result<()>;
+    /// `ctx.dry_run = true` should print the plan to stderr without
+    /// making any persistent changes (used by `giga sync --once
+    /// --dry-run` for operator debugging). Plugs MAY ignore the flag if
+    /// their work is hard to enumerate without doing it.
+    fn tick(&self, ctx: &TickCtx) -> Result<()>;
 
     /// One-shot peer bootstrap. Called by `giga add-host` and
     /// `giga add-agent --host` after the local TOML edit. Should leave
@@ -52,22 +93,13 @@ pub trait Transport: Send + Sync {
 
     // ----- Command-on-peer (optional capability) -----
 
-    /// Whether this transport can run synchronous commands on a peer.
-    /// `giga remote --host`, `giga sweep --host`, `giga launch --host`
-    /// require this. Returns false → those flags error cleanly.
-    fn supports_remote_exec(&self) -> bool {
-        false
-    }
-
-    /// Run a giga subcommand on a peer. Default impl errors with a
-    /// clear "this transport doesn't support --host commands" message.
-    /// Plugs that return true from `supports_remote_exec` MUST override.
-    fn run_remote(&self, _cfg: &Config, _peer: &str, _args: &[String]) -> Result<i32> {
-        Err(anyhow!(
-            "{}: --host commands not supported by this transport. \
-             Run giga commands locally on the peer instead.",
-            self.name()
-        ))
+    /// Return this transport's [`RemoteExec`] handle if it supports
+    /// running synchronous commands on a peer (`giga remote --host`,
+    /// `giga sweep --host`, `giga launch --host`). Default: `None` →
+    /// those flags error cleanly. Plugs that support remote exec return
+    /// `Some(self)`.
+    fn remote_exec(&self) -> Option<&dyn RemoteExec> {
+        None
     }
 }
 
@@ -94,11 +126,11 @@ pub fn for_config(cfg: &Config) -> Result<Box<dyn Transport>> {
         });
 
     match kind {
-        "local" => Ok(Box::new(crate::transports::local::LocalTransport)),
+        "local" => Ok(Box::new(crate::transport::local::LocalTransport)),
         "rsync+tailscale" => Ok(Box::new(
-            crate::transports::rsync_tailscale::RsyncTailscaleTransport,
+            crate::transport::rsync_tailscale::RsyncTailscaleTransport,
         )),
-        "git" => Ok(Box::new(crate::transports::git::GitTransport::from_config(
+        "git" => Ok(Box::new(crate::transport::git::GitTransport::from_config(
             cfg,
         )?)),
         other => Err(anyhow!(
@@ -209,7 +241,7 @@ kind = "carrier-pigeon"
     }
 
     #[test]
-    fn supports_remote_exec_default_is_false() {
+    fn remote_exec_default_is_none() {
         let cfg = cfg_with_text(
             r#"
 [project]
@@ -221,6 +253,6 @@ kind = "local"
 "#,
         );
         let t = for_config(&cfg).unwrap();
-        assert!(!t.supports_remote_exec());
+        assert!(t.remote_exec().is_none());
     }
 }

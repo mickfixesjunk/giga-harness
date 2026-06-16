@@ -43,15 +43,13 @@ pub fn run(args: Args) -> Result<i32> {
     }
     let cfg = Config::load(&args.config)?;
     let transport = crate::transport::for_config(&cfg)?;
-    if !transport.supports_remote_exec() {
-        return Err(anyhow!(
-            "transport `{}` doesn't support --host commands. \
-             Run the giga command directly on the peer, or switch to a transport \
-             that supports remote exec (e.g. rsync+tailscale).",
+    match transport.remote_exec() {
+        Some(rx) => rx.run_remote(&cfg, &args.host, &args.remote_args),
+        None => Err(anyhow!(
+            "{}: --host commands not supported by this transport. Run giga commands locally on the peer instead.",
             transport.name()
-        ));
+        )),
     }
-    transport.run_remote(&cfg, &args.host, &args.remote_args)
 }
 
 /// Shared SSH-passthrough implementation used by the

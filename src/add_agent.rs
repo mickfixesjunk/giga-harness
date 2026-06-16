@@ -20,7 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::Config;
-use crate::sync;
+use crate::transport::sync;
 
 pub struct Args {
     pub config: PathBuf,

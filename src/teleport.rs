@@ -26,7 +26,7 @@ use anyhow::{anyhow, Context, Result};
 use toml_edit::{value, DocumentMut};
 
 use crate::config::{Config, Host};
-use crate::sync;
+use crate::transport::sync;
 
 pub struct Args {
     pub agent: String,
@@ -64,7 +64,7 @@ pub fn run(args: Args) -> Result<()> {
     let source_ssh = build_ssh_target(&plan.source)?;
     let source_handover_unix = format!(
         "{}/HANDOVER.md",
-        sync::remote_join(&plan.source_workdir, "").trim_end_matches('/'),
+        crate::foundation::paths::unix_join(&plan.source_workdir, "").trim_end_matches('/'),
     );
     let escaped_handover =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(source_handover_unix.as_str()));

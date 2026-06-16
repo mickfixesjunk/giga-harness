@@ -35,7 +35,7 @@ use toml_edit::{value, DocumentMut, Table};
 
 use crate::add_agent::ensure_array_of_tables;
 use crate::config::Config;
-use crate::sync;
+use crate::transport::sync;
 
 pub struct Args {
     pub config: PathBuf,

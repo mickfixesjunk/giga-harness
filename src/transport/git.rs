@@ -30,7 +30,7 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, Context, Result};
 
 use crate::config::Config;
-use crate::transport::Transport;
+use crate::transport::{TickCtx, Transport};
 
 pub struct GitTransport {
     pub state_repo: String,
@@ -259,7 +259,19 @@ impl Transport for GitTransport {
         "git"
     }
 
-    fn tick(&self, cfg: &Config, this_host: &str, dry_run: bool) -> Result<()> {
+    fn self_check(&self) -> Result<()> {
+        if which::which("git").is_err() {
+            return Err(anyhow!(
+                "git not found on PATH. Install it with: sudo apt install git"
+            ));
+        }
+        Ok(())
+    }
+
+    fn tick(&self, ctx: &TickCtx) -> Result<()> {
+        let cfg = ctx.cfg;
+        let this_host = ctx.this_host;
+        let dry_run = ctx.dry_run;
         if dry_run {
             eprintln!(
                 "[dry-run] git tick on {this_host}: would git pull, mirror peers→inbox, mirror own→repo, commit, push"
@@ -343,11 +355,12 @@ impl Transport for GitTransport {
             .this_host
             .clone()
             .ok_or_else(|| anyhow!("bootstrap_peer needs this_host"))?;
-        self.tick(cfg, &this_host, false)
-    }
-
-    fn supports_remote_exec(&self) -> bool {
-        false
+        self.tick(&TickCtx {
+            cfg,
+            this_host: &this_host,
+            dry_run: false,
+            quiet: false,
+        })
     }
 }
 

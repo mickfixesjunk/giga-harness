@@ -23,27 +23,22 @@ mod config;
 mod cursor;
 mod foundation;
 mod fs_paths;
-mod hosts;
 mod init;
 mod launch;
 mod merger;
 mod post;
 mod registry;
-mod remote;
 mod runtime;
 mod set_swarm_boss;
 mod setup;
-mod setup_remote_node;
 mod stale_wait;
 mod sweep;
 mod switch;
-mod sync;
 mod takeover;
 mod teleport;
 mod templates;
 mod terminal;
 mod transport;
-mod transports;
 mod trust;
 mod ui;
 mod upgrade;
@@ -706,7 +701,7 @@ fn main() -> Result<()> {
             dry_run,
         } => {
             if remote_node {
-                setup_remote_node::run(setup_remote_node::Args {
+                transport::setup_remote_node::run(transport::setup_remote_node::Args {
                     inbox_dir,
                     dry_run,
                     transport,
@@ -760,7 +755,7 @@ fn main() -> Result<()> {
                     remote_args.push("--ui-port".to_string());
                     remote_args.push(ui_port.to_string());
                 }
-                let code = remote::run(remote::Args {
+                let code = transport::remote::run(transport::remote::Args {
                     host,
                     config,
                     remote_args,
@@ -787,9 +782,9 @@ fn main() -> Result<()> {
             // message. Explicit-but-bad --config still errors loud.
             let was_default = config == PathBuf::from("giga-harness.toml");
             match registry::resolve_config(config) {
-                Ok(c) if available => hosts::run_available(&c),
-                Ok(c) => hosts::run(&c),
-                Err(_) if was_default && !available => hosts::run_list_all(),
+                Ok(c) if available => transport::hosts::run_available(&c),
+                Ok(c) => transport::hosts::run(&c),
+                Err(_) if was_default && !available => transport::hosts::run_list_all(),
                 Err(e) => Err(e),
             }
         }
@@ -888,7 +883,7 @@ fn main() -> Result<()> {
                     remote_args.push("--owed-by".to_string());
                     remote_args.push(o.clone());
                 }
-                let code = remote::run(remote::Args {
+                let code = transport::remote::run(transport::remote::Args {
                     host,
                     config,
                     remote_args,
@@ -1070,7 +1065,7 @@ fn main() -> Result<()> {
             quiet,
         } => {
             let config = registry::resolve_config(config)?;
-            sync::run(sync::Args {
+            transport::sync::run(transport::sync::Args {
                 config,
                 once,
                 dry_run,
@@ -1083,7 +1078,7 @@ fn main() -> Result<()> {
             remote_args,
         } => {
             let config = registry::resolve_config(config)?;
-            let code = remote::run(remote::Args {
+            let code = transport::remote::run(transport::remote::Args {
                 host,
                 config,
                 remote_args,
