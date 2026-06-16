@@ -17,10 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
+use toml_edit::{value, DocumentMut, Table};
 
-use crate::config::Config;
-use crate::transport::sync;
+use crate::config::edit::{
+    append_channel, edit_then_validate_with_rollback, ensure_array_of_tables,
+};
+use crate::config::{derive_bilateral_with_platforms, Config, DerivedChannel};
+use crate::mutate::peer_bootstrap::bootstrap_peer_best_effort;
 
 pub struct Args {
     pub config: PathBuf,
@@ -54,29 +57,12 @@ pub fn run(args: Args) -> Result<()> {
     let cfg = Config::load(&args.config)?;
     preflight(&cfg, &args)?;
 
-    // ---- edit the TOML doc in memory -------------------------------
-    let original = fs::read_to_string(&args.config)
-        .with_context(|| format!("reading {}", args.config.display()))?;
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", args.config.display()))?;
-
     let new_channels = derive_channels(&cfg, &args);
     let broadcast_targets = if args.no_broadcast {
         Vec::new()
     } else {
         find_broadcast_channels(&cfg)
     };
-
-    append_agent(&mut doc, &args)?;
-    for ch in &new_channels {
-        append_channel(&mut doc, ch)?;
-    }
-    for broadcast_file in &broadcast_targets {
-        append_to_broadcast(&mut doc, broadcast_file, &args.name)?;
-    }
-
-    let updated = doc.to_string();
 
     // ---- decide on template path -----------------------------------
     let template_path = template_target(&args.config, &args.name)?;
@@ -109,27 +95,51 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // ---- write changes ---------------------------------------------
-    fs::write(&args.config, &updated)
-        .with_context(|| format!("writing updated {}", args.config.display()))?;
-    if let Some(parent) = template_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
-    }
-    // v0.3.9 Bug 3: collision check happens in preflight (BEFORE the
-    // TOML write). If template_path already exists at this point, the
-    // operator passed --template pointing at it — the file IS the
-    // template body, no write needed.
-    if !template_path.exists() {
+    // ---- write the template FIRST (atomic add, v-phase10) -----------
+    // Preflight already guaranteed template_path is free OR that the
+    // operator passed --template pointing at it (the in-place case). We
+    // write the template before the TOML so the whole op can be rolled
+    // back cleanly: if the TOML edit produces an invalid config, the
+    // rollback helper restores the TOML and we remove the template we
+    // just wrote — leaving the swarm dir byte-for-byte as it was.
+    //
+    // v0.3.9 Bug 3: if template_path already exists at this point, it's
+    // the in-place --template case — the file IS the body, no write
+    // needed (and on rollback we must NOT delete the operator's file).
+    let template_was_in_place = template_path.exists();
+    if !template_was_in_place {
+        if let Some(parent) = template_path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
+        }
         fs::write(&template_path, template_body)
             .with_context(|| format!("writing {}", template_path.display()))?;
     }
 
-    // ---- re-validate the updated config ----------------------------
-    let revalidated = Config::load(&args.config)
-        .context("re-loading config after edit failed — config is in an unexpected state")?;
-    revalidated
-        .validate()
-        .context("re-validating after edit failed — config is in an unexpected state")?;
+    // ---- THEN mutate the TOML through the rollback helper -----------
+    // On an invalid post-edit config the helper rolls the TOML back to
+    // its pre-edit bytes; we additionally remove the template we wrote
+    // (unless it was the in-place case) so the add is fully atomic.
+    let name = args.name.clone();
+    let revalidated = match edit_then_validate_with_rollback(&args.config, |doc| {
+        append_agent(doc, &args)?;
+        for ch in &new_channels {
+            append_channel(doc, ch)?;
+        }
+        for broadcast_file in &broadcast_targets {
+            append_to_broadcast(doc, broadcast_file, &name)?;
+        }
+        Ok(())
+    }) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // TOML is already rolled back by the helper. Remove the
+            // orphaned template too (unless the operator owns it).
+            if !template_was_in_place {
+                let _ = fs::remove_file(&template_path);
+            }
+            return Err(e);
+        }
+    };
 
     // ---- summary ----------------------------------------------------
     println!(
@@ -154,46 +164,14 @@ pub fn run(args: Args) -> Result<()> {
     // Replaces the runbook's manual "rsync the swarm dir to peer +
     // create this_host.toml" step from REMOTE_QUICKSTART.md. Best-effort:
     // on failure we warn but don't fail the local-side success (the
-    // operator can re-run `giga sync` later to recover).
+    // operator can re-run `giga sync` later to recover). Shared with
+    // add-host via mutate::peer_bootstrap; the `true` requests the
+    // remote `giga init` that scaffolds the new agent's workdir.
     if let Some(host) = &args.host {
         let is_remote = revalidated.this_host.as_deref() != Some(host.as_str());
         if is_remote {
             println!();
-            println!("auto-bootstrap: pushing canonical TOML to `{host}`...");
-            let bootstrap_ok = match sync::bootstrap_peer(&revalidated, host, &args.config) {
-                Ok(()) => {
-                    println!("  + canonical TOML synced to `{host}` (and this_host.toml ensured)");
-                    true
-                }
-                Err(e) => {
-                    eprintln!("  ! auto-bootstrap failed: {e:#}");
-                    eprintln!("    The local config is correct; the peer just isn't synced yet.");
-                    eprintln!(
-                        "    Run `giga sync --once` once everything is reachable to recover."
-                    );
-                    false
-                }
-            };
-            // Remote `giga init` scaffolds the new agent's workdir +
-            // AGENTS.md on the peer. Init is host-aware (as of v1.1), so
-            // it only touches workdirs for agents whose `host` matches
-            // the peer — won't try to mkdir /home/<other-user>/... on
-            // the wrong filesystem. Best-effort: only runs if bootstrap
-            // succeeded (otherwise the peer doesn't even have the TOML
-            // to init from).
-            if bootstrap_ok {
-                println!("auto-scaffold: running `giga init` on `{host}`...");
-                match sync::run_remote_giga_init(&revalidated, host, &args.config) {
-                    Ok(()) => println!(
-                        "  + remote init complete — `{}`'s workdir + AGENTS.md ready on `{host}`",
-                        args.name
-                    ),
-                    Err(e) => {
-                        eprintln!("  ! remote giga init failed: {e:#}");
-                        eprintln!("    The peer has the TOML; run `giga remote --host {host} init` manually to scaffold.");
-                    }
-                }
-            }
+            bootstrap_peer_best_effort(&revalidated, host, &args.config, true);
         }
     }
 
@@ -376,46 +354,22 @@ fn preflight(cfg: &Config, args: &Args) -> Result<()> {
 
 // --------------------------------------------------------------- channel derivation
 
-#[derive(Debug)]
-pub struct DerivedChannel {
-    pub file: String,
-    pub side: String,
-    pub participants: [String; 2],
-    pub purpose: String,
-}
-
+/// Derive one bilateral channel per `--peer`. The new agent isn't in
+/// the config yet, so we pass its platform (`args.platform`) explicitly
+/// to the shared `config::derive_bilateral_with_platforms`; the peer's
+/// platform is looked up in `[[agents]]` (defaulting to wsl if somehow
+/// absent — preflight already verified the peer exists).
 fn derive_channels(cfg: &Config, args: &Args) -> Vec<DerivedChannel> {
     args.peers
         .iter()
         .map(|peer| {
-            // Alphabetical filename: predictable, easy to find on disk.
-            let mut both = vec![args.name.clone(), peer.clone()];
-            both.sort();
-            let file = format!("{}-{}.md", both[0], both[1]);
-
-            // Side: if either participant is windows-platform, the
-            // channel must live on the windows side so the native
-            // Windows agent can reach it (WSL agents can read /mnt/c
-            // either way).
             let peer_platform = cfg
                 .agents
                 .iter()
                 .find(|a| &a.name == peer)
                 .map(|a| a.platform.as_str())
                 .unwrap_or("wsl");
-            let side = if args.platform == "windows" || peer_platform == "windows" {
-                "windows"
-            } else {
-                "wsl"
-            }
-            .to_string();
-
-            DerivedChannel {
-                file,
-                side,
-                participants: [both[0].clone(), both[1].clone()],
-                purpose: format!("Bilateral channel between {} and {}.", both[0], both[1]),
-            }
+            derive_bilateral_with_platforms(&args.name, &args.platform, peer, peer_platform)
         })
         .collect()
 }
@@ -454,20 +408,6 @@ fn append_agent(doc: &mut DocumentMut, args: &Args) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn append_channel(doc: &mut DocumentMut, ch: &DerivedChannel) -> Result<()> {
-    let channels = ensure_array_of_tables(doc, "channels")?;
-    let mut block = Table::new();
-    block["file"] = value(ch.file.as_str());
-    block["side"] = value(ch.side.as_str());
-    let mut participants = Array::new();
-    participants.push(ch.participants[0].as_str());
-    participants.push(ch.participants[1].as_str());
-    block["participants"] = value(participants);
-    block["purpose"] = value(ch.purpose.as_str());
-    channels.push(block);
-    Ok(())
-}
-
 fn append_to_broadcast(doc: &mut DocumentMut, file: &str, slug: &str) -> Result<()> {
     let channels = doc
         .get_mut("channels")
@@ -495,18 +435,6 @@ fn append_to_broadcast(doc: &mut DocumentMut, file: &str, slug: &str) -> Result<
         "broadcast channel `{}` not found in [[channels]]",
         file
     ))
-}
-
-pub(crate) fn ensure_array_of_tables<'a>(
-    doc: &'a mut DocumentMut,
-    key: &str,
-) -> Result<&'a mut ArrayOfTables> {
-    if !doc.contains_key(key) {
-        doc.insert(key, Item::ArrayOfTables(ArrayOfTables::new()));
-    }
-    doc.get_mut(key)
-        .and_then(|i| i.as_array_of_tables_mut())
-        .ok_or_else(|| anyhow!("config key `{}` exists but is not an array of tables", key))
 }
 
 // --------------------------------------------------------------- template
@@ -1259,18 +1187,62 @@ windows_inbox = "/tmp/inbox_win""#,
     fn end_to_end_refuses_to_overwrite_existing_template() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = write_config(tmp.path(), minimal_config_text());
+        let before_toml = fs::read_to_string(&cfg_path).unwrap();
         fs::create_dir_all(tmp.path().join("agents")).unwrap();
         fs::write(tmp.path().join("agents/charlie.md"), "pre-existing").unwrap();
 
         let args = base_args(cfg_path.clone());
         let err = run(args).unwrap_err();
         assert!(err.to_string().contains("already exists"));
-        // Config should also remain unchanged on this failure path —
-        // well, actually we DO write the config first and then catch
-        // the template error. Worth knowing the failure semantics.
-        // Document that here:
+        // Preflight rejects BEFORE any write, so the existing template is
+        // untouched and the TOML is byte-identical (no half-commit).
         let pre = fs::read_to_string(tmp.path().join("agents/charlie.md")).unwrap();
         assert_eq!(pre, "pre-existing", "we did not clobber existing template");
+        let after_toml = fs::read_to_string(&cfg_path).unwrap();
+        assert_eq!(before_toml, after_toml, "TOML must be unchanged on refusal");
+    }
+
+    /// Phase-10 ATOMIC behavior (intentional diff): an add that would
+    /// produce an INVALID config leaves the swarm dir exactly as it was
+    /// — the TOML is rolled back AND the agents/<slug>.md template that
+    /// was written first is removed. No orphaned TOML edit, no orphaned
+    /// template.
+    ///
+    /// Trigger: --host pointing at a host that isn't in [[hosts]]. In a
+    /// local-only swarm (no [[hosts]]) this fails validation
+    /// ("agent has host which isn't in [[hosts]]") after the TOML write,
+    /// exercising the rollback path.
+    #[test]
+    fn add_agent_invalid_config_rolls_back_toml_and_template() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = write_config(tmp.path(), minimal_config_text());
+        let before_toml = fs::read_to_string(&cfg_path).unwrap();
+
+        let mut args = base_args(cfg_path.clone());
+        // No bilateral peer needed for the failure; the bad host is what
+        // trips validation. Keep peers empty so the only invalid bit is
+        // the dangling host reference.
+        args.peers = vec![];
+        args.host = Some("ghost-host".into());
+
+        let err = run(args).unwrap_err();
+        assert!(
+            err.to_string().contains("rolled back"),
+            "error should report the rollback, got: {err:#}",
+        );
+
+        // (a) TOML byte-identical to before.
+        let after_toml = fs::read_to_string(&cfg_path).unwrap();
+        assert_eq!(
+            before_toml, after_toml,
+            "TOML must be byte-identical after rollback",
+        );
+        // (b) No orphaned agents/charlie.md left behind.
+        let orphan = tmp.path().join("agents").join("charlie.md");
+        assert!(
+            !orphan.exists(),
+            "the template written first must be removed on rollback",
+        );
     }
 
     #[test]

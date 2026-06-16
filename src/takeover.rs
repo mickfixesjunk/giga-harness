@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use toml_edit::{value, DocumentMut};
+use toml_edit::value;
 
 use crate::config::{Agent, Config};
 use crate::runtime::Runtime;
@@ -173,34 +173,32 @@ fn detect_slug_from_cwd(cfg: &Config) -> Result<String> {
 }
 
 /// Edit the canonical TOML in-place: set `[[agents]]` where name=slug
-/// to `runtime = <new>`. Preserves comments + formatting via
-/// `toml_edit`. Modeled on `teleport::update_toml_agent_host`.
+/// to `runtime = <new>`. Routes through the shared rollback helper so a
+/// would-be-invalid result restores the original bytes. Modeled on
+/// `teleport::update_toml_agent_host`.
 fn update_agent_runtime_in_toml(config: &Path, slug: &str, new_runtime: Runtime) -> Result<()> {
-    let original =
-        fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", config.display()))?;
-    let agents = doc
-        .get_mut("agents")
-        .and_then(|i| i.as_array_of_tables_mut())
-        .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
-    let mut updated = false;
-    for entry in agents.iter_mut() {
-        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-            if name == slug {
-                entry["runtime"] = value(new_runtime.as_str());
-                updated = true;
-                break;
+    crate::config::edit::edit_then_validate_with_rollback(config, |doc| {
+        let agents = doc
+            .get_mut("agents")
+            .and_then(|i| i.as_array_of_tables_mut())
+            .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
+        let mut updated = false;
+        for entry in agents.iter_mut() {
+            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                if name == slug {
+                    entry["runtime"] = value(new_runtime.as_str());
+                    updated = true;
+                    break;
+                }
             }
         }
-    }
-    if !updated {
-        return Err(anyhow!(
-            "agent `{slug}` not found in [[agents]] (TOML may have been edited concurrently)"
-        ));
-    }
-    fs::write(config, doc.to_string()).with_context(|| format!("writing {}", config.display()))?;
+        if !updated {
+            return Err(anyhow!(
+                "agent `{slug}` not found in [[agents]] (TOML may have been edited concurrently)"
+            ));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 

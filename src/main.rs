@@ -14,18 +14,15 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod add_agent;
-mod add_channel;
-mod add_host;
 mod claude_operator;
 mod config;
 mod coordination;
 mod foundation;
 mod fs_paths;
+mod mutate;
 mod registry;
 mod runtime;
 mod scaffold;
-mod set_swarm_boss;
 mod setup;
 mod switch;
 mod takeover;
@@ -855,7 +852,7 @@ fn main() -> Result<()> {
             config,
         } => {
             let config = registry::resolve_config(config)?;
-            set_swarm_boss::run(set_swarm_boss::Args {
+            mutate::set_swarm_boss::run(mutate::set_swarm_boss::Args {
                 config,
                 slug,
                 unset,
@@ -936,7 +933,7 @@ fn main() -> Result<()> {
             code_root,
             host,
             config,
-        } => add_agent::run(add_agent::Args {
+        } => mutate::add_agent::run(mutate::add_agent::Args {
             config,
             name,
             workdir,
@@ -958,7 +955,7 @@ fn main() -> Result<()> {
             config,
         } => {
             let config = registry::resolve_config(config)?;
-            add_channel::run(add_channel::Args {
+            mutate::add_channel::run(mutate::add_channel::Args {
                 config,
                 participants,
                 file,
@@ -977,7 +974,7 @@ fn main() -> Result<()> {
             config,
         } => {
             let config = registry::resolve_config(config)?;
-            add_host::run(add_host::Args {
+            mutate::add_host::run(mutate::add_host::Args {
                 config,
                 name,
                 tailnet_hostname,

@@ -33,9 +33,9 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use toml_edit::{value, DocumentMut, Table};
 
-use crate::add_agent::ensure_array_of_tables;
+use crate::config::edit::{edit_then_validate_with_rollback, ensure_array_of_tables};
 use crate::config::Config;
-use crate::transport::sync;
+use crate::mutate::peer_bootstrap::bootstrap_peer_best_effort;
 
 pub struct Args {
     pub config: PathBuf,
@@ -108,9 +108,6 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // Save original for rollback if validation fails post-edit.
-    let original = fs::read_to_string(&args.config)
-        .with_context(|| format!("reading {}", args.config.display()))?;
     // v0.3.9 Bug 5b: write the new `.local.toml` name. Reader accepts
     // either name; this writer always produces the new one.
     let this_host_toml_path = args
@@ -118,36 +115,36 @@ pub fn run(args: Args) -> Result<()> {
         .parent()
         .map(|p| p.join(crate::config::THIS_HOST_FILE));
 
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", args.config.display()))?;
-    append_host(&mut doc, &args)?;
-
-    if let Some(local_name) = &local_host_name {
-        append_local_host(&mut doc, local_name)?;
-        assign_local_host_to_unhosted_agents(&mut doc, local_name)?;
-    }
-
-    fs::write(&args.config, doc.to_string())
-        .with_context(|| format!("writing {}", args.config.display()))?;
-
-    // Write this_host.toml (first migration only). Idempotent — only
-    // write if it doesn't already exist (the operator may have made
-    // one earlier as a workaround).
+    // First-host migration: the post-edit config (which now declares
+    // [[hosts]]) only validates if this_host is known, and this_host is
+    // read from the sibling this_host.toml. So write it BEFORE the TOML
+    // edit + revalidate. Idempotent — only write if absent (the operator
+    // may have made one earlier as a workaround); track whether WE
+    // created it so rollback can remove only our own write.
+    let mut wrote_this_host_toml = false;
     if let (Some(local_name), Some(path)) = (&local_host_name, &this_host_toml_path) {
         if !path.exists() {
             fs::write(path, format!("this_host = \"{local_name}\"\n"))
                 .with_context(|| format!("writing {}", path.display()))?;
+            wrote_this_host_toml = true;
         }
     }
 
-    // Reload + revalidate. On failure, restore the original TOML +
-    // remove the this_host.toml we may have just written.
-    let revalidated = match Config::load(&args.config) {
+    // Edit the TOML through the shared rollback helper. On an invalid
+    // post-edit config it restores the original TOML bytes; we
+    // additionally remove the this_host.toml we just wrote (if any) so
+    // the migration is fully atomic.
+    let revalidated = match edit_then_validate_with_rollback(&args.config, |doc| {
+        append_host(doc, &args)?;
+        if let Some(local_name) = &local_host_name {
+            append_local_host(doc, local_name)?;
+            assign_local_host_to_unhosted_agents(doc, local_name)?;
+        }
+        Ok(())
+    }) {
         Ok(c) => c,
         Err(e) => {
-            let _ = fs::write(&args.config, &original);
-            if local_host_name.is_some() {
+            if wrote_this_host_toml {
                 if let Some(path) = &this_host_toml_path {
                     let _ = fs::remove_file(path);
                 }
@@ -178,24 +175,16 @@ pub fn run(args: Args) -> Result<()> {
         println!("    edit it manually if your tailnet hostname differs (peers need it to push slices back).");
     }
 
-    // Auto-bootstrap unless opted out.
+    // Auto-bootstrap unless opted out. Shares the best-effort push +
+    // warn-don't-fail logic with add-agent (mutate::peer_bootstrap);
+    // `false` skips the remote `giga init` (add-host registers a host
+    // but adds no agent workdir to scaffold yet).
     if args.no_bootstrap {
         println!();
         println!("(--no-bootstrap: skipping peer push; run `giga sync --once` later or use add-agent --host {} to trigger it)", args.name);
     } else {
         println!();
-        println!(
-            "bootstrapping `{}` (mkdir + rsync swarm dir + ensure this_host.toml)...",
-            args.name
-        );
-        match sync::bootstrap_peer(&revalidated, &args.name, &args.config) {
-            Ok(()) => println!("  + bootstrap complete"),
-            Err(e) => {
-                eprintln!("  ! bootstrap failed: {e:#}");
-                eprintln!("    The local TOML edit is correct; the peer just isn't synced yet.");
-                eprintln!("    Re-run `giga sync --once` once the peer is reachable to recover.");
-            }
-        }
+        bootstrap_peer_best_effort(&revalidated, &args.name, &args.config, false);
     }
 
     println!();

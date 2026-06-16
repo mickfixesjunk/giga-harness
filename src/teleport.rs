@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
-use toml_edit::{value, DocumentMut};
+use toml_edit::value;
 
 use crate::config::{Config, Host};
 use crate::transport::sync;
@@ -414,34 +414,32 @@ pub(crate) fn render_teleport_banner(source_host: &str, target_host: &str) -> St
 }
 
 /// Edit the canonical TOML in-place: set `[[agents]]` where name=agent
-/// to host=target. Uses toml_edit to preserve formatting + comments.
+/// to host=target. Routes through the shared rollback helper so a
+/// would-be-invalid result (e.g. a target host not in [[hosts]])
+/// restores the original bytes instead of leaving a broken config.
 fn update_toml_agent_host(config: &std::path::Path, agent: &str, target_host: &str) -> Result<()> {
-    let original =
-        std::fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", config.display()))?;
-    let agents = doc
-        .get_mut("agents")
-        .and_then(|i| i.as_array_of_tables_mut())
-        .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
-    let mut updated = false;
-    for entry in agents.iter_mut() {
-        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-            if name == agent {
-                entry["host"] = value(target_host);
-                updated = true;
-                break;
+    crate::config::edit::edit_then_validate_with_rollback(config, |doc| {
+        let agents = doc
+            .get_mut("agents")
+            .and_then(|i| i.as_array_of_tables_mut())
+            .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
+        let mut updated = false;
+        for entry in agents.iter_mut() {
+            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                if name == agent {
+                    entry["host"] = value(target_host);
+                    updated = true;
+                    break;
+                }
             }
         }
-    }
-    if !updated {
-        return Err(anyhow!(
-            "agent `{agent}` not found in [[agents]] (TOML may have been edited concurrently)"
-        ));
-    }
-    std::fs::write(config, doc.to_string())
-        .with_context(|| format!("writing {}", config.display()))?;
+        if !updated {
+            return Err(anyhow!(
+                "agent `{agent}` not found in [[agents]] (TOML may have been edited concurrently)"
+            ));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -530,6 +528,7 @@ fn kill_old_pane(source: &Host, project: &str, agent: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use toml_edit::DocumentMut;
 
     /// Two-host fixture loaded via Config::load (writes a real
     /// this_host.local.toml so multi-host validation passes).
@@ -670,6 +669,13 @@ role = "."
 platform = "wsl"
 host = "host-a"
 "#,
+        )
+        .unwrap();
+        // The edit now reload+validates; a multi-host config needs a
+        // sibling this_host.toml resolving to a known host to validate.
+        std::fs::write(
+            tmp.path().join("this_host.local.toml"),
+            "this_host = \"host-a\"\n",
         )
         .unwrap();
 

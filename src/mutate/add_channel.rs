@@ -12,14 +12,12 @@
 //! `giga add-agent --peer A --peer B --peer C` adding bilaterals
 //! per peer.
 
-use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
-use toml_edit::DocumentMut;
+use anyhow::{anyhow, Result};
 
-use crate::add_agent::{append_channel, DerivedChannel};
-use crate::config::Config;
+use crate::config::edit::{append_channel, edit_then_validate_with_rollback};
+use crate::config::{Config, DerivedChannel};
 
 pub struct Args {
     pub config: PathBuf,
@@ -55,24 +53,11 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // Edit the TOML doc preserving comments + formatting.
-    let original = fs::read_to_string(&args.config)
-        .with_context(|| format!("reading {}", args.config.display()))?;
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", args.config.display()))?;
-    append_channel(&mut doc, &ch)?;
-    fs::write(&args.config, doc.to_string())
-        .with_context(|| format!("writing {}", args.config.display()))?;
-
-    // Re-validate against the parsed config — catches "channels reference
-    // unknown agents" + the new validation rules from step 1.
-    Config::load(&args.config).with_context(|| {
-        format!(
-            "added channel `{}` but post-edit validation failed",
-            ch.file
-        )
-    })?;
+    // Edit the TOML through the shared rollback helper: it preserves
+    // comments + formatting, reloads + validates (catching "channels
+    // reference unknown agents" etc.), and restores the original bytes
+    // if the post-edit config would be invalid.
+    edit_then_validate_with_rollback(&args.config, |doc| append_channel(doc, &ch))?;
 
     println!("added channel `{}` to {}", ch.file, args.config.display());
     if cfg.hosts.is_empty() {
@@ -84,7 +69,10 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Derive the channel record from CLI args + the parsed config.
-/// Pure — testable.
+/// Pure — testable. The alphabetical-filename + windows-vs-wsl side
+/// rule lives in `config::derive_bilateral` (shared with add-agent);
+/// this wrapper adds the v1 bilateral-only check and the optional
+/// `--file` filename override.
 pub(crate) fn derive(cfg: &Config, args: &Args) -> Result<DerivedChannel> {
     if args.participants.len() != 2 {
         return Err(anyhow!(
@@ -92,41 +80,11 @@ pub(crate) fn derive(cfg: &Config, args: &Args) -> Result<DerivedChannel> {
             args.participants.len(),
         ));
     }
-    let a_name = &args.participants[0];
-    let b_name = &args.participants[1];
-
-    let a = cfg
-        .agents
-        .iter()
-        .find(|x| &x.name == a_name)
-        .ok_or_else(|| anyhow!("participant `{a_name}` isn't in [[agents]]"))?;
-    let b = cfg
-        .agents
-        .iter()
-        .find(|x| &x.name == b_name)
-        .ok_or_else(|| anyhow!("participant `{b_name}` isn't in [[agents]]"))?;
-
-    // Sorted-alphabetical filename — matches add_agent's convention.
-    let mut both = vec![a_name.clone(), b_name.clone()];
-    both.sort();
-    let auto_file = format!("{}-{}.md", both[0], both[1]);
-    let file = args.file.clone().unwrap_or(auto_file);
-
-    // Side: if either participant is windows-platform, channel lives on
-    // the windows side so the native Windows agent can reach it.
-    let side = if a.platform == "windows" || b.platform == "windows" {
-        "windows"
-    } else {
-        "wsl"
+    let mut ch = cfg.derive_bilateral(&args.participants[0], &args.participants[1])?;
+    if let Some(file) = &args.file {
+        ch.file = file.clone();
     }
-    .to_string();
-
-    Ok(DerivedChannel {
-        file,
-        side,
-        participants: [both[0].clone(), both[1].clone()],
-        purpose: format!("Bilateral channel between {} and {}.", both[0], both[1]),
-    })
+    Ok(ch)
 }
 
 #[cfg(test)]

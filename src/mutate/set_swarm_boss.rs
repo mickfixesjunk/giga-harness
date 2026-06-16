@@ -9,9 +9,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
-use toml_edit::{value, DocumentMut};
+use anyhow::{anyhow, Result};
+use toml_edit::value;
 
+use crate::config::edit::edit_then_validate_with_rollback;
 use crate::config::Config;
 
 pub struct Args {
@@ -108,48 +109,46 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Edit the canonical TOML in-place: set or clear `swarm_boss` on
-/// `[[agents]]` where name=slug. Preserves comments + formatting via
-/// `toml_edit`. Mirrors `teleport::update_toml_agent_host` and
+/// `[[agents]]` where name=slug. Routes through the shared rollback
+/// helper (preserves comments + formatting, reload+validates, restores
+/// the original on a would-be-invalid result). Mirrors
+/// `teleport::update_toml_agent_host` and
 /// `takeover::update_agent_runtime_in_toml`.
 fn update_agent_swarm_boss_in_toml(
     config: &std::path::Path,
     slug: &str,
     promote: bool,
 ) -> Result<()> {
-    let original =
-        std::fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
-    let mut doc: DocumentMut = original
-        .parse()
-        .with_context(|| format!("parsing {} as TOML", config.display()))?;
-    let agents = doc
-        .get_mut("agents")
-        .and_then(|i| i.as_array_of_tables_mut())
-        .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
-    let mut updated = false;
-    for entry in agents.iter_mut() {
-        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-            if name == slug {
-                if promote {
-                    entry["swarm_boss"] = value(true);
-                } else {
-                    // Demote: prefer removing the key entirely (so the
-                    // TOML reads as "default" rather than explicit
-                    // false), matching how bench_scheduler and other
-                    // bool fields are written.
-                    entry.remove("swarm_boss");
+    edit_then_validate_with_rollback(config, |doc| {
+        let agents = doc
+            .get_mut("agents")
+            .and_then(|i| i.as_array_of_tables_mut())
+            .ok_or_else(|| anyhow!("[[agents]] not found in TOML"))?;
+        let mut updated = false;
+        for entry in agents.iter_mut() {
+            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                if name == slug {
+                    if promote {
+                        entry["swarm_boss"] = value(true);
+                    } else {
+                        // Demote: prefer removing the key entirely (so
+                        // the TOML reads as "default" rather than
+                        // explicit false), matching how bench_scheduler
+                        // and other bool fields are written.
+                        entry.remove("swarm_boss");
+                    }
+                    updated = true;
+                    break;
                 }
-                updated = true;
-                break;
             }
         }
-    }
-    if !updated {
-        return Err(anyhow!(
-            "agent `{slug}` not found in [[agents]] (TOML may have been edited concurrently)"
-        ));
-    }
-    std::fs::write(config, doc.to_string())
-        .with_context(|| format!("writing {}", config.display()))?;
+        if !updated {
+            return Err(anyhow!(
+                "agent `{slug}` not found in [[agents]] (TOML may have been edited concurrently)"
+            ));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 

@@ -103,6 +103,71 @@ impl Config {
     pub fn agent_by_name(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|a| a.name == name)
     }
+
+    /// Derive a bilateral channel's filename + side from two
+    /// participant names, looking each one's platform up in `[[agents]]`.
+    /// Both names must resolve to a configured agent.
+    ///
+    /// Shared derivation used by `add-channel` (both participants exist
+    /// in the config). `add-agent` — where the NEW agent isn't in the
+    /// config yet — calls [`derive_bilateral_with_platforms`] with the
+    /// new agent's platform passed explicitly.
+    pub fn derive_bilateral(&self, a: &str, b: &str) -> Result<DerivedChannel> {
+        let a_platform = self
+            .agent_by_name(a)
+            .map(|x| x.platform.as_str())
+            .ok_or_else(|| anyhow!("participant `{a}` isn't in [[agents]]"))?;
+        let b_platform = self
+            .agent_by_name(b)
+            .map(|x| x.platform.as_str())
+            .ok_or_else(|| anyhow!("participant `{b}` isn't in [[agents]]"))?;
+        Ok(derive_bilateral_with_platforms(
+            a, a_platform, b, b_platform,
+        ))
+    }
+}
+
+/// The on-disk identity of a bilateral channel: its `<a>-<b>.md`
+/// filename (alphabetically sorted), the side it lives on (windows if
+/// either participant is windows-platform, else wsl), the sorted
+/// participant pair, and a default purpose line.
+#[derive(Debug)]
+pub struct DerivedChannel {
+    pub file: String,
+    pub side: String,
+    pub participants: [String; 2],
+    pub purpose: String,
+}
+
+/// Core bilateral derivation, platform-explicit so it works for an
+/// agent that isn't in the config yet (the `add-agent` case). Keeps the
+/// exact rules both mutators previously hand-rolled:
+///   * filename: the two names sorted alphabetically, joined `a-b.md`
+///   * side: `windows` if EITHER participant is windows-platform,
+///     else `wsl` (a native Windows agent can't reach a wsl-side file,
+///     but a wsl agent reads /mnt/c either way).
+pub fn derive_bilateral_with_platforms(
+    a: &str,
+    a_platform: &str,
+    b: &str,
+    b_platform: &str,
+) -> DerivedChannel {
+    let mut both = [a.to_string(), b.to_string()];
+    both.sort();
+    let file = format!("{}-{}.md", both[0], both[1]);
+    let side = if a_platform == "windows" || b_platform == "windows" {
+        "windows"
+    } else {
+        "wsl"
+    }
+    .to_string();
+    let purpose = format!("Bilateral channel between {} and {}.", both[0], both[1]);
+    DerivedChannel {
+        file,
+        side,
+        participants: [both[0].clone(), both[1].clone()],
+        purpose,
+    }
 }
 
 #[cfg(test)]
@@ -385,5 +450,81 @@ participants = ["a", "b"]
             "channel_path on wsl-b should use wsl-b's override, got {}",
             path.display()
         );
+    }
+
+    // ----- bilateral channel derivation (moved here from add_agent /
+    //       add_channel; both mutators now call derive_bilateral*) ------
+
+    fn derive_cfg() -> Config {
+        Config::load_str_for_test(
+            r#"
+[project]
+name = "t"
+
+[paths]
+wsl_inbox = "/tmp/i"
+windows_inbox = "/tmp/iw"
+
+[[agents]]
+name = "alice"
+workdir = "/h/alice"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "bob"
+workdir = "/h/bob"
+role = "."
+platform = "wsl"
+
+[[agents]]
+name = "winbob"
+workdir = "C:\\Users\\b"
+role = "."
+platform = "windows"
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn derive_bilateral_sorts_filename_alphabetically() {
+        let cfg = derive_cfg();
+        let ch = cfg.derive_bilateral("bob", "alice").unwrap();
+        assert_eq!(ch.file, "alice-bob.md");
+        assert_eq!(ch.participants, ["alice".to_string(), "bob".to_string()]);
+    }
+
+    #[test]
+    fn derive_bilateral_picks_windows_side_when_either_is_windows() {
+        let cfg = derive_cfg();
+        let ch = cfg.derive_bilateral("alice", "winbob").unwrap();
+        assert_eq!(ch.side, "windows");
+    }
+
+    #[test]
+    fn derive_bilateral_picks_wsl_side_for_two_wsl_agents() {
+        let cfg = derive_cfg();
+        let ch = cfg.derive_bilateral("alice", "bob").unwrap();
+        assert_eq!(ch.side, "wsl");
+    }
+
+    #[test]
+    fn derive_bilateral_rejects_unknown_participant() {
+        let cfg = derive_cfg();
+        let err = cfg.derive_bilateral("alice", "ghost").unwrap_err();
+        assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn derive_bilateral_with_platforms_handles_unknown_new_agent() {
+        // The add-agent case: the new agent isn't in the config yet, so
+        // its platform is passed explicitly.
+        let ch = derive_bilateral_with_platforms("charlie", "wsl", "alice", "wsl");
+        assert_eq!(ch.file, "alice-charlie.md");
+        assert_eq!(ch.side, "wsl");
+        // A windows new agent against a wsl peer → windows side.
+        let ch = derive_bilateral_with_platforms("charlie", "windows", "alice", "wsl");
+        assert_eq!(ch.side, "windows");
     }
 }

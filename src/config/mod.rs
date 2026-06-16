@@ -26,8 +26,9 @@
 //! - `broadcast` — broadcast message-semantics (prefix parsing, fanout).
 
 mod broadcast;
+pub mod edit;
 mod load;
-mod resolve;
+pub mod resolve;
 mod schema;
 mod validate;
 
@@ -36,6 +37,12 @@ mod validate;
 // sibling `impl` blocks and are reachable via the re-exported type.)
 pub use broadcast::BroadcastPrefix;
 pub use broadcast::{fanout_delay_seconds, is_broadcast_channel, parse_broadcast_prefix};
+// Re-exported so `config::edit_then_validate_with_rollback` resolves;
+// callers currently reach it via the fully-qualified `config::edit::`
+// path, hence the allow (matches the schema re-export pattern below).
+#[allow(unused_imports)]
+pub use edit::edit_then_validate_with_rollback;
+pub use resolve::{derive_bilateral_with_platforms, DerivedChannel};
 pub use schema::{Agent, Channel, Config, Host};
 pub use schema::{THIS_HOST_FILE, THIS_HOST_FILE_LEGACY};
 // These schema types round out the public surface but aren't currently
