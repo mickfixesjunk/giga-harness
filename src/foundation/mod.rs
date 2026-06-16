@@ -26,11 +26,14 @@
 // anything actually unused once every caller is wired.
 #![allow(dead_code)]
 
+pub mod append;
 pub mod atomic_io;
 pub mod dirs;
+pub mod frame;
 pub mod paths;
 pub mod proc;
 pub mod slices;
 pub mod ssh;
+pub mod tail;
 pub mod tailscale;
 pub mod timefmt;
