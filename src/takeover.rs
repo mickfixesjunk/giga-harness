@@ -104,8 +104,12 @@ pub fn run(args: Args) -> Result<()> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let body =
-        crate::init::render_agent_claudemd(&cfg_after, agent_after, &config_dir, &abs_config)?;
+    let body = crate::scaffold::render::render_agent_claudemd(
+        &cfg_after,
+        agent_after,
+        &config_dir,
+        &abs_config,
+    )?;
     let agents_md = agent_after.workdir.join("AGENTS.md");
     fs::write(&agents_md, body).with_context(|| format!("writing {}", agents_md.display()))?;
     println!("  + AGENTS.md re-rendered for `{}`", new_runtime.as_str());

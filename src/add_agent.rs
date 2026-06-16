@@ -532,10 +532,13 @@ fn render_template(args: &Args) -> String {
     // binary with `include_str!` — no runtime dependency on any external
     // configs repo. Shared prose (watcher arming, message convention) lives
     // in `templates/partials/` so init/add-agent stay in sync.
-    let watcher = crate::templates::WATCHER.replace("{{AGENT}}", &args.name);
-    crate::templates::AGENT_STUB
+    let watcher = crate::scaffold::templates::WATCHER.replace("{{AGENT}}", &args.name);
+    crate::scaffold::templates::AGENT_STUB
         .replace("{{WATCHER}}", watcher.trim_end())
-        .replace("{{CONVENTION}}", crate::templates::CONVENTION.trim_end())
+        .replace(
+            "{{CONVENTION}}",
+            crate::scaffold::templates::CONVENTION.trim_end(),
+        )
         .replace("{{PEERS}}", &peer_list)
         .replace("{{ROLE}}", &args.role)
         .replace("{{AGENT}}", &args.name)

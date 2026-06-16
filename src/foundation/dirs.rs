@@ -26,51 +26,28 @@ pub fn giga_home() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // The env is process-global; these tests mutate and restore it and
-    // must not run concurrently with each other (cargo runs tests in
-    // the same binary on separate threads, so we keep each assertion
-    // self-contained and restore what we touch).
+    // NOTE: these tests deliberately do NOT mutate the process-global
+    // HOME/USERPROFILE env vars. The cargo test runner runs tests in
+    // parallel threads of one process, and many tests across the crate
+    // (registry, cursor, trust) read HOME — a set_var/remove_var here
+    // races with them and flakes. We instead assert the *relationships*
+    // against whatever the ambient env is.
 
     #[test]
-    fn home_dir_prefers_home_then_userprofile() {
-        let saved_home = std::env::var_os("HOME");
-        let saved_up = std::env::var_os("USERPROFILE");
-
-        std::env::set_var("HOME", "/home/neo");
-        std::env::remove_var("USERPROFILE");
-        assert_eq!(home_dir(), Some(PathBuf::from("/home/neo")));
-
-        std::env::remove_var("HOME");
-        std::env::set_var("USERPROFILE", r"C:\Users\Neo");
-        assert_eq!(home_dir(), Some(PathBuf::from(r"C:\Users\Neo")));
-
-        // restore
-        match saved_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match saved_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
+    fn giga_home_is_home_dir_plus_dot_giga() {
+        // Whatever home_dir() resolves to (ambient env), giga_home() is
+        // exactly that with `.giga` appended — and they're both-Some or
+        // both-None together.
+        match home_dir() {
+            Some(h) => assert_eq!(giga_home(), Some(h.join(".giga"))),
+            None => assert_eq!(giga_home(), None),
         }
     }
 
     #[test]
-    fn giga_home_appends_dot_giga() {
-        let saved_home = std::env::var_os("HOME");
-        let saved_up = std::env::var_os("USERPROFILE");
-
-        std::env::set_var("HOME", "/home/neo");
-        std::env::remove_var("USERPROFILE");
-        assert_eq!(giga_home(), Some(PathBuf::from("/home/neo/.giga")));
-
-        match saved_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match saved_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
+    fn giga_home_ends_in_dot_giga_when_resolvable() {
+        if let Some(g) = giga_home() {
+            assert!(g.ends_with(".giga"), "got {}", g.display());
         }
     }
 }

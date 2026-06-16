@@ -10,11 +10,11 @@
 
 /// Full `giga add-agent` stub written to `agents/<name>.md`.
 /// Placeholders: `{{AGENT}}`, `{{ROLE}}`, `{{PEERS}}`, `{{WATCHER}}`, `{{CONVENTION}}`.
-pub const AGENT_STUB: &str = include_str!("../templates/agent.md");
+pub const AGENT_STUB: &str = include_str!("../../templates/agent.md");
 
 /// Shared watcher-arming block + the CRITICAL "Monitor TOOL, not Bash" warning.
 /// Placeholder: `{{AGENT}}`.
-pub const WATCHER: &str = include_str!("../templates/partials/watcher.md");
+pub const WATCHER: &str = include_str!("../../templates/partials/watcher.md");
 
 /// Shared message-convention block (`WAITING ON:` / `Informational`). No placeholders.
-pub const CONVENTION: &str = include_str!("../templates/partials/convention.md");
+pub const CONVENTION: &str = include_str!("../../templates/partials/convention.md");

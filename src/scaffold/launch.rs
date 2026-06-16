@@ -6,8 +6,8 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::init;
-use crate::terminal::{self, Multiplexer, Pane};
+use crate::scaffold::init;
+use crate::scaffold::terminal::{self, Multiplexer, Pane};
 
 pub fn run(
     config_path: &Path,

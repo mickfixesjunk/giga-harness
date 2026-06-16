@@ -99,7 +99,7 @@ pub fn run(args: Args) -> Result<()> {
     if !args.no_init {
         let canonical = std::fs::canonicalize(&args.config).unwrap_or(args.config.clone());
         println!();
-        crate::init::run(&canonical)?;
+        crate::scaffold::init::run(&canonical)?;
     } else {
         println!("(skipped `giga init` — run it manually to regenerate AGENTS.md)");
     }

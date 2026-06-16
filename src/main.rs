@@ -22,17 +22,14 @@ mod config;
 mod coordination;
 mod foundation;
 mod fs_paths;
-mod init;
-mod launch;
 mod registry;
 mod runtime;
+mod scaffold;
 mod set_swarm_boss;
 mod setup;
 mod switch;
 mod takeover;
 mod teleport;
-mod templates;
-mod terminal;
 mod transport;
 mod trust;
 mod ui;
@@ -709,7 +706,7 @@ fn main() -> Result<()> {
             let config = registry::resolve_config(config)?;
             validate::run(&config)
         }
-        Command::Init { config, no_trust } => init::run_with(&config, !no_trust),
+        Command::Init { config, no_trust } => scaffold::init::run_with(&config, !no_trust),
         Command::Launch {
             config,
             host,
@@ -756,7 +753,7 @@ fn main() -> Result<()> {
                 })?;
                 std::process::exit(code);
             }
-            launch::run(
+            scaffold::launch::run(
                 &config,
                 skip_init,
                 dry_run,
