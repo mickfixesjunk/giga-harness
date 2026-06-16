@@ -21,7 +21,13 @@
 //!   - Pane count per agent on launch (1 for claude/agy; 2 for codex —
 //!     the CLI + a separate bridge pane running `giga watch --codex`)
 
+use std::path::{Path, PathBuf};
+
 use serde::Deserialize;
+
+pub mod agy;
+pub mod claude;
+pub mod codex;
 
 /// Which agent runtime this swarm or this individual agent uses.
 /// Default is `Claude` for backward compat with every pre-v0.6.0 swarm.
@@ -74,44 +80,6 @@ impl Runtime {
         }
     }
 
-    /// Default launch command for this runtime. The agent's tmux pane
-    /// runs this when the agent is spawned by `giga launch`. Operators
-    /// can override per-agent via `agent.launch_cmd` in TOML.
-    ///
-    /// Returns the COMMAND string only — not platform-wrapped. The
-    /// launch module wraps it in `bash -lc` / `powershell` / etc. as
-    /// appropriate for the agent's platform.
-    pub fn default_launch_cmd(&self, intro: &str, model: &str) -> String {
-        let sh_intro = shell_escape::unix::escape(std::borrow::Cow::Borrowed(intro));
-        let sh_model = shell_escape::unix::escape(std::borrow::Cow::Borrowed(model));
-        match self {
-            Runtime::Claude => format!(
-                "command -v claude >/dev/null && \
-                 {{ claude -c --model {sh_model} {sh_intro} || claude --model {sh_model} {sh_intro} ; }} || true",
-            ),
-            Runtime::Codex => {
-                // codex CLI doesn't take a --model flag the same way;
-                // it reads its own profile. We pass the intro on stdin
-                // (codex reads stdin for the initial prompt) but mostly
-                // rely on AGENTS.md for the agent's instructions. The
-                // intro is appended as a single startup message.
-                format!(
-                    "command -v codex >/dev/null && \
-                     echo {sh_intro} | codex || true",
-                )
-            }
-            Runtime::Agy => {
-                // agy is the antigravity CLI. Similar shape to codex —
-                // we pass the intro as a startup prompt. Specifics may
-                // need adjustment once we live-test against agy.
-                format!(
-                    "command -v agy >/dev/null && \
-                     echo {sh_intro} | agy || true",
-                )
-            }
-        }
-    }
-
     /// Watcher invocation for this runtime — the command the runtime's
     /// Session Start template tells the agent (or operator pane) to
     /// run. For Claude: stdout-based Monitor. For Agy: --agy mode.
@@ -133,15 +101,29 @@ impl Runtime {
         matches!(self, Runtime::Codex)
     }
 
+    /// Number of tmux panes this runtime's agent occupies on launch:
+    /// 2 for runtimes that need a separate bridge pane (codex), 1
+    /// otherwise (claude / agy run the watcher in-session). The launcher
+    /// branches on `needs_bridge_pane` directly today; this convenience
+    /// accessor is consumed in a later phase.
+    #[allow(dead_code)]
+    pub fn pane_count(&self) -> u8 {
+        if self.needs_bridge_pane() {
+            2
+        } else {
+            1
+        }
+    }
+
     /// The instruction snippet for this runtime's `AGENTS.md` Session
     /// Start section. Pulled from `templates/runtimes/<runtime>.md` at
     /// compile time via `include_str!`. The snippet is text that gets
     /// rendered with `{{AGENT}}` replaced by the agent's slug.
     pub fn session_start_snippet(&self) -> &'static str {
         match self {
-            Runtime::Claude => include_str!("../templates/runtimes/claude.md"),
-            Runtime::Codex => include_str!("../templates/runtimes/codex.md"),
-            Runtime::Agy => include_str!("../templates/runtimes/agy.md"),
+            Runtime::Claude => claude::SESSION_START,
+            Runtime::Codex => codex::SESSION_START,
+            Runtime::Agy => agy::SESSION_START,
         }
     }
 
@@ -158,11 +140,44 @@ impl Runtime {
     /// Keep the intro files plain prose — no code spans, no fences.
     pub fn launch_intro_prompt(&self) -> &'static str {
         match self {
-            Runtime::Claude => include_str!("../templates/runtimes/claude-intro.md"),
-            Runtime::Codex => include_str!("../templates/runtimes/codex-intro.md"),
-            Runtime::Agy => include_str!("../templates/runtimes/agy-intro.md"),
+            Runtime::Claude => claude::INTRO,
+            Runtime::Codex => codex::INTRO,
+            Runtime::Agy => agy::INTRO,
         }
     }
+
+    /// Locate the most-recent CLI session log for this runtime that
+    /// corresponds to `workdir`. Best-effort: returns None if the
+    /// runtime doesn't keep per-cwd logs, we can't resolve the home
+    /// directory, or we can't find the conventional path.
+    pub fn session_log(&self, workdir: &Path) -> Option<PathBuf> {
+        let home = crate::foundation::dirs::home_dir()?;
+        match self {
+            Runtime::Claude => claude::session_log(&home, workdir),
+            Runtime::Codex => codex::session_log(&home, workdir),
+            Runtime::Agy => agy::session_log(&home, workdir),
+        }
+    }
+}
+
+/// Return the most-recently-modified `*.jsonl` under `dir`, or None
+/// if the dir doesn't exist or contains no jsonl files. Shared by the
+/// per-runtime session-log locators.
+pub(crate) fn most_recent_jsonl(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            best = Some((mtime, p));
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 #[cfg(test)]
