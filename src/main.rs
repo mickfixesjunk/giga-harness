@@ -18,21 +18,16 @@ mod add_agent;
 mod add_channel;
 mod add_host;
 mod claude_operator;
-mod codex_channel;
 mod config;
-mod cursor;
+mod coordination;
 mod foundation;
 mod fs_paths;
 mod init;
 mod launch;
-mod merger;
-mod post;
 mod registry;
 mod runtime;
 mod set_swarm_boss;
 mod setup;
-mod stale_wait;
-mod sweep;
 mod switch;
 mod takeover;
 mod teleport;
@@ -43,7 +38,6 @@ mod trust;
 mod ui;
 mod upgrade;
 mod validate;
-mod watch;
 
 #[derive(Parser)]
 #[command(
@@ -890,7 +884,7 @@ fn main() -> Result<()> {
                 })?;
                 std::process::exit(code);
             }
-            sweep::run(&config, owed_by.as_deref())
+            coordination::sweep::run(&config, owed_by.as_deref())
         }
         Command::Post {
             channel,
@@ -919,7 +913,7 @@ fn main() -> Result<()> {
                 }
             };
             let config = registry::resolve_config(config)?;
-            post::run(post::Args {
+            coordination::post::run(coordination::post::Args {
                 channel,
                 me: r#as,
                 subject,
@@ -1036,18 +1030,18 @@ fn main() -> Result<()> {
             // v0.6.0: derive watch mode. clap's conflicts_with enforces
             // --agy and --codex are mutually exclusive; default is Claude.
             let mode = if agy {
-                watch::WatchMode::Agy
+                coordination::watch::WatchMode::Agy
             } else if codex {
-                watch::WatchMode::Codex
+                coordination::watch::WatchMode::Codex
             } else {
-                watch::WatchMode::Default
+                coordination::watch::WatchMode::Default
             };
             match channel {
                 Some(c) => {
                     let path = resolve_channel(&c, &config)?;
-                    watch::run_single(&path, &r#as, mode)
+                    coordination::watch::run_single(&path, &r#as, mode)
                 }
-                None => watch::run_multi(&config, &r#as, stagger_override, mode),
+                None => coordination::watch::run_multi(&config, &r#as, stagger_override, mode),
             }
         }
         Command::Merger {
@@ -1056,7 +1050,7 @@ fn main() -> Result<()> {
             quiet,
         } => {
             let config = registry::resolve_config(config)?;
-            merger::run(&config, once, quiet)
+            coordination::merger::run(&config, once, quiet)
         }
         Command::Sync {
             config,
@@ -1093,7 +1087,7 @@ fn main() -> Result<()> {
             config,
         } => {
             let config = registry::resolve_config(config)?;
-            codex_channel::run(codex_channel::Args {
+            coordination::codex_channel::run(coordination::codex_channel::Args {
                 me: r#as,
                 channel_dir,
                 config,

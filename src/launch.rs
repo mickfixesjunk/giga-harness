@@ -136,7 +136,7 @@ pub fn run(
                         a.name,
                         inbox_dir.display(),
                     );
-                } else if let Err(e) = crate::codex_channel::write_envelope(
+                } else if let Err(e) = crate::coordination::codex_channel::write_envelope(
                     &inbox_dir,
                     &cfg.project.name,
                     &a.name,
@@ -231,7 +231,7 @@ pub fn run(
     // crash will pick up; re-running while it's alive is a no-op
     // (we DON'T add a duplicate pane that'd fail at startup).
     if ui {
-        if let Some(home) = crate::cursor::giga_home() {
+        if let Some(home) = crate::coordination::cursor::giga_home() {
             let pid_file = home.join("ui.pid");
             if crate::ui::pid::is_alive(&pid_file) {
                 println!(

@@ -363,7 +363,7 @@ pub async fn post_to_channel(
     // Build post::Args and delegate to the canonical implementation.
     // Sync I/O inside an async handler is fine here — the append is
     // a few syscalls; not worth a spawn_blocking dance.
-    let args = crate::post::Args {
+    let args = crate::coordination::post::Args {
         channel: file.clone(),
         me: body.r#as.clone(),
         subject: body.subject.clone(),
@@ -374,7 +374,7 @@ pub async fn post_to_channel(
         to: Vec::new(),
         fyi: false,
     };
-    crate::post::run(args).map_err(|e| {
+    crate::coordination::post::run(args).map_err(|e| {
         let msg = format!("{e:#}");
         // Participant/waiting-on validation errors are the user's
         // fault, not 500s — surface as 400 with the original error.

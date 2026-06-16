@@ -20,7 +20,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write; // Stdout::flush (agy force-flush mode)
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,9 +27,14 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 
 use crate::config::{self, BroadcastPrefix, Config};
-use crate::cursor;
+use crate::coordination::cursor;
 use crate::foundation::frame;
 use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
+
+mod broadcast;
+mod sink;
+
+use sink::NotificationSink;
 
 /// v0.6.0: watch delivery mode. Default = Claude (stdout lines for
 /// Monitor tool). `--agy` = stdout lines + flush + exit-on-WAITING-ON-me.
@@ -111,6 +115,9 @@ pub fn run_single(channel: &Path, me: &str, mode: WatchMode) -> Result<()> {
     let me_tag = format!("[{me}] ");
     let lock = busy_lock_path(cursor::giga_home().as_deref(), me);
     let mut pending: Vec<String> = Vec::new();
+    // Phase 8: terminal emit behind the sink. Single-file mode is only
+    // ever Default or Agy (Codex is rejected above), so no inbox dir.
+    let mut sink: Box<dyn NotificationSink> = sink::sink_for(mode, me, None, "");
     loop {
         thread::sleep(POLL_INTERVAL);
         let cur = match fs::metadata(channel) {
@@ -139,13 +146,14 @@ pub fn run_single(channel: &Path, me: &str, mode: WatchMode) -> Result<()> {
             continue;
         }
         for line in pending.drain(..) {
-            println!("{line}");
-            if matches!(mode, WatchMode::Agy) {
-                let _ = std::io::stdout().flush();
-                if is_waiting_on_me(channel, me) {
-                    eprintln!("watch [agy]: WAITING ON `{me}` detected → exit 0");
-                    std::process::exit(0);
-                }
+            sink.deliver(&line);
+            // agy: force-flush + exit-0 when the latest message is
+            // WAITING ON us. Gated on the sink predicate instead of
+            // `matches!(mode, Agy)`; stdout flush is a no-op-ish extra.
+            sink.flush();
+            if sink.exit_on_waiting_on_me() && is_waiting_on_me(channel, me) {
+                eprintln!("watch [agy]: WAITING ON `{me}` detected → exit 0");
+                std::process::exit(0);
             }
         }
     }
@@ -212,6 +220,13 @@ pub fn run_multi(
     let swarm_name = Config::load(config_path)
         .map(|c| c.project.name.clone())
         .unwrap_or_else(|_| "unknown".to_string());
+
+    // v0.6.x (phase 8): the terminal emit lives behind a NotificationSink.
+    // The mode→sink mapping is the single place the three modes diverge;
+    // all the buffering / stagger / archive / rearm logic upstream is
+    // shared. Codex mode hands the (already-validated) inbox dir to the
+    // sink; the other modes ignore it.
+    let mut sink: Box<dyn NotificationSink> = sink::sink_for(mode, me, codex_inbox, &swarm_name);
 
     // v0.4.0: resolve the broadcast stagger value. CLI > TOML > default.
     // v0.6.2: default bumped to 30 (was 15) to halve peak TPM during
@@ -359,8 +374,7 @@ pub fn run_multi(
                     continue;
                 }
                 // Broadcast channel: parse subject prefix for filtering + stagger.
-                let subject = extract_subject(line);
-                match config::parse_broadcast_prefix(subject) {
+                match broadcast::classify(line) {
                     Some(BroadcastPrefix::GigaRearm) => {
                         // v0.6.3: silent watcher self-rearm. Advance
                         // the cursor past this message FIRST so the
@@ -466,52 +480,26 @@ pub fn run_multi(
             let mut still_pending: Vec<(Instant, String)> = Vec::new();
             for (ready_at, line) in state.pending.drain(..) {
                 if ready_at <= now {
-                    // v0.6.0: dispatch on watch mode.
-                    match mode {
-                        WatchMode::Default => {
-                            println!("{line}");
-                        }
-                        WatchMode::Agy => {
-                            println!("{line}");
-                            // Force-flush so AGY's stdout-stream
-                            // delivers immediately (no line-buffering).
-                            let _ = std::io::stdout().flush();
-                            // If the channel's latest message is
-                            // WAITING ON us, exit 0 — triggers AGY's
-                            // task-completion wakeup with the action
-                            // already delivered.
-                            if is_waiting_on_me(&state.path, me) {
-                                should_exit_for_agy = true;
-                            }
-                        }
-                        WatchMode::Codex => {
-                            // Write a brief envelope into the codex
-                            // inbox dir. The codex CLI picks it up,
-                            // surfaces it to the agent, and writes a
-                            // receipt to the outbox.
-                            if let Some(inbox) = &codex_inbox {
-                                let text = format!(
-                                    "Giga inbox notification for `{me}`.\n\n\
-                                     Channel: {channel}\n\
-                                     Path: {path}\n\
-                                     Header: {line}\n\n\
-                                     Read the channel file, follow your agent instructions, \
-                                     and respond via `giga post` if the message requires action.",
-                                    channel = state.name,
-                                    path = state.path.display(),
-                                );
-                                if let Err(e) = crate::codex_channel::write_envelope(
-                                    inbox,
-                                    &swarm_name,
-                                    me,
-                                    &state.name,
-                                    state.last_size,
-                                    &text,
-                                ) {
-                                    eprintln!("watch [codex]: envelope write failed: {e:#}");
-                                }
-                            }
-                        }
+                    // Phase 8: the terminal emit goes through the sink.
+                    // Codex needs the per-delivery channel/path/offset
+                    // context the inline arm used to have in scope; the
+                    // stdout/agy sinks ignore the prime call (default
+                    // no-op). The line handed to `deliver` is the same
+                    // fully-formatted `inbox <ch>: <header>` string the
+                    // old arms emitted, so the codex envelope's `Header:`
+                    // field is byte-for-byte identical to before.
+                    sink.prime(&state.name, &state.path, state.last_size);
+                    sink.deliver(&line);
+                    // Force-flush so AGY's stdout-stream delivers
+                    // immediately (no line-buffering). No-op-ish for
+                    // stdout/codex.
+                    sink.flush();
+                    // agy: if the channel's latest message is WAITING ON
+                    // us, exit 0 — triggers AGY's task-completion wakeup
+                    // with the action already delivered. Gated on the
+                    // sink's predicate instead of `matches!(mode, Agy)`.
+                    if sink.exit_on_waiting_on_me() && is_waiting_on_me(&state.path, me) {
+                        should_exit_for_agy = true;
                     }
                 } else {
                     still_pending.push((ready_at, line));
@@ -746,22 +734,6 @@ mod tests {
     }
 }
 
-/// v0.4.0: extract the subject text from a header line like
-/// `[design 2026-06-01 12:00 PST] [ack: alice] cleanup nudge — 2026-06-01T12:00:00Z`.
-/// Returns the slice between the first `]` (closing the agent/timestamp
-/// prefix the watcher already validated) and the trailing ISO timestamp
-/// or end-of-line. `parse_broadcast_prefix` then scans that subject.
-fn extract_subject(header_line: &str) -> &str {
-    // Header convention: `[<sender> <ts>] <subject> — <iso8601>`
-    // We want everything after the first `]`. The broadcast-prefix
-    // parser is robust to trailing whitespace.
-    let after_first = match header_line.find(']') {
-        Some(idx) => header_line[idx + 1..].trim_start(),
-        None => header_line,
-    };
-    after_first
-}
-
 /// v0.4.0: append a `[fyi]` broadcast to a per-agent local archive
 /// instead of firing it as a Monitor notification (BROADCAST_FANOUT_DESIGN.md
 /// Idea C). Best-effort — failures are logged to stderr but don't
@@ -846,12 +818,15 @@ fn run_stale_wait_scan(
             .get(name)
             .copied()
             .unwrap_or(global_threshold);
-        let waits = crate::stale_wait::scan_file(&state.path, me, now, threshold);
+        let waits = crate::coordination::stale_wait::scan_file(&state.path, me, now, threshold);
         for w in &waits {
             let key = (name.to_string(), w.sender.clone(), w.tag_timestamp);
             current_keys.insert(key.clone());
             if surfaced_waits.insert(key) {
-                eprintln!("{}", crate::stale_wait::format_notification(name, w));
+                eprintln!(
+                    "{}",
+                    crate::coordination::stale_wait::format_notification(name, w)
+                );
                 total_new += 1;
             }
         }

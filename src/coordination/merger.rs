@@ -31,7 +31,7 @@ use std::thread;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::cursor;
+use crate::coordination::cursor;
 use crate::foundation::append::append_with_lock;
 use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 

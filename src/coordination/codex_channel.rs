@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::cursor;
+use crate::coordination::cursor;
 use crate::foundation::frame;
 use crate::foundation::tail::{self, POLL_INTERVAL, RELOAD_EVERY_N_TICKS};
 
