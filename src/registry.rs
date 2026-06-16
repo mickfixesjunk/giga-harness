@@ -205,6 +205,39 @@ pub fn resolve_config(provided: PathBuf) -> Result<PathBuf> {
     );
 }
 
+/// Outcome of [`resolve_config_or`] — lets dispatch arms with a
+/// fallback path (e.g. `giga hosts` listing all swarms, `giga upgrade`
+/// doing a bare install) read cleanly without re-deriving the
+/// "was the user relying on the default `giga-harness.toml`?" check.
+pub enum Resolved {
+    /// `resolve_config` succeeded; here's the config path.
+    Found(PathBuf),
+    /// Resolution failed AND the user was relying on the default
+    /// `giga-harness.toml`. Callers with a no-swarm fallback (list-all,
+    /// bare install) should take it here; the carried error is what
+    /// `resolve_config` would have surfaced if no fallback is wanted
+    /// (e.g. `giga hosts --available`).
+    DefaultMissing(anyhow::Error),
+    /// Resolution failed for an explicitly-provided (non-default) path.
+    /// This is a user error and should surface loud, not be swallowed
+    /// by a fallback.
+    ExplicitError(anyhow::Error),
+}
+
+/// Resolve `provided` like [`resolve_config`], but classify the
+/// failure so dispatch arms can decide whether to take a no-swarm
+/// fallback. Mirrors the old inline `was_default` checks: failure on
+/// the default name → [`Resolved::DefaultMissing`]; failure on an
+/// explicit path → [`Resolved::ExplicitError`].
+pub fn resolve_config_or(provided: PathBuf) -> Resolved {
+    let was_default = provided == PathBuf::from("giga-harness.toml");
+    match resolve_config(provided) {
+        Ok(c) => Resolved::Found(c),
+        Err(e) if was_default => Resolved::DefaultMissing(e),
+        Err(e) => Resolved::ExplicitError(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
