@@ -154,7 +154,7 @@ src/
 | `tests/` | Cargo integration tests (separate binaries) that drive the real `giga` binary as a subprocess: cross-host e2e, swarm chaos, git transport e2e. | [tests/README.md](tests/README.md) |
 | `templates/` | Static text/markup baked into the binary via `include_str!`/`include_bytes!`: operator doc, agent stub + partials, per-runtime intros, dashboard HTML. | [templates/README.md](templates/README.md) |
 | `examples/` | A minimal working `giga-harness.toml` (two agents, one channel) used as a smoke fixture and copy-paste starting point. | [examples/README.md](examples/README.md) |
-| `.github/` | CI (`ci.yml`, with a blocking `cargo clippy -D warnings` gate) and release (`release.yml`) GitHub Actions workflows. | [.github/README.md](.github/README.md) |
+| `.github/` | CI (`ci.yml`, with a blocking `cargo clippy -D warnings` gate) and release (`release.yml`) GitHub Actions workflows. | [.github/WORKFLOWS.md](.github/WORKFLOWS.md) |
 | `docs/` | Operator-facing walkthroughs: [QUICKSTART](docs/QUICKSTART.md), [MANUAL_SETUP](docs/MANUAL_SETUP.md), [COMMAND_REFERENCE](docs/COMMAND_REFERENCE.md), [REMOTE_QUICKSTART](docs/REMOTE_QUICKSTART.md). | [docs/](docs/) |
 | `design/` | Design rationale per subsystem: [REMOTE_DESIGN](design/REMOTE_DESIGN.md), [REMOTE_DUAL_WRITE_DESIGN](design/REMOTE_DUAL_WRITE_DESIGN.md), [TRANSPORT_DESIGN](design/TRANSPORT_DESIGN.md), [BROADCAST_FANOUT_DESIGN](design/BROADCAST_FANOUT_DESIGN.md), [SWARM_BOSS_DESIGN](design/SWARM_BOSS_DESIGN.md), [TELEPORT_DESIGN](design/TELEPORT_DESIGN.md), [STALE_WAITS_NO_LLM_DESIGN](design/STALE_WAITS_NO_LLM_DESIGN.md). | [design/](design/) |
 
