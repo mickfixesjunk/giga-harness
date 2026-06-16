@@ -13,9 +13,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
+/// Per-`(swarm, channel-file)` post-broadcast senders, shared across
+/// WebSocket subscribers. Keyed by `(swarm, channel-file)`.
+pub type Tailers = Arc<RwLock<HashMap<(String, String), broadcast::Sender<Post>>>>;
+
 #[derive(Clone, Default)]
 pub struct AppState {
-    pub tailers: Arc<RwLock<HashMap<(String, String), broadcast::Sender<Post>>>>,
+    pub tailers: Tailers,
 }
 
 impl AppState {

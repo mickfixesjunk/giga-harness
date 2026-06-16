@@ -97,15 +97,12 @@ pub fn watcher_processes() -> Result<Vec<WatcherProcess>, std::io::Error> {
 fn run(argv: &[&str]) -> Result<String, std::io::Error> {
     let out = Command::new(argv[0]).args(&argv[1..]).output()?;
     if !out.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "{} exited with status {}: {}",
-                argv[0],
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim(),
-            ),
-        ));
+        return Err(std::io::Error::other(format!(
+            "{} exited with status {}: {}",
+            argv[0],
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim(),
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

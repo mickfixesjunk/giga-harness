@@ -45,11 +45,9 @@ pub struct Entry {
 /// Falls back to `%USERPROFILE%` for native Windows shells (PowerShell,
 /// cmd.exe) which don't set `$HOME` — mirrors `cursor::giga_home()`.
 pub fn path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    let giga_home = crate::foundation::dirs::giga_home()
         .ok_or_else(|| anyhow::anyhow!("neither $HOME nor %USERPROFILE% is set"))?;
-    Ok(home.join(".giga").join("swarms.toml"))
+    Ok(giga_home.join("swarms.toml"))
 }
 
 pub fn load() -> Result<Registry> {
@@ -65,15 +63,8 @@ pub fn load() -> Result<Registry> {
 
 pub fn save(reg: &Registry) -> Result<()> {
     let p = path()?;
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
-    }
     let text = toml::to_string_pretty(reg).context("serialize registry")?;
-    // Atomic-ish: write to .tmp then rename.
-    let tmp = p.with_extension("toml.tmp");
-    fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, &p).with_context(|| format!("rename {} → {}", tmp.display(), p.display()))?;
-    Ok(())
+    crate::foundation::atomic_io::atomic_write(&p, text.as_bytes())
 }
 
 /// Insert or update an entry for `name` with the given config path and
@@ -212,6 +203,39 @@ pub fn resolve_config(provided: PathBuf) -> Result<PathBuf> {
          If you have one elsewhere, either cd to its config dir or pass --config <path>.",
         cwd.display(),
     );
+}
+
+/// Outcome of [`resolve_config_or`] — lets dispatch arms with a
+/// fallback path (e.g. `giga hosts` listing all swarms, `giga upgrade`
+/// doing a bare install) read cleanly without re-deriving the
+/// "was the user relying on the default `giga-harness.toml`?" check.
+pub enum Resolved {
+    /// `resolve_config` succeeded; here's the config path.
+    Found(PathBuf),
+    /// Resolution failed AND the user was relying on the default
+    /// `giga-harness.toml`. Callers with a no-swarm fallback (list-all,
+    /// bare install) should take it here; the carried error is what
+    /// `resolve_config` would have surfaced if no fallback is wanted
+    /// (e.g. `giga hosts --available`).
+    DefaultMissing(anyhow::Error),
+    /// Resolution failed for an explicitly-provided (non-default) path.
+    /// This is a user error and should surface loud, not be swallowed
+    /// by a fallback.
+    ExplicitError(anyhow::Error),
+}
+
+/// Resolve `provided` like [`resolve_config`], but classify the
+/// failure so dispatch arms can decide whether to take a no-swarm
+/// fallback. Mirrors the old inline `was_default` checks: failure on
+/// the default name → [`Resolved::DefaultMissing`]; failure on an
+/// explicit path → [`Resolved::ExplicitError`].
+pub fn resolve_config_or(provided: PathBuf) -> Resolved {
+    let was_default = provided == Path::new("giga-harness.toml");
+    match resolve_config(provided) {
+        Ok(c) => Resolved::Found(c),
+        Err(e) if was_default => Resolved::DefaultMissing(e),
+        Err(e) => Resolved::ExplicitError(e),
+    }
 }
 
 #[cfg(test)]

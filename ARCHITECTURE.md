@@ -110,21 +110,58 @@ A failure mode of a purely-conventional protocol: the sender posts `WAITING ON: 
 
 ## 3. Module map
 
-Source is organized as one flat `src/` module set plus two sub-modules (`transports/`, `ui/`), with companion `tests/`, `templates/`, `examples/`, `docs/`, `design/`, and `.github/` trees.
+`src/` is organized into layered subsystem modules with a clean,
+one-directional dependency graph: everything builds on a dependency-free
+`foundation/` leaf layer; nothing points back into it. `main.rs` is a
+~30-line shim (`cli::Cli::parse().command.run()`); the clap schema lives
+in `cli.rs` and the dispatch match in `dispatch.rs`.
+
+```
+src/
+├── main.rs / cli.rs / dispatch.rs   entry shim, CLI schema, dispatch
+├── foundation/   leaf layer: frame grammar, byte-tail, locked append,
+│                 atomic_io, dirs, paths, proc, ssh, self_invoke, slices,
+│                 tailscale, timefmt  (depends on std/external only)
+├── config/       schema · load · validate · resolve · broadcast · edit
+├── runtime/      Runtime enum + per-runtime claude/codex/agy behavior
+├── coordination/ the message substrate: post · merger · sweep ·
+│                 stale_wait · cursor · codex_channel · watch/{sink,broadcast}
+├── transport/    Transport + RemoteExec traits · local/git/rsync_tailscale
+│                 plugs · remote · hosts · setup_remote_node · sync/{plan,
+│                 rsync,bootstrap}
+├── scaffold/     init (effects) · render (AGENTS.md text) · launch ·
+│                 templates · terminal/ (TerminalBackend: wt/tmux/mac/print)
+├── mutate/       add_agent · add_channel · add_host · set_swarm_boss ·
+│                 peer_bootstrap  (all via config::edit rollback)
+├── mobility/     teleport · takeover · upgrade/{installer,windows_rearm}
+├── accounts/     switch (credential manager)
+├── ui/           the axum dashboard (api/{read,mutate,dto}, ws, server, …)
+├── registry.rs   ~/.giga/swarms.toml resolver
+├── trust.rs      Claude folder-trust · fs_paths.rs  WSL↔Windows paths
+└── validate.rs   `giga validate` presentation
+```
 
 | Area / subfolder | Role | README |
 |---|---|---|
-| `src/` | The `giga` CLI: config schema, command dispatch, coordination substrate (post/watch/merger/sweep/stale-wait), scaffolding (init/launch/terminal/trust), agent/channel/host management, mobility, and runtime abstraction. | [src/README.md](src/README.md) |
-| `src/transports/` | The three concrete plug impls behind the `Transport` trait: `local` (no-op), `rsync_tailscale` (default), `git` (shared state-repo). | [src/transports/README.md](src/transports/README.md) |
+| `src/foundation/` | Dependency-free leaf layer: the `===`-frame grammar, byte-cursor read, locked + atomic file writes, subprocess/ssh/tailscale substrate, and the giga-self-invocation resolver. | — |
+| `src/config/` | TOML schema, load/canonicalize, per-invariant validation, read-side resolvers, broadcast semantics, and the `edit_then_validate_with_rollback` mutation lifecycle. | — |
+| `src/coordination/` | The message-passing substrate: post/merger/sweep/stale-wait/cursor plus the `watch` daemon (with the `NotificationSink` trait + `BroadcastPolicy`). | — |
+| `src/transport/` | The `Transport`/`RemoteExec` traits + `for_config` factory, the three plugs (`local`/`rsync_tailscale`/`git`), the `sync` daemon, SSH passthrough (`remote`), the hosts roster, and the remote-node installer. | [src/transports/README.md](src/transports/README.md)¹ |
+| `src/scaffold/` | `init` (effects) + `render` (AGENTS.md text), `launch` (pane assembly), and the `terminal/` multiplexer backends behind `TerminalBackend`. | — |
+| `src/mutate/` / `src/mobility/` / `src/accounts/` | TOML-mutating commands (atomic via `config::edit`); agent mobility (teleport/takeover/upgrade); the credential manager. | — |
+| `src/runtime/` | `Runtime` enum + per-runtime (claude/codex/agy) launch/session/snippet behavior. | — |
 | `src/ui/` | The `giga ui` dashboard: an axum HTTP + WebSocket server over every registered swarm (the only async/tokio part of the CLI). | [src/ui/README.md](src/ui/README.md) |
 | `tests/` | Cargo integration tests (separate binaries) that drive the real `giga` binary as a subprocess: cross-host e2e, swarm chaos, git transport e2e. | [tests/README.md](tests/README.md) |
 | `templates/` | Static text/markup baked into the binary via `include_str!`/`include_bytes!`: operator doc, agent stub + partials, per-runtime intros, dashboard HTML. | [templates/README.md](templates/README.md) |
 | `examples/` | A minimal working `giga-harness.toml` (two agents, one channel) used as a smoke fixture and copy-paste starting point. | [examples/README.md](examples/README.md) |
-| `.github/` | CI (`ci.yml`) and release (`release.yml`) GitHub Actions workflows. | [.github/README.md](.github/README.md) |
+| `.github/` | CI (`ci.yml`, with a blocking `cargo clippy -D warnings` gate) and release (`release.yml`) GitHub Actions workflows. | [.github/README.md](.github/README.md) |
 | `docs/` | Operator-facing walkthroughs: [QUICKSTART](docs/QUICKSTART.md), [MANUAL_SETUP](docs/MANUAL_SETUP.md), [COMMAND_REFERENCE](docs/COMMAND_REFERENCE.md), [REMOTE_QUICKSTART](docs/REMOTE_QUICKSTART.md). | [docs/](docs/) |
 | `design/` | Design rationale per subsystem: [REMOTE_DESIGN](design/REMOTE_DESIGN.md), [REMOTE_DUAL_WRITE_DESIGN](design/REMOTE_DUAL_WRITE_DESIGN.md), [TRANSPORT_DESIGN](design/TRANSPORT_DESIGN.md), [BROADCAST_FANOUT_DESIGN](design/BROADCAST_FANOUT_DESIGN.md), [SWARM_BOSS_DESIGN](design/SWARM_BOSS_DESIGN.md), [TELEPORT_DESIGN](design/TELEPORT_DESIGN.md), [STALE_WAITS_NO_LLM_DESIGN](design/STALE_WAITS_NO_LLM_DESIGN.md). | [design/](design/) |
 
-> Note: each per-subfolder `README.md` linked above is the canonical developer entry point for that area; this `ARCHITECTURE.md` is the hub that ties them together.
+> ¹ The per-directory developer READMEs under `src/` predate the v0.6.x
+> modular reorganization (the plug impls now live in `src/transport/`, not
+> `src/transports/`, and the substrate under `src/coordination/`); they are
+> pending a refresh. This `ARCHITECTURE.md` reflects the current tree.
 
 ---
 

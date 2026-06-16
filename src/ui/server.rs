@@ -82,8 +82,8 @@ fn build_router() -> Router {
 /// v0.6.37 Phase F: the dashboard HTML is a single self-contained
 /// page (HTML + CSS + vanilla JS) at templates/ui/dashboard.html,
 /// embedded via include_str! so the binary still ships as one
-/// artifact. The page does its own fetching against the JSON API
-/// + WebSocket and renders client-side. UI_DESIGN.md originally
+/// artifact. The page does its own fetching against the JSON
+/// API + WebSocket and renders client-side. UI_DESIGN.md originally
 /// scoped a Svelte SPA — pivoted to no-build vanilla JS for the
 /// initial ship so end users don't need Node to build giga.
 /// Reasonable to revisit if/when interactions get more complex.
@@ -140,7 +140,7 @@ mod tests {
         // Embedded dashboard markers.
         assert!(text.contains("<title>giga ui</title>"), "missing title");
         assert!(
-            text.contains("__VERSION__") == false,
+            !text.contains("__VERSION__"),
             "version placeholder should be substituted"
         );
         assert!(
