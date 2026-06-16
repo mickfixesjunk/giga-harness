@@ -605,28 +605,9 @@ fn apply_path_defaults(cfg: &mut Config, canonical_config_path: &std::path::Path
 /// and parses the result, trimming trailing CR/LF that Windows tools
 /// add. Returns None if interop is unavailable or fails.
 fn resolve_windows_userprofile() -> Option<String> {
-    if cfg!(target_os = "windows") {
-        return std::env::var("USERPROFILE").ok();
-    }
-    // WSL path: cmd.exe is on PATH when interop is enabled (the
-    // default). Run it; trim CRLF.
-    let out = std::process::Command::new("cmd.exe")
-        .args(["/c", "echo %USERPROFILE%"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?;
-    let s = s.trim();
-    if s.is_empty() || s == "%USERPROFILE%" {
-        // cmd.exe echoes the literal `%USERPROFILE%` when the var is
-        // unset — guard against that becoming a literal path.
-        return None;
-    }
-    Some(s.to_string())
+    // Reads %USERPROFILE% directly on native Windows, or via cmd.exe
+    // interop from a WSL distro. Shared impl in foundation::proc.
+    crate::foundation::proc::cmd_exe_echo("USERPROFILE")
 }
 
 impl Config {

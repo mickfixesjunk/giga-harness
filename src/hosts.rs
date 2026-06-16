@@ -9,9 +9,10 @@
 //! lists the agents under a synthetic "(local)" header.
 
 use std::path::Path;
-use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+
+use crate::foundation::tailscale::{self, TailnetNode};
 
 use crate::config::Config;
 use crate::registry;
@@ -169,7 +170,7 @@ pub fn run_available(config_path: &Path) -> Result<()> {
         }
     }
 
-    let roster = query_tailscale_roster().context(
+    let roster = tailscale::roster().context(
         "couldn't query Tailscale — install the CLI or run from a WSL distro \
          on a host with Windows-side Tailscale",
     )?;
@@ -202,192 +203,5 @@ pub fn run_available(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// One node in the tailnet roster (parsed from `tailscale status --json`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TailnetNode {
-    /// FQDN (trailing dot stripped). E.g. `host-a.tail0000.ts.net`.
-    dns_name: String,
-    /// Short name (e.g. `host-a`).
-    host_name: String,
-    /// OS hint: `linux` | `windows` | `macOS` | etc.
-    os: String,
-}
-
-/// Query Tailscale for the current tailnet's roster.
-/// Tries native `tailscale` first; falls back to common Windows install
-/// paths for WSL distros that inherit network from Windows-side Tailscale.
-fn query_tailscale_roster() -> Result<Vec<TailnetNode>> {
-    let stdout = invoke_tailscale_status_json()?;
-    parse_tailscale_status(&stdout)
-}
-
-fn invoke_tailscale_status_json() -> Result<Vec<u8>> {
-    // 1. Native PATH lookup.
-    if let Ok(out) = Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
-    {
-        if out.status.success() {
-            return Ok(out.stdout);
-        }
-    }
-    // 2. Windows install paths (WSL inheriting the Windows host's tailnet).
-    for path in [
-        "/mnt/c/Program Files/Tailscale/tailscale.exe",
-        "/mnt/c/Program Files (x86)/Tailscale/tailscale.exe",
-    ] {
-        if Path::new(path).exists() {
-            let out = Command::new(path)
-                .args(["status", "--json"])
-                .output()
-                .with_context(|| format!("invoking {path} status --json"))?;
-            if out.status.success() {
-                return Ok(out.stdout);
-            }
-        }
-    }
-    Err(anyhow!(
-        "tailscale CLI not found on PATH and no Windows install detected \
-         at /mnt/c/Program Files/Tailscale/. Install Tailscale or run this \
-         from a WSL distro on a host where Windows-side Tailscale is set up."
-    ))
-}
-
-/// Parse `tailscale status --json` output. Pure — testable without the
-/// subprocess. Returns the flat node list (Self + every Peer).
-fn parse_tailscale_status(bytes: &[u8]) -> Result<Vec<TailnetNode>> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).context("parsing tailscale status --json output")?;
-    let mut nodes = Vec::new();
-    if let Some(self_node) = v.get("Self") {
-        if let Some(n) = extract_node(self_node) {
-            nodes.push(n);
-        }
-    }
-    if let Some(peer) = v.get("Peer").and_then(|p| p.as_object()) {
-        for (_, peer_node) in peer {
-            if let Some(n) = extract_node(peer_node) {
-                nodes.push(n);
-            }
-        }
-    }
-    Ok(nodes)
-}
-
-fn extract_node(v: &serde_json::Value) -> Option<TailnetNode> {
-    let dns_name = v
-        .get("DNSName")
-        .and_then(|s| s.as_str())?
-        .trim_end_matches('.')
-        .to_string();
-    let host_name = v
-        .get("HostName")
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_string();
-    let os = v
-        .get("OS")
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_string();
-    Some(TailnetNode {
-        dns_name,
-        host_name,
-        os,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_tailscale_status_extracts_self_and_peers() {
-        // Minimal sample mirroring real `tailscale status --json` output.
-        let json = br#"
-{
-  "Self": {
-    "DNSName": "neo.tail0000.ts.net.",
-    "HostName": "neo",
-    "OS": "windows"
-  },
-  "Peer": {
-    "abc123": {
-      "DNSName": "host-a.tail0000.ts.net.",
-      "HostName": "host-a",
-      "OS": "linux"
-    },
-    "def456": {
-      "DNSName": "trinity.tail0000.ts.net.",
-      "HostName": "trinity",
-      "OS": "windows"
-    }
-  }
-}
-"#;
-        let nodes = parse_tailscale_status(json).unwrap();
-        assert_eq!(nodes.len(), 3);
-        let names: std::collections::HashSet<&str> =
-            nodes.iter().map(|n| n.dns_name.as_str()).collect();
-        assert!(names.contains("neo.tail0000.ts.net"));
-        assert!(names.contains("host-a.tail0000.ts.net"));
-        assert!(names.contains("trinity.tail0000.ts.net"));
-        // Trailing dot stripped:
-        for n in &nodes {
-            assert!(!n.dns_name.ends_with('.'));
-        }
-    }
-
-    #[test]
-    fn parse_tailscale_status_handles_empty_peer_section() {
-        let json = br#"
-{
-  "Self": {
-    "DNSName": "solo.tail0.ts.net.",
-    "HostName": "solo",
-    "OS": "linux"
-  },
-  "Peer": {}
-}
-"#;
-        let nodes = parse_tailscale_status(json).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].host_name, "solo");
-    }
-
-    #[test]
-    fn parse_tailscale_status_handles_node_with_missing_fields() {
-        let json = br#"
-{
-  "Self": { "DNSName": "x.ts.net." },
-  "Peer": {}
-}
-"#;
-        let nodes = parse_tailscale_status(json).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].host_name, "");
-        assert_eq!(nodes[0].os, "");
-        assert_eq!(nodes[0].dns_name, "x.ts.net");
-    }
-
-    #[test]
-    fn parse_tailscale_status_skips_node_without_dns_name() {
-        let json = br#"
-{
-  "Self": { "HostName": "no-dns", "OS": "linux" },
-  "Peer": {}
-}
-"#;
-        let nodes = parse_tailscale_status(json).unwrap();
-        assert!(nodes.is_empty());
-    }
-
-    #[test]
-    fn parse_tailscale_status_errors_on_invalid_json() {
-        let err = match parse_tailscale_status(b"not json at all") {
-            Ok(_) => panic!("expected parse error"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("parsing"));
-    }
-}
+// Tailnet roster parsing lives in foundation::tailscale (one parser,
+// shared with setup_remote_node).

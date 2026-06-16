@@ -73,7 +73,12 @@ pub fn run_passthrough(cfg: &Config, peer: &str, args: &[String]) -> Result<i32>
         "bash -lc {}",
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd.as_str()))
     );
+    // v0.6.x: carry the shared SSH timeout options (foundation::ssh) so a
+    // passthrough to a dead host fails in ~10s instead of hanging on the
+    // OS-default TCP timeout. (This module inherits stdio + needs the exit
+    // code, so it builds the Command directly rather than via ssh_exec.)
     let status = Command::new("ssh")
+        .args(crate::foundation::ssh::SSH_TIMEOUT_OPTS)
         .arg(&target)
         .arg(&wrapped)
         .stdin(Stdio::inherit())
@@ -141,7 +146,7 @@ fn build_remote_command(config_dir: &Path, remote_args: &[String]) -> String {
         .iter()
         .map(|a| shell_escape::unix::escape(a.into()).into_owned())
         .collect();
-    let dir_unix = config_dir.display().to_string().replace('\\', "/");
+    let dir_unix = crate::foundation::paths::to_unix(config_dir);
     let escaped_dir =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(dir_unix.as_str())).into_owned();
     format!("cd {escaped_dir} && giga {}", escaped_args.join(" "))

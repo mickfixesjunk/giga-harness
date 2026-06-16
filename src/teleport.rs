@@ -68,7 +68,7 @@ pub fn run(args: Args) -> Result<()> {
     );
     let escaped_handover =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(source_handover_unix.as_str()));
-    sync::ssh_run(&source_ssh, &format!("touch {escaped_handover}"))
+    crate::foundation::ssh::ssh_exec(&source_ssh, &format!("touch {escaped_handover}"))
         .context("ensuring source HANDOVER.md exists before rsync")?;
     println!("  + source HANDOVER.md exists (touched if missing)");
 
@@ -302,7 +302,7 @@ fn rsync_direct(plan: &Plan) -> Result<()> {
     let escaped_tgt =
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(target_rsync_target.as_str()));
     let remote_cmd = format!("rsync -avz --delete-after {escaped_src} {escaped_tgt}",);
-    let direct_result = sync::ssh_run(&source_ssh, &remote_cmd);
+    let direct_result = crate::foundation::ssh::ssh_exec(&source_ssh, &remote_cmd);
     if direct_result.is_ok() {
         return Ok(());
     }
@@ -396,12 +396,13 @@ fn prepend_banner_on_target(plan: &Plan) -> Result<()> {
          if [ -f {escaped_path} ]; then cat {escaped_path} >> \"$tmp\"; fi; \
          mv \"$tmp\" {escaped_path}",
     );
-    sync::ssh_run(&target_ssh, &cmd).context("prepending teleport banner on target")
+    crate::foundation::ssh::ssh_exec(&target_ssh, &cmd)
+        .context("prepending teleport banner on target")
 }
 
 /// Render the teleport banner block. Pure fn for testability.
 pub(crate) fn render_teleport_banner(source_host: &str, target_host: &str) -> String {
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let ts = crate::foundation::timefmt::now_iso8601();
     format!(
         "> **You have been teleported to `{target_host}`. You used to be on `{source_host}`.**\n\
          >\n\
@@ -446,7 +447,7 @@ fn update_toml_agent_host(config: &std::path::Path, agent: &str, target_host: &s
 
 /// Run `giga sync --once` locally to push the updated TOML to peers.
 fn sync_toml_to_peers(config: &std::path::Path) -> Result<()> {
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(crate::foundation::self_invoke::giga_binary())
         .args([
             "sync",
             "--once",
@@ -483,7 +484,7 @@ fn run_remote_giga(target: &Host, config: &std::path::Path, sub_args: &[&str]) -
         "--".to_string(),
     ];
     argv.extend(sub_args.iter().map(|s| s.to_string()));
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(crate::foundation::self_invoke::giga_binary())
         .args(&argv)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -522,7 +523,7 @@ fn kill_old_pane(source: &Host, project: &str, agent: &str) -> Result<()> {
          tmux kill-window -t {session}:{agent}-cli    >/dev/null 2>&1 || true; \
          tmux kill-window -t {session}:{agent}-bridge >/dev/null 2>&1 || true",
     );
-    sync::ssh_run(&ssh, &cmd).context("killing old pane on source")
+    crate::foundation::ssh::ssh_exec(&ssh, &cmd).context("killing old pane on source")
 }
 
 #[cfg(test)]

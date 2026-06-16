@@ -10,6 +10,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::config::Config;
 use crate::foundation::append::append_with_lock;
+use crate::foundation::slices::slice_path;
 
 pub struct Args {
     pub channel: String,
@@ -138,7 +139,7 @@ pub fn run(args: Args) -> Result<()> {
         args.subject.clone()
     };
 
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let ts = crate::foundation::timefmt::now_iso8601();
     let block = format_block(
         &args.me,
         &subject_with_prefix,
@@ -179,22 +180,8 @@ pub fn run(args: Args) -> Result<()> {
 // `foundation::append` — shared by post, merger, and the watcher FYI
 // archive. `append_with_lock` is imported at the top of this module.
 
-/// Derive the per-host slice file path from the merged channel path.
-///
-/// Given `/dir/<channel>.md` + this_host = `wsl-a`, returns
-/// `/dir/<channel>.wsl-a.md`. Pure — testable without filesystem.
-///
-/// The slice file is the single-writer wire format that `sync` mirrors
-/// between hosts. The merger reads from all slice files and appends to
-/// the merged `<channel>.md` that the watcher tails.
-fn slice_path(merged: &Path, this_host: &str) -> PathBuf {
-    let parent = merged.parent().unwrap_or_else(|| Path::new("."));
-    let stem = merged
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "channel".to_string());
-    parent.join(format!("{stem}.{this_host}.md"))
-}
+// Per-host slice naming (`<channel>.<host>.md`) lives in
+// `foundation::slices` — shared with merger and sync.
 
 /// Pure message-block formatter — extracted so we can unit-test the
 /// header/footer rules without touching the filesystem or clock. The
@@ -328,49 +315,7 @@ mod tests {
         assert!(out.contains("(Informational, no response required.)"));
     }
 
-    // -------------------------------------------------------------------
-    // Cross-host slice path tests (per REMOTE_DESIGN.md step 3).
-    // slice_path() is pure; the routing decision in run() is exercised
-    // by integration tests that write real files.
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn slice_path_inserts_host_before_md_extension() {
-        let merged = std::path::Path::new("/inbox/design-code-2.md");
-        let slice = slice_path(merged, "wsl-a");
-        assert_eq!(
-            slice,
-            std::path::PathBuf::from("/inbox/design-code-2.wsl-a.md"),
-        );
-    }
-
-    #[test]
-    fn slice_path_handles_channel_name_with_dots() {
-        // A channel like `foo.bar.md` should slice to `foo.bar.<host>.md`,
-        // not `foo.<host>.md` — file_stem only strips the final extension.
-        let merged = std::path::Path::new("/inbox/foo.bar.md");
-        let slice = slice_path(merged, "h1");
-        assert_eq!(slice, std::path::PathBuf::from("/inbox/foo.bar.h1.md"));
-    }
-
-    #[test]
-    fn slice_path_preserves_inbox_dir() {
-        let merged = std::path::Path::new("/some/deep/path/to/inbox/ch.md");
-        let slice = slice_path(merged, "h2");
-        assert_eq!(
-            slice,
-            std::path::PathBuf::from("/some/deep/path/to/inbox/ch.h2.md"),
-        );
-    }
-
-    #[test]
-    fn slice_path_with_relative_path() {
-        // Edge case — channel paths are always absolute via Config::channel_path
-        // in practice, but the helper should still produce a sensible name.
-        let merged = std::path::Path::new("ch.md");
-        let slice = slice_path(merged, "wsl-b");
-        assert_eq!(slice, std::path::PathBuf::from("ch.wsl-b.md"));
-    }
+    // Slice-path derivation is tested in foundation::slices.
 
     // -------------------------------------------------------------------
     // run() integration tests — exercise the local-vs-slice routing

@@ -474,7 +474,7 @@ pub async fn run_upgrade(
 /// child sees the same dependencies + behavior). Captures stdout +
 /// stderr; never inherits them.
 fn run_giga(argv: &[&str]) -> Result<ExecResult, std::io::Error> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("giga"));
+    let exe = crate::foundation::self_invoke::giga_binary();
     let out = std::process::Command::new(&exe).args(argv).output()?;
     Ok(ExecResult {
         exit_code: out.status.code().unwrap_or(-1),

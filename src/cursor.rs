@@ -39,15 +39,11 @@ pub fn write(giga_home: &Path, agent: &str, channel_filename: &str, offset: u64)
     let _ = fs::write(&path, offset.to_string());
 }
 
-/// The ~/.giga directory derived from $HOME, falling back to %USERPROFILE%.
-/// Native Windows often has USERPROFILE but no HOME, so without the fallback
-/// giga_home() returns None there — which silently disables cursors AND the
-/// busy-lock gate on Windows agents. Linux always has HOME, so the fallback
-/// is a no-op there.
+/// The `~/.giga` directory. Thin re-export of the shared
+/// [`crate::foundation::dirs::giga_home`] (kept here so the many
+/// `cursor::giga_home()` call sites are undisturbed).
 pub fn giga_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|h| PathBuf::from(h).join(".giga"))
+    crate::foundation::dirs::giga_home()
 }
 
 // ---------------------------------------------------------------------------

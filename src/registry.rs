@@ -45,11 +45,9 @@ pub struct Entry {
 /// Falls back to `%USERPROFILE%` for native Windows shells (PowerShell,
 /// cmd.exe) which don't set `$HOME` — mirrors `cursor::giga_home()`.
 pub fn path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    let giga_home = crate::foundation::dirs::giga_home()
         .ok_or_else(|| anyhow::anyhow!("neither $HOME nor %USERPROFILE% is set"))?;
-    Ok(home.join(".giga").join("swarms.toml"))
+    Ok(giga_home.join("swarms.toml"))
 }
 
 pub fn load() -> Result<Registry> {
@@ -65,15 +63,8 @@ pub fn load() -> Result<Registry> {
 
 pub fn save(reg: &Registry) -> Result<()> {
     let p = path()?;
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
-    }
     let text = toml::to_string_pretty(reg).context("serialize registry")?;
-    // Atomic-ish: write to .tmp then rename.
-    let tmp = p.with_extension("toml.tmp");
-    fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, &p).with_context(|| format!("rename {} → {}", tmp.display(), p.display()))?;
-    Ok(())
+    crate::foundation::atomic_io::atomic_write(&p, text.as_bytes())
 }
 
 /// Insert or update an entry for `name` with the given config path and

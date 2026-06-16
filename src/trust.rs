@@ -84,9 +84,7 @@ fn trust_target(agent: &Agent) -> Result<(PathBuf, String)> {
 }
 
 fn dirs_home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    crate::foundation::dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("neither $HOME nor %USERPROFILE% is set"))
 }
 

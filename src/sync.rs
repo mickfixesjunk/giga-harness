@@ -52,36 +52,10 @@ const RELOAD_EVERY_N_TICKS: u64 = 5;
 /// goes down: pre-fix we hammered every 3s for hours.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// v0.6.15: SSH options applied to every rsync/ssh invocation in the
-/// sync daemon so a dead tailnet returns Err in ~10s instead of
-/// wedging for the OS-default TCP timeout (~2min/attempt). Operator
-/// symptom pre-fix: "the daemons just seemed to wedge or die"
-/// (reported 2026-06-03) — they weren't dying, they were stuck for 2min
-/// per tick while SSH negotiated a hopeless connection.
-///
-/// - ConnectTimeout=10: fail fast on initial TCP handshake
-/// - ServerAliveInterval=10 + CountMax=3: drop a stalled connection
-///   after ~30s of silence rather than letting it hang forever
-const SSH_TIMEOUT_OPTS: &[&str] = &[
-    "-o",
-    "ConnectTimeout=10",
-    "-o",
-    "ServerAliveInterval=10",
-    "-o",
-    "ServerAliveCountMax=3",
-];
-
-/// Render the `-e ssh ...` string that rsync uses to invoke ssh,
-/// embedding the timeout options. rsync's `-e` takes a single
-/// space-separated string.
-fn rsync_ssh_e_arg() -> String {
-    let mut s = String::from("ssh");
-    for opt in SSH_TIMEOUT_OPTS {
-        s.push(' ');
-        s.push_str(opt);
-    }
-    s
-}
+// SSH timeout options + the rsync `-e ssh …` arg builder + the
+// `bash -lc` ssh exec live in foundation::ssh (shared with remote +
+// teleport so a dead tailnet fails in ~10s instead of hanging ~2min).
+use crate::foundation::ssh::{rsync_ssh_e_arg, ssh_exec};
 
 /// Compute the daemon sleep duration for the next tick given how
 /// many consecutive failures we've seen. Pure fn — tested in
@@ -446,7 +420,7 @@ pub fn compute_sync_plan(
             Ok(p) => p,
             Err(_) => continue,
         };
-        let slice_path = derive_slice_path(&merged_path, this_host);
+        let slice_path = crate::foundation::slices::slice_path(&merged_path, this_host);
         let slice_filename = slice_path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -520,17 +494,6 @@ fn to_unix_path(p: &Path) -> String {
     p.display().to_string().replace('\\', "/")
 }
 
-/// `/dir/<channel>.md` + host -> `/dir/<channel>.<host>.md`. Mirrors
-/// `post::slice_path` + `merger::derive_slice_path`.
-fn derive_slice_path(merged: &Path, host: &str) -> PathBuf {
-    let parent = merged.parent().unwrap_or_else(|| Path::new("."));
-    let stem = merged
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "channel".to_string());
-    parent.join(format!("{stem}.{host}.md"))
-}
-
 /// One-shot bootstrap of a peer host after the operator-side
 /// `add-agent --host <peer>` (or any TOML change that should propagate
 /// immediately rather than waiting for the next sync tick):
@@ -576,7 +539,7 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
         "mkdir -p {}",
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_dir_unix.as_str()))
     );
-    ssh_run(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
+    ssh_exec(&ssh_target, &mkdir_cmd).context("creating remote config dir")?;
 
     // 2. rsync the WHOLE swarm dir (canonical TOML + agents/ templates
     //    + handover stubs + anything else under the config dir).
@@ -626,36 +589,8 @@ pub fn bootstrap_peer(cfg: &Config, peer_name: &str, canonical_config_path: &Pat
     let ensure_cmd = format!(
         "test -f {escaped_new} || test -f {escaped_legacy} || echo 'this_host = \"{peer_name}\"' > {escaped_new}",
     );
-    ssh_run(&ssh_target, &ensure_cmd).context("ensuring remote this_host identity file")?;
+    ssh_exec(&ssh_target, &ensure_cmd).context("ensuring remote this_host identity file")?;
 
-    Ok(())
-}
-
-/// Run a one-shot SSH command on the peer, wrapped in `bash -lc` so
-/// the remote shell sources login config — necessary for cargo-installed
-/// binaries (`~/.cargo/bin/giga` etc.) that aren't on PATH for plain
-/// non-interactive ssh. Inherits stderr so the user sees what happens;
-/// captures stdout only (currently unused).
-pub(crate) fn ssh_run(ssh_target: &str, remote_cmd: &str) -> Result<()> {
-    let wrapped = format!(
-        "bash -lc {}",
-        shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_cmd))
-    );
-    let status = Command::new("ssh")
-        .args(SSH_TIMEOUT_OPTS)
-        .arg(ssh_target)
-        .arg(&wrapped)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("ssh {ssh_target} {remote_cmd}"))?;
-    if !status.success() {
-        return Err(anyhow!(
-            "ssh {ssh_target} <cmd> exited {}",
-            status.code().unwrap_or(-1)
-        ));
-    }
     Ok(())
 }
 
@@ -693,7 +628,7 @@ pub fn run_remote_giga_init(
         "cd {} && giga init",
         shell_escape::unix::escape(std::borrow::Cow::Borrowed(remote_dir_unix.as_str()))
     );
-    ssh_run(&ssh_target, &remote_cmd).context("remote `giga init`")
+    ssh_exec(&ssh_target, &remote_cmd).context("remote `giga init`")
 }
 
 fn execute(cmd: &SyncCommand) -> Result<()> {
@@ -807,17 +742,7 @@ mod tests {
         assert!(arg.starts_with("ssh "), "must start with `ssh`: {arg}");
     }
 
-    #[test]
-    fn ssh_timeout_opts_are_paired_o_form() {
-        // ssh requires options as `-o key=value` pairs; verify the
-        // shape so a refactor that drops the `-o` doesn't silently
-        // produce an unusable argv.
-        assert_eq!(SSH_TIMEOUT_OPTS.len() % 2, 0, "must be pairs");
-        for chunk in SSH_TIMEOUT_OPTS.chunks(2) {
-            assert_eq!(chunk[0], "-o", "expected -o flag: {chunk:?}");
-            assert!(chunk[1].contains('='), "expected key=value: {}", chunk[1]);
-        }
-    }
+    // SSH_TIMEOUT_OPTS shape is tested in foundation::ssh.
 
     #[test]
     fn build_rsync_target_uses_explicit_ssh_user() {

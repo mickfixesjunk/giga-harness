@@ -16,7 +16,6 @@
 //! token sharing would need its own subcommand.
 
 use std::fs;
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -297,21 +296,12 @@ fn print_account_list(paths: &ClaudePaths) -> Result<()> {
 }
 
 fn copy_cred_file(from: &Path, to: &Path) -> Result<()> {
+    // Write via temp + fsync + rename (mode 0o600 applied before rename)
+    // so a crash mid-copy never leaves a half-written or world-readable
+    // credentials file (which would brick claude). Shared impl in
+    // foundation::atomic_io.
     let data = fs::read(from).with_context(|| format!("reading {}", from.display()))?;
-    // Write via temp + rename so a crash mid-copy doesn't leave a
-    // half-written credentials file (which would brick claude).
-    let tmp = to.with_extension("json.tmp");
-    {
-        let mut f =
-            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        f.write_all(&data)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        f.sync_all().ok();
-    }
-    set_mode(&tmp, 0o600)?;
-    fs::rename(&tmp, to)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), to.display()))?;
-    Ok(())
+    crate::foundation::atomic_io::atomic_write_mode(to, &data, 0o600)
 }
 
 fn write_account_placeholder(path: &Path) -> Result<()> {

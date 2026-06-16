@@ -378,49 +378,19 @@ fn run_sudo(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Detect whether Tailscale is logged in to a tailnet. `tailscale status`
-/// returns 0 when logged in, non-zero otherwise (including "Logged out").
+/// Detect whether Tailscale is logged in to a tailnet. Shared impl in
+/// foundation::tailscale (the `tailscale status` exit-code check).
 fn tailscale_logged_in() -> Result<bool> {
-    let out = Command::new("tailscale")
-        .arg("status")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("invoking `tailscale status`")?;
-    Ok(out.status.success())
+    Ok(crate::foundation::tailscale::is_logged_in())
 }
 
 /// Best-effort fetch of this host's tailnet FQDN (e.g.
-/// `wsl-box.tail1234.ts.net`). Falls back to a hint string if the
-/// command output isn't what we expect.
+/// `wsl-box.tail1234.ts.net`). Uses the shared serde parser in
+/// foundation::tailscale (replacing the old string-grep of DNSName).
 fn tailnet_hostname() -> Result<String> {
-    let out = Command::new("tailscale")
-        .args(["status", "--self", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .context("invoking `tailscale status --self --json`")?;
-    if !out.status.success() {
-        return Err(anyhow!("`tailscale status --self --json` failed"));
-    }
-    let json = String::from_utf8_lossy(&out.stdout);
-    // Avoid pulling in serde_json just for this one parse — grep the
-    // DNSName field out by string match. Tailscale's output is
-    // structured + stable enough that this is fine for v1.
-    let name = json
-        .lines()
-        .find_map(|l| {
-            l.trim()
-                .strip_prefix("\"DNSName\":")
-                .and_then(|s| s.trim_start().strip_prefix("\""))
-                .and_then(|s| s.split('"').next())
-        })
-        .ok_or_else(|| anyhow!("DNSName not found in tailscale status output"))?
-        .trim_end_matches('.')
-        .to_string();
-    Ok(name)
+    crate::foundation::tailscale::status()?
+        .self_dns_name()
+        .ok_or_else(|| anyhow!("DNSName not found in tailscale status output"))
 }
 
 fn default_inbox_dir() -> Result<PathBuf> {

@@ -192,7 +192,7 @@ fn refresh_tracked(
             if entry.slices.contains_key(host) {
                 continue;
             }
-            let slice_path = derive_slice_path(merged_path, host);
+            let slice_path = crate::foundation::slices::slice_path(merged_path, host);
             let start = giga_home
                 .and_then(|home| cursor::read_merge(home, name, host))
                 .unwrap_or(0);
@@ -259,17 +259,6 @@ fn compute_active_channels(
         .collect()
 }
 
-/// Given `/dir/<channel>.md` + a host, derive `/dir/<channel>.<host>.md`.
-/// Mirrors `post::slice_path`.
-fn derive_slice_path(merged: &Path, host: &str) -> PathBuf {
-    let parent = merged.parent().unwrap_or_else(|| Path::new("."));
-    let stem = merged
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "channel".to_string());
-    parent.join(format!("{stem}.{host}.md"))
-}
-
 fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     // v0.3.5: lock during append so concurrent post dual-writes to
     // this same merged file can't interleave bytes within a single
@@ -286,23 +275,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    #[test]
-    fn derive_slice_path_basic() {
-        let merged = Path::new("/inbox/alice-bob.md");
-        assert_eq!(
-            derive_slice_path(merged, "wsl-a"),
-            PathBuf::from("/inbox/alice-bob.wsl-a.md")
-        );
-    }
-
-    #[test]
-    fn derive_slice_path_handles_dotted_channel_name() {
-        let merged = Path::new("/inbox/foo.bar.md");
-        assert_eq!(
-            derive_slice_path(merged, "h1"),
-            PathBuf::from("/inbox/foo.bar.h1.md")
-        );
-    }
+    // Slice-path derivation is tested in foundation::slices.
 
     /// Build a 2-host cross-host swarm fixture: 2 agents (alice on A,
     /// bob on B), 1 bilateral channel. Returns (tmp, config_path).

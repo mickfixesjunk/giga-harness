@@ -294,7 +294,7 @@ pub(crate) fn render_takeover_block(
     new_runtime: Runtime,
     session_path: Option<&Path>,
 ) -> String {
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let ts = crate::foundation::timefmt::now_iso8601();
     let session_line = match session_path {
         Some(p) => format!(
             "> Prior `{}` session log: `{}`. Read recent entries (tail \
@@ -331,25 +331,10 @@ pub(crate) fn render_takeover_block(
     )
 }
 
-/// Atomic prepend: write `prefix` then existing content to a temp
-/// file in the same dir and rename over the target. Safe against
-/// crashes mid-write.
+/// Atomic prepend of `prefix` onto `path` (crash-safe temp+rename).
+/// Thin wrapper over the shared `foundation::atomic_io::atomic_prepend`.
 fn prepend_to_file(path: &Path, prefix: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
-    fs::create_dir_all(dir).with_context(|| format!("mkdir -p {}", dir.display()))?;
-    let existing = if path.exists() {
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
-    } else {
-        String::new()
-    };
-    let tmp = path.with_extension("md.takeover-tmp");
-    fs::write(&tmp, format!("{prefix}{existing}"))
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
+    crate::foundation::atomic_io::atomic_prepend(path, prefix)
 }
 
 /// The single self-contained prompt the new agent uses to drive its
