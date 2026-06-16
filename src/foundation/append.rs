@@ -11,11 +11,39 @@
 //! watcher's FYI archive — which previously appended UNLOCKED) routes
 //! through one implementation.
 
-use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+
+/// Windows `ERROR_SHARING_VIOLATION` (os error 32). Under concurrent
+/// appends — or a transient antivirus/indexer handle on a Windows CI
+/// runner — an otherwise-valid open can briefly fail with it; a short
+/// retry clears it. On POSIX, os error 32 is `EPIPE` (unrelated to
+/// opening a file), so this guard never triggers there.
+fn is_transient_sharing_violation(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
+}
+
+/// Open `path` with `opts`, retrying briefly (up to ~1s) on a Windows
+/// sharing violation. Any other error returns immediately.
+fn open_retrying(opts: &OpenOptions, path: &Path) -> io::Result<File> {
+    const MAX_ATTEMPTS: u32 = 40;
+    const BACKOFF: Duration = Duration::from_millis(25);
+    let mut attempt = 0u32;
+    loop {
+        match opts.open(path) {
+            Ok(f) => return Ok(f),
+            Err(e) if is_transient_sharing_violation(&e) && attempt < MAX_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(BACKOFF);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 /// Append `bytes` to `path` under an exclusive file lock that works on
 /// both POSIX and Windows.
@@ -31,13 +59,9 @@ use anyhow::{anyhow, Context, Result};
 /// If the open or the lock acquire fails for some other reason, falls
 /// back to a plain `O_APPEND` write for resilience.
 pub fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
-    let open_result = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path);
-    let mut f = match open_result {
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(false);
+    let mut f = match open_retrying(&opts, path) {
         Ok(f) => f,
         Err(_) => return append_plain(path, bytes),
     };
@@ -65,10 +89,9 @@ pub fn append_with_lock(path: &Path, bytes: &[u8]) -> Result<()> {
 /// fails. Plain `O_APPEND`; on POSIX this preserves kernel-side atomicity
 /// for writes up to `PIPE_BUF`.
 pub fn append_plain(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
+    let mut opts = OpenOptions::new();
+    opts.append(true).create(true);
+    let mut f = open_retrying(&opts, path)
         .with_context(|| format!("opening {} for append", path.display()))?;
     f.write_all(bytes)
         .with_context(|| format!("writing to {}", path.display()))?;
